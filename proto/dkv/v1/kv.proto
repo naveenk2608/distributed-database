@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1";
+
+import "google/protobuf/empty.proto";
+
+// Public KV service exposed to clients
+service KV {
+  // Put stores a key-value pair
+  rpc Put(PutRequest) returns (PutResponse);
+  // Get retrieves a value by key
+  rpc Get(GetRequest) returns (GetResponse);
+  // Delete removes a key
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // CompareAndSet performs a compare-and-set operation
+  rpc CompareAndSet(CompareAndSetRequest) returns (CompareAndSetResponse);
+}
+
+enum Consistency {
+  CONSISTENCY_UNSPECIFIED = 0;
+  CONSISTENCY_LINEARIZABLE = 1;  // Default: linearizable read from leader
+  CONSISTENCY_STALE = 2;         // Stale read from any replica
+}
+
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+  string client_id = 3;
+  uint64 request_id = 4;
+}
+
+message PutResponse {
+  uint64 version = 1;
+  bool applied = 2;  // false if duplicate request (idempotent)
+}
+
+message GetRequest {
+  bytes key = 1;
+  Consistency consistency = 2;
+  uint64 min_version = 3;  // For STALE reads: wait until at least this version
+}
+
+message GetResponse {
+  bytes value = 1;
+  uint64 version = 2;
+  bool found = 3;
+  uint64 applied_index = 4;  // For STALE reads: replica's applied index
+}
+
+message DeleteRequest {
+  bytes key = 1;
+  string client_id = 2;
+  uint64 request_id = 3;
+}
+
+message DeleteResponse {
+  uint64 version = 1;
+  bool found = 2;  // false if key didn't exist
+  bool applied = 3; // false if duplicate request
+}
+
+message CompareAndSetRequest {
+  bytes key = 1;
+  bytes expected_value = 2;
+  bytes new_value = 3;
+  string client_id = 4;
+  uint64 request_id = 5;
+  uint64 expected_version = 6;
+}
+
+message CompareAndSetResponse {
+  bool success = 1;
+  uint64 version = 2;  // Current version if failed, new version if succeeded
+  bytes current_value = 3;  // Current value if failed
+  bool applied = 4;  // false if duplicate request
+}

@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1";
+
+import "google/protobuf/empty.proto";
+
+// Internal cluster management service
+service Cluster {
+  // Join the cluster as a new node
+  rpc Join(JoinRequest) returns (JoinResponse);
+  // Heartbeat to the meta leader
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // Watch shard map changes (streaming)
+  rpc WatchShardMap(WatchShardMapRequest) returns (stream ShardMapUpdate);
+  // Get current cluster status
+  rpc Status(google.protobuf.Empty) returns (ClusterStatus);
+}
+
+message JoinRequest {
+  string node_id = 1;
+  string address = 2;  // host:port for internal gRPC
+  string data_dir = 3;
+}
+
+message JoinResponse {
+  bool success = 1;
+  string error = 2;
+  uint64 assigned_node_id = 3;  // If node_id was empty, assigned by cluster
+  repeated uint64 shard_ids = 4;  // Shards this node should host
+  ClusterConfig config = 5;  // Full cluster config
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  uint64 term = 2;  // Meta group term
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  uint64 meta_term = 2;
+  bool is_meta_leader = 3;
+}
+
+message WatchShardMapRequest {
+  uint64 last_known_epoch = 1;
+}
+
+message ShardMapUpdate {
+  uint64 epoch = 1;
+  repeated ShardDescriptor shards = 2;
+}
+
+message ShardDescriptor {
+  uint64 shard_id = 1;
+  repeated ReplicaDescriptor replicas = 2;
+  uint64 config_epoch = 3;
+}
+
+message ReplicaDescriptor {
+  string node_id = 1;
+  uint64 replica_id = 2;
+  ReplicaRole role = 3;
+}
+
+enum ReplicaRole {
+  REPLICA_ROLE_UNSPECIFIED = 0;
+  REPLICA_ROLE_VOTER = 1;
+  REPLICA_ROLE_LEARNER = 2;
+}
+
+message ClusterConfig {
+  uint64 num_shards = 1;
+  uint64 replication_factor = 2;
+  repeated NodeDescriptor nodes = 3;
+}
+
+message NodeDescriptor {
+  string node_id = 1;
+  string address = 2;
+  NodeState state = 3;
+  repeated uint64 shard_ids = 4;
+}
+
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  NODE_STATE_ALIVE = 1;
+  NODE_STATE_SUSPECT = 2;
+  NODE_STATE_DEAD = 3;
+  NODE_STATE_JOINING = 4;
+  NODE_STATE_LEAVING = 5;
+}
+
+message ClusterStatus {
+  string node_id = 1;
+  bool is_meta_leader = 2;
+  uint64 meta_term = 3;
+  repeated NodeDescriptor nodes = 4;
+  repeated ShardDescriptor shards = 5;
+}
