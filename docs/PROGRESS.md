@@ -12,7 +12,7 @@ Status: **done.** All three gate items passed on 2026-11-16.
 | --- | --- | --- |
 | Randomized skiplist test against a Go map passes under `-race` with concurrent readers | `internal/storage/memtable` `TestConcurrentReadersMatchModel` (one writer, 8 readers doing point reads and full scans, each checked against an immutable Go-map model at the latest published sequence number) and `TestModelRandomized`. Passed 8 repeated `-race` runs with different seeds. Mutation check: publishing a node before its links, reloading links in `findGE`, or publishing a batch early all make the tests fail. | Passed |
 | `dkvctl put/get/delete` works against a running server | `test/e2e` `TestDkvctlAgainstRunningServer` builds the real binaries, starts `dkv-server` as a process, runs put, get, overwrite, delete, get-missing (exit 1) and delete-missing, then checks a clean exit on SIGTERM. Also run by hand on 2026-11-16: `dkvctl put foo bar` (OK, version 1), `get foo` (bar), `delete foo` (deleted, version 2), `get foo` (not found, exit 1); the server exited 0 on SIGTERM after a graceful shutdown. | Passed |
-| CI is green | `.github/workflows/ci.yml` runs `go mod tidy -diff`, `go mod verify`, `make proto-check` and `make check` on ubuntu-latest. Run 43891361720 on e88b4f0 (final Phase 1 code) and run 43890290667 on ddb74f7 both succeeded. | Passed |
+| CI is green | `.github/workflows/ci.yml` runs `go mod tidy -diff`, `go mod verify`, `make proto-check` and `make check` on ubuntu-latest. CI run 43924884382 on main at d2b3bba (Phase 1 and 2 code; `check` and `crash` jobs) succeeded. | Passed |
 
 `make check` (gofmt, go vet, golangci-lint v2.15.0, `go test -race ./...`) passes locally.
 
@@ -44,7 +44,7 @@ Status: **done.** All three gate items passed on 2026-11-16.
 
 ## Phase 2: WAL, persistence and crash recovery
 
-Status: **done.** All three gate items passed locally on 2026-11-16.
+Status: **done.** All three gate items passed locally on 2026-11-16; CI run 43924884382 on main at d2b3bba (`check` and `crash` jobs) is green.
 
 ### Gate
 
