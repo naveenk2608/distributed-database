@@ -46,3 +46,47 @@ standalone mode the engine uses `lastSeq + 1` per batch.
   sequence number per record.
 - Within a batch, all keys share one version, which is what a snapshot sees
   anyway since batches are atomic.
+
+## Revision (Phase 2): last write wins inside the batch, one log record per batch
+
+Status: Accepted (Phase 2)
+
+Two consequences of one sequence number per batch needed to be made
+explicit once batches reach the write-ahead log.
+
+**Repeated keys.** Two operations on one key in one batch would have
+identical internal keys (`key | seq | kind` with the same seq), and the
+memtable can store only one. Phase 1 dropped the earlier operation when the
+batch was applied. From Phase 2 the rule lives in `Batch` itself: `Set` or
+`Delete` on a key the batch already writes replaces that operation. A batch
+therefore never holds two operations on one key, `Count` is the number of
+keys written, the log record contains exactly what is applied, and the
+decoder rejects a record with a repeated key as corruption.
+`TestBatchLastOpWins` covers put+put, put+delete, delete+put and
+put+delete+put on one key, with and without an earlier value, before and
+after the batch is replayed from the log.
+
+Alternatives: keep deduplicating at apply time (the log would hold
+operations that are never applied, and replay would have to repeat the rule
+exactly); reject batches that repeat a key (pushes the rule onto every
+caller, including the Phase 6 apply path, which writes a value and a
+session row and must never fail on its own input).
+
+**Group commit.** The plan describes LevelDB-style group commit as
+combining concurrent batches "into one WAL record". That would put several
+writers' batches under one sequence number, so unrelated writes would share
+a version, and it cannot work at all for caller-supplied sequence numbers
+(Raft indexes), which differ per batch. Instead, the group leader assigns
+each batch its own sequence number, encodes each as its own record, writes
+all of the group's records with one `write` call, and covers them with one
+`fsync` before any writer in the group returns.
+`TestGroupCommitOneRecordPerBatchOneSync` holds the first writer inside
+fsync while 15 others queue, then checks for exactly two fsyncs and one
+record per batch with distinct, ordered sequence numbers.
+
+Cost: a 9-byte record header and 12-byte batch header per batch instead of
+per group, which is negligible next to the fsync that is still shared.
+Alternative considered: a combined record holding several `(seq, ops)`
+pairs. It saves those few bytes but complicates the format and recovery
+(a torn combined record loses several writers' batches at once) for no
+measurable gain.

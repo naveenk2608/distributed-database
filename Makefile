@@ -7,7 +7,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short proto proto-check tools clean
+.PHONY: all build check fmt fmt-check vet lint test test-short crash fuzz proto proto-check tools clean
 
 all: check build
 
@@ -39,6 +39,17 @@ test:
 ## test-short: skip slow tests (the e2e binary test)
 test-short:
 	go test -race -count=1 -short ./...
+
+## crash: kill -9 harness (Phase 2 gate: at least 100 cycles, no race detector)
+CYCLES ?= 150
+crash:
+	go test -count=1 -v -run '^TestKill9Cycles$$' ./test/crash -cycles=$(CYCLES)
+
+## fuzz: run every fuzz target for FUZZTIME each
+FUZZTIME ?= 30s
+fuzz:
+	go test -run='^$$' -fuzz='^FuzzRecover$$' -fuzztime=$(FUZZTIME) ./internal/storage/wal
+	go test -run='^$$' -fuzz='^FuzzDecodeBatch$$' -fuzztime=$(FUZZTIME) ./internal/storage/lsm
 
 ## proto: lint the protobuf API and regenerate gen/
 proto:

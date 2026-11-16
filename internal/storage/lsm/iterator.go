@@ -4,7 +4,6 @@ import (
 	"bytes"
 
 	"github.com/naveenk2608/distributed-database/internal/storage/ikey"
-	"github.com/naveenk2608/distributed-database/internal/storage/memtable"
 )
 
 // IterOptions configures NewIterator.
@@ -17,7 +16,7 @@ type IterOptions struct {
 // version of each key visible at its snapshot and skipping deleted keys.
 // It is not safe for concurrent use.
 type Iterator struct {
-	it  *memtable.Iter
+	it  internalIterator
 	seq uint64
 
 	valid   bool
@@ -31,7 +30,17 @@ func (d *DB) NewIterator(opts IterOptions) (*Iterator, error) {
 	if d.closed.Load() {
 		return nil, ErrClosed
 	}
-	return &Iterator{it: d.mem.NewIter(), seq: d.readSeq(opts.Snapshot)}, nil
+	seq, v := d.readState(opts.Snapshot)
+	iters := make([]internalIterator, 0, 1+len(v.imm))
+	iters = append(iters, v.mem.NewIter())
+	for _, m := range v.imm {
+		iters = append(iters, m.NewIter())
+	}
+	it := iters[0]
+	if len(iters) > 1 {
+		it = newMergingIter(iters...)
+	}
+	return &Iterator{it: it, seq: seq}, nil
 }
 
 // First positions the iterator at the smallest live key.

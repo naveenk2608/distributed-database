@@ -24,13 +24,15 @@ type Node struct {
 // runs automatically at test cleanup.
 func (n *Node) Stop() { n.stop() }
 
-// Start runs a standalone server with an in-memory engine on a free
-// loopback port. configure, if non-nil, may adjust the configuration.
+// Start runs a standalone server on a free loopback port with a durable
+// engine in a fresh temporary directory. configure, if non-nil, may adjust
+// the configuration.
 func Start(t testing.TB, configure func(*config.Config)) *Node {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Server.GRPCAddr = "127.0.0.1:0"
 	cfg.Server.ShutdownTimeout = 5 * time.Second
+	cfg.Storage.Dir = t.TempDir()
 	if configure != nil {
 		configure(&cfg)
 	}
@@ -41,7 +43,11 @@ func Start(t testing.TB, configure func(*config.Config)) *Node {
 	if err != nil {
 		t.Fatalf("servertest: listen: %v", err)
 	}
-	db := lsm.OpenInMemory()
+	db, err := lsm.Open(cfg.Storage.Dir, lsm.Options{MemtableBytes: int64(cfg.Storage.MemtableBytes)})
+	if err != nil {
+		_ = lis.Close()
+		t.Fatalf("servertest: open engine: %v", err)
+	}
 	srv := server.New(&cfg, server.NewStandaloneBackend(db), slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

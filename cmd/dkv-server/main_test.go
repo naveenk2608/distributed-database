@@ -35,7 +35,7 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	var logs syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- run(ctx, []string{"--server.grpc-addr=127.0.0.1:0", "--log.format=text"}, nil, &logs)
+		done <- run(ctx, []string{"--server.grpc-addr=127.0.0.1:0", "--log.format=text", "--storage.dir=" + t.TempDir()}, nil, &logs)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(logs.String(), "serving KV API") {
@@ -71,7 +71,9 @@ func TestRunFailsWhenAddressInUse(t *testing.T) {
 	defer cancel()
 	var first syncBuffer
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, []string{"--server.grpc-addr=127.0.0.1:0"}, nil, &first) }()
+	go func() {
+		done <- run(ctx, []string{"--server.grpc-addr=127.0.0.1:0", "--storage.dir=" + t.TempDir()}, nil, &first)
+	}()
 	var addr string
 	deadline := time.Now().Add(10 * time.Second)
 	for addr == "" {
@@ -82,7 +84,7 @@ func TestRunFailsWhenAddressInUse(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	var second syncBuffer
-	if code := run(context.Background(), []string{"--server.grpc-addr=" + addr}, nil, &second); code != 1 {
+	if code := run(context.Background(), []string{"--server.grpc-addr=" + addr, "--storage.dir=" + t.TempDir()}, nil, &second); code != 1 {
 		t.Errorf("second server on %s: exit %d, want 1; logs:\n%s", addr, code, second.String())
 	}
 	cancel()

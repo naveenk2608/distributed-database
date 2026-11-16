@@ -12,4 +12,6 @@ come up during implementation take the next free number from 0016.
 | [0002](0002-partitioning.md) | Fixed hash shards placed by consistent hashing | Accepted |
 | [0016](0016-configuration-sources.md) | Configuration sources and precedence | Accepted |
 | [0017](0017-memtable-concurrency.md) | Memtable: insert-only skiplist, single writer, lock-free readers | Accepted |
-| [0018](0018-batch-sequence-numbers.md) | One sequence number per batch | Accepted |
+| [0018](0018-batch-sequence-numbers.md) | One sequence number per batch; last write wins inside a batch; one log record per batch in group commit | Accepted (revised in Phase 2) |
+| [0019](0019-wal-format-and-recovery.md) | WAL format, segments and torn-tail vs corruption rules | Accepted |
+| [0020](0020-vfs-fault-model.md) | Filesystem interface and the simulated power-loss model | Accepted |

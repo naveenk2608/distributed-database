@@ -27,17 +27,24 @@ func load(t *testing.T, args, env []string) (*Config, error) {
 	return Load("dkv-server", args, env, io.Discard)
 }
 
-func TestDefaultsNeedAnAddress(t *testing.T) {
+// required are the settings with no default: an address and a data
+// directory must always come from the operator.
+var required = []string{"--server.grpc-addr=127.0.0.1:0", "--storage.dir=/var/lib/dkv-test"}
+
+func TestDefaultsNeedAnAddressAndADataDir(t *testing.T) {
 	_, err := load(t, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "server.grpc_addr: required") {
-		t.Fatalf("Load with nothing set: %v; want a missing server.grpc_addr error", err)
+	for _, want := range []string{"server.grpc_addr: required", "storage.dir: required"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Load with nothing set: %v; want it to contain %q", err, want)
+		}
 	}
-	cfg, err := load(t, []string{"--server.grpc-addr=127.0.0.1:0"}, nil)
+	cfg, err := load(t, required, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Default()
 	want.Server.GRPCAddr = "127.0.0.1:0"
+	want.Storage.Dir = "/var/lib/dkv-test"
 	if *cfg != want {
 		t.Errorf("got %+v, want defaults %+v", *cfg, want)
 	}
@@ -51,6 +58,9 @@ func TestPrecedence(t *testing.T) {
 server:
   grpc_addr: "file:1"
   shutdown_timeout: 3s
+storage:
+  dir: /file/dir
+  sync: interval
 limits:
   max_key_bytes: 100
   max_value_bytes: 200
@@ -61,17 +71,21 @@ log:
 		"DKV_CONFIG=" + file,
 		"DKV_SERVER_GRPC_ADDR=env:2",
 		"DKV_LIMITS_MAX_KEY_BYTES=111",
+		"DKV_STORAGE_SYNC_INTERVAL=25ms",
+		"DKV_STORAGE_DIR=/env/dir",
 		"HOME=/irrelevant",
 	}
-	args := []string{"--server.grpc-addr", "flag:3"}
+	args := []string{"--server.grpc-addr", "flag:3", "--storage.dir=/flag/dir"}
 	cfg, err := load(t, args, env)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Config{
 		Server: Server{GRPCAddr: "flag:3", ShutdownTimeout: 3 * time.Second}, // flag > env > file
-		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200},                 // env > file; file > default
-		Log:    Log{Level: "debug", Format: "json"},                          // file; default
+		Storage: Storage{Dir: "/flag/dir", Sync: "interval", SyncInterval: 25 * time.Millisecond, // flag > env > file
+			MemtableBytes: 4 << 20}, // default
+		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200}, // env > file; file > default
+		Log:    Log{Level: "debug", Format: "json"},          // file; default
 	}
 	if *cfg != want {
 		t.Errorf("got  %+v\nwant %+v", *cfg, want)
@@ -81,7 +95,7 @@ log:
 func TestConfigFlagBeatsConfigEnv(t *testing.T) {
 	fromEnv := writeFile(t, "server: {grpc_addr: 'env-file:1'}\n")
 	fromFlag := writeFile(t, "server: {grpc_addr: 'flag-file:1'}\n")
-	cfg, err := load(t, []string{"--config", fromFlag}, []string{"DKV_CONFIG=" + fromEnv})
+	cfg, err := load(t, []string{"--config", fromFlag, "--storage.dir=/d"}, []string{"DKV_CONFIG=" + fromEnv})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +106,7 @@ func TestConfigFlagBeatsConfigEnv(t *testing.T) {
 
 func TestEmptyConfigFile(t *testing.T) {
 	path := writeFile(t, "")
-	if _, err := load(t, []string{"--config", path, "--server.grpc-addr=:7000"}, nil); err != nil {
+	if _, err := load(t, append([]string{"--config", path}, required...), nil); err != nil {
 		t.Fatalf("empty config file: %v", err)
 	}
 }
@@ -119,6 +133,10 @@ func TestRejectsMistakes(t *testing.T) {
 		{name: "zero key limit", args: []string{"--limits.max-key-bytes=0"}, want: "limits.max_key_bytes"},
 		{name: "bad level", args: []string{"--log.level=loud"}, want: "log.level"},
 		{name: "bad format", args: []string{"--log.format=xml"}, want: "log.format"},
+		{name: "bad sync policy", args: []string{"--storage.sync=sometimes"}, want: `storage.sync: must be always, interval or never, got "sometimes"`},
+		{name: "interval without period", args: []string{"--storage.sync=interval", "--storage.sync-interval=0s"}, want: "storage.sync_interval: must be positive"},
+		{name: "tiny memtable", args: []string{"--storage.memtable-bytes=1024"}, want: "storage.memtable_bytes"},
+		{name: "huge memtable", args: []string{"--storage.memtable-bytes=2147483648"}, want: "storage.memtable_bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := tc.args
@@ -127,6 +145,9 @@ func TestRejectsMistakes(t *testing.T) {
 			}
 			if !slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "grpc-addr") }) {
 				args = append(args, "--server.grpc-addr=:7000")
+			}
+			if !slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "storage.dir") }) {
+				args = append(args, "--storage.dir=/d")
 			}
 			_, err := load(t, args, tc.env)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -140,8 +161,9 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	cfg := Default()
 	cfg.Limits.MaxKeyBytes = 0
 	cfg.Log.Format = "xml"
+	cfg.Storage.Sync = "maybe"
 	err := cfg.Validate()
-	for _, key := range []string{"server.grpc_addr", "limits.max_key_bytes", "log.format"} {
+	for _, key := range []string{"server.grpc_addr", "storage.dir", "storage.sync", "limits.max_key_bytes", "log.format"} {
 		if err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("Validate error %v does not mention %s", err, key)
 		}
@@ -196,7 +218,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Server.GRPCAddr == "" {
-		t.Error("example config sets no server.grpc_addr")
+	if cfg.Server.GRPCAddr == "" || cfg.Storage.Dir == "" {
+		t.Error("example config does not set server.grpc_addr and storage.dir")
 	}
 }

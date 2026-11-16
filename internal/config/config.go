@@ -32,9 +32,10 @@ import (
 
 // Config is the complete configuration of a dkv node.
 type Config struct {
-	Server Server `yaml:"server"`
-	Limits Limits `yaml:"limits"`
-	Log    Log    `yaml:"log"`
+	Server  Server  `yaml:"server"`
+	Storage Storage `yaml:"storage"`
+	Limits  Limits  `yaml:"limits"`
+	Log     Log     `yaml:"log"`
 }
 
 // Server configures the public API server.
@@ -45,6 +46,22 @@ type Server struct {
 	// ShutdownTimeout bounds how long a graceful shutdown waits for
 	// in-flight requests before closing connections.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+}
+
+// Storage configures the node's storage engine.
+type Storage struct {
+	// Dir is the data directory. Required; created if missing.
+	Dir string `yaml:"dir"`
+	// Sync is the WAL sync policy: always (fsync before acknowledging, the
+	// default), interval (fsync every SyncInterval; can lose the last
+	// interval's acknowledged writes on power loss) or never (benchmarks
+	// only).
+	Sync string `yaml:"sync"`
+	// SyncInterval is the fsync period when Sync is interval.
+	SyncInterval time.Duration `yaml:"sync_interval"`
+	// MemtableBytes is the memtable size at which a new memtable and WAL
+	// segment start.
+	MemtableBytes int `yaml:"memtable_bytes"`
 }
 
 // Limits bounds request sizes.
@@ -65,9 +82,10 @@ type Log struct {
 // or paths: those must always come from the operator.
 func Default() Config {
 	return Config{
-		Server: Server{ShutdownTimeout: 10 * time.Second},
-		Limits: Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
-		Log:    Log{Level: "info", Format: "json"},
+		Server:  Server{ShutdownTimeout: 10 * time.Second},
+		Storage: Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20},
+		Limits:  Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
+		Log:     Log{Level: "info", Format: "json"},
 	}
 }
 
@@ -89,6 +107,21 @@ func (c *Config) Validate() error {
 		bad("server.shutdown_timeout", "must be positive, got %v", c.Server.ShutdownTimeout)
 	}
 
+	if c.Storage.Dir == "" {
+		bad("storage.dir", "required (set it in the config file, DKV_STORAGE_DIR or --storage.dir)")
+	}
+	switch c.Storage.Sync {
+	case "always", "never":
+	case "interval":
+		if c.Storage.SyncInterval <= 0 {
+			bad("storage.sync_interval", "must be positive when storage.sync is interval, got %v", c.Storage.SyncInterval)
+		}
+	default:
+		bad("storage.sync", "must be always, interval or never, got %q", c.Storage.Sync)
+	}
+	if c.Storage.MemtableBytes < 64<<10 || c.Storage.MemtableBytes > 1<<30 {
+		bad("storage.memtable_bytes", "must be between %d and %d, got %d", 64<<10, 1<<30, c.Storage.MemtableBytes)
+	}
 	const maxLimit = 1 << 30 // keeps derived message-size limits far from int overflow
 	if c.Limits.MaxKeyBytes < 1 || c.Limits.MaxKeyBytes > maxLimit {
 		bad("limits.max_key_bytes", "must be between 1 and %d, got %d", maxLimit, c.Limits.MaxKeyBytes)
@@ -156,6 +189,14 @@ var settings = []setting{
 		func(c *Config) *string { return &c.Server.GRPCAddr }),
 	durationSetting("server.shutdown_timeout", "how long graceful shutdown waits for in-flight requests",
 		func(c *Config) *time.Duration { return &c.Server.ShutdownTimeout }),
+	stringSetting("storage.dir", "data directory (required)",
+		func(c *Config) *string { return &c.Storage.Dir }),
+	stringSetting("storage.sync", "WAL sync policy: always, interval or never",
+		func(c *Config) *string { return &c.Storage.Sync }),
+	durationSetting("storage.sync_interval", "fsync period when storage.sync is interval",
+		func(c *Config) *time.Duration { return &c.Storage.SyncInterval }),
+	intSetting("storage.memtable_bytes", "memtable size that starts a new memtable and WAL segment, in bytes",
+		func(c *Config) *int { return &c.Storage.MemtableBytes }),
 	intSetting("limits.max_key_bytes", "largest accepted key, in bytes",
 		func(c *Config) *int { return &c.Limits.MaxKeyBytes }),
 	intSetting("limits.max_value_bytes", "largest accepted value, in bytes",

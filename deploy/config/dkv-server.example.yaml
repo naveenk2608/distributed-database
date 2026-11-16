@@ -7,6 +7,19 @@ server:
   grpc_addr: "127.0.0.1:7070"
   shutdown_timeout: 10s
 
+storage:
+  # Required. Data directory; created if missing. One engine per node until
+  # Phase 5 adds one per shard.
+  dir: "/var/lib/dkv"
+  # WAL sync policy. always: fsync before acknowledging (group commit shares
+  # one fsync between concurrent writes). interval: fsync every sync_interval;
+  # a power loss can lose that interval's acknowledged writes. never: for
+  # measuring fsync cost only.
+  sync: always
+  sync_interval: 10ms
+  # Memtable size at which a new memtable and WAL segment start.
+  memtable_bytes: 4194304
+
 limits:
   max_key_bytes: 4096
   max_value_bytes: 1048576
