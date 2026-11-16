@@ -44,6 +44,9 @@ type Config struct {
 	PingInterval time.Duration
 	PingTimeout  time.Duration
 	DownAfter    time.Duration
+	// Placement is this node's placement fingerprint; peers that report a
+	// different one are flagged in status.
+	Placement string
 }
 
 // Membership pings the bootstrap peers and reports their state. It is
@@ -85,6 +88,7 @@ func New(cfg Config, pool *transport.Pool, clock Clock, log *slog.Logger) *Membe
 		ClusterName:       cfg.ClusterName,
 		InternalAddr:      cfg.Advertise,
 		StartedAtUnixNano: m.started.UnixNano(),
+		Placement:         cfg.Placement,
 	}
 	addrs := slices.Clone(cfg.Peers)
 	if cfg.Advertise != "" && !slices.Contains(addrs, cfg.Advertise) {
@@ -167,6 +171,10 @@ func (m *Membership) pingOnce(ctx context.Context, addr string) bool {
 		p.everSeen, p.lastSeen = true, now
 		p.rtt = now.Sub(start)
 		p.failures, p.lastErr = 0, ""
+		if theirs := p.node.GetPlacement(); theirs != m.cfg.Placement {
+			// Reachable, so still up, but it would route keys elsewhere.
+			p.lastErr = fmt.Sprintf("placement differs: peer has %q, this node %q", theirs, m.cfg.Placement)
+		}
 	}
 	if st := m.stateLocked(p, now); st != p.lastState {
 		m.log.Info("peer state changed", "peer", addr, "node_id", p.node.GetNodeId(),

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os/exec"
 	"strings"
@@ -77,6 +78,22 @@ func TestThreeProcessesFormACluster(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Log("all three processes see each other up")
+
+	// Any process accepts any key: write through one, read through the
+	// others, for keys spread over many shards.
+	for k := range 12 {
+		// Versions count per shard, so only check that the put succeeded.
+		key := fmt.Sprintf("city-%d", k)
+		cmd := exec.Command(ctlBin, "--addr="+procs[k%3].addr, "put", key, "v"+key)
+		cmd.Env = []string{}
+		if out, err := cmd.Output(); err != nil || !strings.HasPrefix(string(out), "OK (version ") {
+			t.Fatalf("put %s via node %d: %q, %v", key, k%3, out, err)
+		}
+	}
+	for k := range 12 {
+		key := fmt.Sprintf("city-%d", k)
+		ctl(t, ctlBin, procs[(k+1)%3].addr, 0, "v"+key+"\n", "get", key)
+	}
 
 	procs[2].kill()
 	killed := time.Now()

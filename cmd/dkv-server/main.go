@@ -53,10 +53,12 @@ func run(ctx context.Context, args, environ []string, logOut io.Writer) int {
 		return 1
 	}
 	log = log.With("node_id", n.ID())
-	log.Info("storage engine open", "dir", cfg.Storage.Dir, "sync", cfg.Storage.Sync, "last_seq", n.DB().LastSeq())
+	if db := n.DB(); db != nil {
+		log.Info("storage engine open", "dir", cfg.Storage.Dir, "sync", cfg.Storage.Sync, "last_seq", db.LastSeq())
+	}
 	closeDB := func() {
-		if err := n.DB().Close(); err != nil {
-			log.Error("closing storage engine", "error", err)
+		if err := n.Close(); err != nil {
+			log.Error("closing storage engines", "error", err)
 		}
 	}
 	public, err := net.Listen("tcp", cfg.Server.GRPCAddr)

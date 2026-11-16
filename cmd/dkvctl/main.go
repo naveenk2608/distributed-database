@@ -4,6 +4,7 @@
 //	dkvctl [flags] get <key>
 //	dkvctl [flags] delete <key>
 //	dkvctl [flags] status
+//	dkvctl [flags] shards
 //
 // Flags go before the command. Exit status follows grep: 0 on success,
 // 1 when get finds no value, 2 on any error.
@@ -92,6 +93,7 @@ Commands:
   get <key>           print the value of key (exit status 1 if not found)
   delete <key>        delete key; prints the version of the delete
   status              show the node's view of the cluster
+  shards              show where each shard is placed and the node's local replicas
 
 Flags:
 `)
@@ -113,7 +115,7 @@ Flags:
 	if len(cmd) == 0 {
 		return usage("missing command")
 	}
-	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "status": 0}
+	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "status": 0, "shards": 0}
 	n, ok := wantArgs[cmd[0]]
 	if !ok {
 		return usage(fmt.Sprintf("unknown command %q", cmd[0]))
@@ -141,6 +143,15 @@ Flags:
 			return exitError
 		}
 		printStatus(out, resp, time.Now())
+		return exitOK
+	}
+	if cmd[0] == "shards" {
+		resp, err := c.ShardMap(ctx)
+		if err != nil {
+			out.errorf("%v", err)
+			return exitError
+		}
+		printShards(out, resp)
 		return exitOK
 	}
 	key := []byte(cmd[1])
@@ -201,6 +212,28 @@ func printStatus(out *output, resp *dkvv1.ClusterStatusResponse, now time.Time) 
 		}
 		state := strings.TrimPrefix(m.GetState().String(), "MEMBER_STATE_")
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.GetAddr(), id, state, seen, rtt, m.GetLastError())
+	}
+	_ = tw.Flush() // writes to a strings.Builder cannot fail
+	out.result("%s", b.String())
+}
+
+// printShards writes one line per shard: its primary, all replicas, and
+// whether the node holds a replica (with that replica's last sequence
+// number).
+func printShards(out *output, resp *dkvv1.ShardMapResponse) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d shards, replication factor %d\n", resp.GetShardCount(), resp.GetReplicationFactor())
+	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "SHARD\tPRIMARY\tREPLICAS\tLOCAL\tLAST SEQ")
+	for _, s := range resp.GetShards() {
+		primary, local, seq := "-", "no", "-"
+		if r := s.GetReplicas(); len(r) > 0 {
+			primary = r[0]
+		}
+		if s.GetLocal() {
+			local, seq = "yes", fmt.Sprint(s.GetLastSeq())
+		}
+		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", s.GetShard(), primary, strings.Join(s.GetReplicas(), ","), local, seq)
 	}
 	_ = tw.Flush() // writes to a strings.Builder cannot fail
 	out.result("%s", b.String())

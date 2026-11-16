@@ -85,7 +85,7 @@ log:
 		Cluster:   Default().Cluster,
 		Transport: Default().Transport,
 		Storage: Storage{Dir: "/flag/dir", Sync: "interval", SyncInterval: 25 * time.Millisecond, // flag > env > file
-			MemtableBytes: 4 << 20}, // default
+			MemtableBytes: 4 << 20, BlockCacheBytes: 64 << 20, CompactionConcurrency: 2}, // defaults
 		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200}, // env > file; file > default
 		Log:    Log{Level: "debug", Format: "json"},          // file; default
 	}
@@ -140,6 +140,10 @@ func TestRejectsMistakes(t *testing.T) {
 		{name: "advertise without internal address", args: []string{"--cluster.advertise-addr=10.0.0.1:7100"}, want: "cluster.advertise_addr: set without cluster.internal_addr"},
 		{name: "peer with port 0", args: []string{"--cluster.internal-addr=127.0.0.1:7100", "--cluster.peers=127.0.0.1:0"}, want: "only a listen address may pick a free port"},
 		{name: "duplicate peer", args: []string{"--cluster.internal-addr=127.0.0.1:7100", "--cluster.peers=a:1,a:1"}, want: `"a:1" is listed twice`},
+		{name: "self missing from peers", args: []string{"--cluster.internal-addr=10.0.0.9:7100", "--cluster.peers=10.0.0.1:7100,10.0.0.2:7100,10.0.0.3:7100"}, want: `must include this node's advertise address "10.0.0.9:7100"`},
+		{name: "replication factor above peers", args: []string{"--cluster.internal-addr=10.0.0.1:7100", "--cluster.peers=10.0.0.1:7100,10.0.0.2:7100"}, want: "cluster.replication_factor: 3 needs at least that many peers, have 2"},
+		{name: "zero shards", args: []string{"--cluster.shards=0"}, want: "cluster.shards"},
+		{name: "tiny block cache", args: []string{"--storage.block-cache-bytes=1024"}, want: "storage.block_cache_bytes"},
 		{name: "same port for both APIs", args: []string{"--server.grpc-addr=127.0.0.1:7000", "--cluster.internal-addr=127.0.0.1:7000"}, want: "must differ from server.grpc_addr"},
 		{name: "ping timeout above interval", args: []string{"--cluster.ping-timeout=2s"}, want: "cluster.ping_timeout"},
 		{name: "down window not above interval", args: []string{"--cluster.down-after=1s"}, want: "cluster.down_after: must be longer"},
@@ -238,7 +242,7 @@ func TestExampleConfigLoads(t *testing.T) {
 // TestClusterPeersFromEachSource checks the list setting in YAML (a
 // sequence), the environment and flags (comma-separated).
 func TestClusterPeersFromEachSource(t *testing.T) {
-	base := append([]string{"--cluster.internal-addr=10.0.0.1:7100"}, required...)
+	base := append([]string{"--cluster.internal-addr=10.0.0.1:7100", "--cluster.replication-factor=2"}, required...)
 	file := writeFile(t, "cluster:\n  peers: [\"10.0.0.1:7100\", \"10.0.0.2:7100\"]\n")
 	for _, tc := range []struct {
 		name string
@@ -248,7 +252,7 @@ func TestClusterPeersFromEachSource(t *testing.T) {
 	}{
 		{"yaml", append([]string{"--config", file}, base...), nil, []string{"10.0.0.1:7100", "10.0.0.2:7100"}},
 		{"env", base, []string{"DKV_CLUSTER_PEERS=10.0.0.1:7100, 10.0.0.3:7100,"}, []string{"10.0.0.1:7100", "10.0.0.3:7100"}},
-		{"flag beats env", append(base, "--cluster.peers=n1:1,n2:2,n3:3"), []string{"DKV_CLUSTER_PEERS=x:1"}, []string{"n1:1", "n2:2", "n3:3"}},
+		{"flag beats env", append(base, "--cluster.peers=10.0.0.1:7100,n2:2,n3:3"), []string{"DKV_CLUSTER_PEERS=x:1"}, []string{"10.0.0.1:7100", "n2:2", "n3:3"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := load(t, tc.args, tc.env)

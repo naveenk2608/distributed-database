@@ -31,8 +31,11 @@ type NodeInfo struct {
 	// internal_addr is the address other nodes use to reach this node.
 	InternalAddr      string `protobuf:"bytes,3,opt,name=internal_addr,json=internalAddr,proto3" json:"internal_addr,omitempty"`
 	StartedAtUnixNano int64  `protobuf:"varint,4,opt,name=started_at_unix_nano,json=startedAtUnixNano,proto3" json:"started_at_unix_nano,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// placement fingerprints the shard count, replication factor and member
+	// list; nodes whose fingerprints differ would place shards differently.
+	Placement     string `protobuf:"bytes,5,opt,name=placement,proto3" json:"placement,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NodeInfo) Reset() {
@@ -91,6 +94,13 @@ func (x *NodeInfo) GetStartedAtUnixNano() int64 {
 		return x.StartedAtUnixNano
 	}
 	return 0
+}
+
+func (x *NodeInfo) GetPlacement() string {
+	if x != nil {
+		return x.Placement
+	}
+	return ""
 }
 
 type PingRequest struct {
@@ -181,22 +191,315 @@ func (x *PingResponse) GetNode() *NodeInfo {
 	return nil
 }
 
+type ForwardRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Shard uint32                 `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	// Types that are valid to be assigned to Op:
+	//
+	//	*ForwardRequest_Put
+	//	*ForwardRequest_Get
+	//	*ForwardRequest_Delete
+	Op            isForwardRequest_Op `protobuf_oneof:"op"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardRequest) Reset() {
+	*x = ForwardRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardRequest) ProtoMessage() {}
+
+func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardRequest.ProtoReflect.Descriptor instead.
+func (*ForwardRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ForwardRequest) GetShard() uint32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *ForwardRequest) GetOp() isForwardRequest_Op {
+	if x != nil {
+		return x.Op
+	}
+	return nil
+}
+
+func (x *ForwardRequest) GetPut() *PutRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Put); ok {
+			return x.Put
+		}
+	}
+	return nil
+}
+
+func (x *ForwardRequest) GetGet() *GetRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Get); ok {
+			return x.Get
+		}
+	}
+	return nil
+}
+
+func (x *ForwardRequest) GetDelete() *DeleteRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Delete); ok {
+			return x.Delete
+		}
+	}
+	return nil
+}
+
+type isForwardRequest_Op interface {
+	isForwardRequest_Op()
+}
+
+type ForwardRequest_Put struct {
+	Put *PutRequest `protobuf:"bytes,2,opt,name=put,proto3,oneof"`
+}
+
+type ForwardRequest_Get struct {
+	Get *GetRequest `protobuf:"bytes,3,opt,name=get,proto3,oneof"`
+}
+
+type ForwardRequest_Delete struct {
+	Delete *DeleteRequest `protobuf:"bytes,4,opt,name=delete,proto3,oneof"`
+}
+
+func (*ForwardRequest_Put) isForwardRequest_Op() {}
+
+func (*ForwardRequest_Get) isForwardRequest_Op() {}
+
+func (*ForwardRequest_Delete) isForwardRequest_Op() {}
+
+type ForwardResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*ForwardResponse_Put
+	//	*ForwardResponse_Get
+	//	*ForwardResponse_Delete
+	//	*ForwardResponse_NotOwner
+	Result        isForwardResponse_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardResponse) Reset() {
+	*x = ForwardResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardResponse) ProtoMessage() {}
+
+func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
+func (*ForwardResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ForwardResponse) GetResult() isForwardResponse_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetPut() *PutResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_Put); ok {
+			return x.Put
+		}
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetGet() *GetResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_Get); ok {
+			return x.Get
+		}
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetDelete() *DeleteResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_Delete); ok {
+			return x.Delete
+		}
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetNotOwner() *NotOwner {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_NotOwner); ok {
+			return x.NotOwner
+		}
+	}
+	return nil
+}
+
+type isForwardResponse_Result interface {
+	isForwardResponse_Result()
+}
+
+type ForwardResponse_Put struct {
+	Put *PutResponse `protobuf:"bytes,1,opt,name=put,proto3,oneof"`
+}
+
+type ForwardResponse_Get struct {
+	Get *GetResponse `protobuf:"bytes,2,opt,name=get,proto3,oneof"`
+}
+
+type ForwardResponse_Delete struct {
+	Delete *DeleteResponse `protobuf:"bytes,3,opt,name=delete,proto3,oneof"`
+}
+
+type ForwardResponse_NotOwner struct {
+	NotOwner *NotOwner `protobuf:"bytes,4,opt,name=not_owner,json=notOwner,proto3,oneof"`
+}
+
+func (*ForwardResponse_Put) isForwardResponse_Result() {}
+
+func (*ForwardResponse_Get) isForwardResponse_Result() {}
+
+func (*ForwardResponse_Delete) isForwardResponse_Result() {}
+
+func (*ForwardResponse_NotOwner) isForwardResponse_Result() {}
+
+// NotOwner says the receiving node does not serve the shard.
+type NotOwner struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Shard uint32                 `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	// owner_hint is the internal address of the node the receiver believes
+	// owns the shard, or empty.
+	OwnerHint     string `protobuf:"bytes,2,opt,name=owner_hint,json=ownerHint,proto3" json:"owner_hint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NotOwner) Reset() {
+	*x = NotOwner{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotOwner) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotOwner) ProtoMessage() {}
+
+func (x *NotOwner) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotOwner.ProtoReflect.Descriptor instead.
+func (*NotOwner) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *NotOwner) GetShard() uint32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *NotOwner) GetOwnerHint() string {
+	if x != nil {
+		return x.OwnerHint
+	}
+	return ""
+}
+
 var File_dkv_v1_cluster_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\x14dkv/v1/cluster.proto\x12\x06dkv.v1\"\x9c\x01\n" +
+	"\x14dkv/v1/cluster.proto\x12\x06dkv.v1\x1a\x0fdkv/v1/kv.proto\"\xba\x01\n" +
 	"\bNodeInfo\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
 	"\fcluster_name\x18\x02 \x01(\tR\vclusterName\x12#\n" +
 	"\rinternal_addr\x18\x03 \x01(\tR\finternalAddr\x12/\n" +
-	"\x14started_at_unix_nano\x18\x04 \x01(\x03R\x11startedAtUnixNano\"3\n" +
+	"\x14started_at_unix_nano\x18\x04 \x01(\x03R\x11startedAtUnixNano\x12\x1c\n" +
+	"\tplacement\x18\x05 \x01(\tR\tplacement\"3\n" +
 	"\vPingRequest\x12$\n" +
 	"\x04from\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04from\"4\n" +
 	"\fPingResponse\x12$\n" +
-	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node2D\n" +
+	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\"\xad\x01\n" +
+	"\x0eForwardRequest\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\rR\x05shard\x12&\n" +
+	"\x03put\x18\x02 \x01(\v2\x12.dkv.v1.PutRequestH\x00R\x03put\x12&\n" +
+	"\x03get\x18\x03 \x01(\v2\x12.dkv.v1.GetRequestH\x00R\x03get\x12/\n" +
+	"\x06delete\x18\x04 \x01(\v2\x15.dkv.v1.DeleteRequestH\x00R\x06deleteB\x04\n" +
+	"\x02op\"\xd0\x01\n" +
+	"\x0fForwardResponse\x12'\n" +
+	"\x03put\x18\x01 \x01(\v2\x13.dkv.v1.PutResponseH\x00R\x03put\x12'\n" +
+	"\x03get\x18\x02 \x01(\v2\x13.dkv.v1.GetResponseH\x00R\x03get\x120\n" +
+	"\x06delete\x18\x03 \x01(\v2\x16.dkv.v1.DeleteResponseH\x00R\x06delete\x12/\n" +
+	"\tnot_owner\x18\x04 \x01(\v2\x10.dkv.v1.NotOwnerH\x00R\bnotOwnerB\b\n" +
+	"\x06result\"?\n" +
+	"\bNotOwner\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x1d\n" +
+	"\n" +
+	"owner_hint\x18\x02 \x01(\tR\townerHint2\x80\x01\n" +
 	"\x0fInternalService\x121\n" +
-	"\x04Ping\x12\x13.dkv.v1.PingRequest\x1a\x14.dkv.v1.PingResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
+	"\x04Ping\x12\x13.dkv.v1.PingRequest\x1a\x14.dkv.v1.PingResponse\x12:\n" +
+	"\aForward\x12\x16.dkv.v1.ForwardRequest\x1a\x17.dkv.v1.ForwardResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
 
 var (
 	file_dkv_v1_cluster_proto_rawDescOnce sync.Once
@@ -210,22 +513,40 @@ func file_dkv_v1_cluster_proto_rawDescGZIP() []byte {
 	return file_dkv_v1_cluster_proto_rawDescData
 }
 
-var file_dkv_v1_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_dkv_v1_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_dkv_v1_cluster_proto_goTypes = []any{
-	(*NodeInfo)(nil),     // 0: dkv.v1.NodeInfo
-	(*PingRequest)(nil),  // 1: dkv.v1.PingRequest
-	(*PingResponse)(nil), // 2: dkv.v1.PingResponse
+	(*NodeInfo)(nil),        // 0: dkv.v1.NodeInfo
+	(*PingRequest)(nil),     // 1: dkv.v1.PingRequest
+	(*PingResponse)(nil),    // 2: dkv.v1.PingResponse
+	(*ForwardRequest)(nil),  // 3: dkv.v1.ForwardRequest
+	(*ForwardResponse)(nil), // 4: dkv.v1.ForwardResponse
+	(*NotOwner)(nil),        // 5: dkv.v1.NotOwner
+	(*PutRequest)(nil),      // 6: dkv.v1.PutRequest
+	(*GetRequest)(nil),      // 7: dkv.v1.GetRequest
+	(*DeleteRequest)(nil),   // 8: dkv.v1.DeleteRequest
+	(*PutResponse)(nil),     // 9: dkv.v1.PutResponse
+	(*GetResponse)(nil),     // 10: dkv.v1.GetResponse
+	(*DeleteResponse)(nil),  // 11: dkv.v1.DeleteResponse
 }
 var file_dkv_v1_cluster_proto_depIdxs = []int32{
-	0, // 0: dkv.v1.PingRequest.from:type_name -> dkv.v1.NodeInfo
-	0, // 1: dkv.v1.PingResponse.node:type_name -> dkv.v1.NodeInfo
-	1, // 2: dkv.v1.InternalService.Ping:input_type -> dkv.v1.PingRequest
-	2, // 3: dkv.v1.InternalService.Ping:output_type -> dkv.v1.PingResponse
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0,  // 0: dkv.v1.PingRequest.from:type_name -> dkv.v1.NodeInfo
+	0,  // 1: dkv.v1.PingResponse.node:type_name -> dkv.v1.NodeInfo
+	6,  // 2: dkv.v1.ForwardRequest.put:type_name -> dkv.v1.PutRequest
+	7,  // 3: dkv.v1.ForwardRequest.get:type_name -> dkv.v1.GetRequest
+	8,  // 4: dkv.v1.ForwardRequest.delete:type_name -> dkv.v1.DeleteRequest
+	9,  // 5: dkv.v1.ForwardResponse.put:type_name -> dkv.v1.PutResponse
+	10, // 6: dkv.v1.ForwardResponse.get:type_name -> dkv.v1.GetResponse
+	11, // 7: dkv.v1.ForwardResponse.delete:type_name -> dkv.v1.DeleteResponse
+	5,  // 8: dkv.v1.ForwardResponse.not_owner:type_name -> dkv.v1.NotOwner
+	1,  // 9: dkv.v1.InternalService.Ping:input_type -> dkv.v1.PingRequest
+	3,  // 10: dkv.v1.InternalService.Forward:input_type -> dkv.v1.ForwardRequest
+	2,  // 11: dkv.v1.InternalService.Ping:output_type -> dkv.v1.PingResponse
+	4,  // 12: dkv.v1.InternalService.Forward:output_type -> dkv.v1.ForwardResponse
+	11, // [11:13] is the sub-list for method output_type
+	9,  // [9:11] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_cluster_proto_init() }
@@ -233,13 +554,25 @@ func file_dkv_v1_cluster_proto_init() {
 	if File_dkv_v1_cluster_proto != nil {
 		return
 	}
+	file_dkv_v1_kv_proto_init()
+	file_dkv_v1_cluster_proto_msgTypes[3].OneofWrappers = []any{
+		(*ForwardRequest_Put)(nil),
+		(*ForwardRequest_Get)(nil),
+		(*ForwardRequest_Delete)(nil),
+	}
+	file_dkv_v1_cluster_proto_msgTypes[4].OneofWrappers = []any{
+		(*ForwardResponse_Put)(nil),
+		(*ForwardResponse_Get)(nil),
+		(*ForwardResponse_Delete)(nil),
+		(*ForwardResponse_NotOwner)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_cluster_proto_rawDesc), len(file_dkv_v1_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

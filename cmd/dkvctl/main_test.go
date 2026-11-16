@@ -144,3 +144,19 @@ func TestStatusStandalone(t *testing.T) {
 		t.Errorf("status with an argument: exit %d", r.code)
 	}
 }
+
+func TestShardsStandalone(t *testing.T) {
+	node := servertest.Start(t, nil)
+	r := ctl(t, nil, "--addr="+node.Addr, "put", "k", "v")
+	if r.code != exitOK {
+		t.Fatal(r.stderr)
+	}
+	r = ctl(t, nil, "--addr="+node.Addr, "shards")
+	if r.code != exitOK || !strings.HasPrefix(r.stdout, "1 shards, replication factor 1\n") {
+		t.Fatalf("shards: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
+	if len(lines) != 3 || !strings.Contains(lines[2], "yes") || !strings.HasSuffix(strings.TrimSpace(lines[2]), "1") {
+		t.Errorf("shards output:\n%s", r.stdout)
+	}
+}

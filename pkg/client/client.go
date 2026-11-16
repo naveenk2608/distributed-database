@@ -86,3 +86,13 @@ func (c *Client) ClusterStatus(ctx context.Context) (*dkvv1.ClusterStatusRespons
 	}
 	return resp, nil
 }
+
+// ShardMap returns where every shard is placed and, for the shards the node
+// holds, the state of its local replica.
+func (c *Client) ShardMap(ctx context.Context) (*dkvv1.ShardMapResponse, error) {
+	resp, err := dkvv1.NewAdminServiceClient(c.conn).ShardMap(ctx, &dkvv1.ShardMapRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("dkv: shard map: %w", err)
+	}
+	return resp, nil
+}

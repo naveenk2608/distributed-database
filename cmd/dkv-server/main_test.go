@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -101,4 +102,43 @@ func boundAddr(logs string) string {
 		}
 	}
 	return ""
+}
+
+// TestRunAsSingleNodeCluster starts the binary's run function in cluster
+// mode (a one-node cluster), which takes a different path through startup
+// and shutdown than standalone mode.
+func TestRunAsSingleNodeCluster(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal := l.Addr().String()
+	_ = l.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var logs syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, []string{"--server.grpc-addr=127.0.0.1:0", "--log.format=json",
+			"--cluster.internal-addr=" + internal, "--cluster.peers=" + internal,
+			"--cluster.replication-factor=1", "--cluster.shards=4", "--storage.dir=" + t.TempDir()}, nil, &logs)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for boundAddr(logs.String()) == "" {
+		select {
+		case code := <-done:
+			t.Fatalf("run exited with %d:\n%s", code, logs.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cluster node did not start:\n%s", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), `"msg":"shard engines open"`) {
+		t.Errorf("no shard engines in the logs:\n%s", logs.String())
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("run returned %d after cancel:\n%s", code, logs.String())
+	}
 }

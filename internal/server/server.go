@@ -28,16 +28,16 @@ type Server struct {
 	grpc *grpc.Server
 }
 
-// New returns a server for backend that answers cluster status from
-// status. It does not listen until Run.
-func New(cfg *config.Config, backend Backend, status StatusSource, log *slog.Logger) *Server {
+// New returns a server for backend that answers the operator API from
+// admin. It does not listen until Run.
+func New(cfg *config.Config, backend Backend, admin Admin, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg.Server, log: log}
 	s.grpc = grpc.NewServer(
 		grpc.MaxRecvMsgSize(cfg.Limits.MaxKeyBytes+cfg.Limits.MaxValueBytes+grpcOverheadBytes),
 		grpc.ChainUnaryInterceptor(s.logRequests),
 	)
 	dkvv1.RegisterKVServiceServer(s.grpc, &kvService{backend: backend, limits: cfg.Limits})
-	dkvv1.RegisterAdminServiceServer(s.grpc, &adminService{status: status})
+	dkvv1.RegisterAdminServiceServer(s.grpc, &adminService{admin: admin})
 	return s
 }
 
@@ -132,12 +132,12 @@ func (k *kvService) Get(ctx context.Context, req *dkvv1.GetRequest) (*dkvv1.GetR
 	if err := k.checkKey(req.GetKey()); err != nil {
 		return nil, err
 	}
-	v, ver, err := k.backend.Get(ctx, req.GetKey())
-	if errors.Is(err, ErrNotFound) {
-		return &dkvv1.GetResponse{Found: false}, nil
-	}
+	v, ver, found, err := k.backend.Get(ctx, req.GetKey())
 	if err != nil {
 		return nil, toStatus(err)
+	}
+	if !found {
+		return &dkvv1.GetResponse{Found: false}, nil
 	}
 	return &dkvv1.GetResponse{Found: true, Value: v, Version: ver}, nil
 }
@@ -155,13 +155,14 @@ func (k *kvService) Delete(ctx context.Context, req *dkvv1.DeleteRequest) (*dkvv
 
 // toStatus maps backend errors to gRPC status errors.
 func toStatus(err error) error {
+	if s, ok := status.FromError(err); ok {
+		return s.Err() // already a status the client can act on
+	}
 	switch {
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
-	case errors.Is(err, ErrUnavailable):
-		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

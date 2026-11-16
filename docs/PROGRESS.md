@@ -145,7 +145,8 @@ Microbenchmarks (`make bench`, i3-1115G4, `t.TempDir()` on tmpfs, so fsync is fr
 ## Phase 4: Multi-node communication and cluster formation
 
 Status: **done except the Docker Compose half of gate item 1**, which needs Docker (see
-"Needs from you"). Everything else passed locally on 2026-11-16.
+"Needs from you"). Everything else passed locally on 2026-11-16; CI run 43932653619 on main
+at 2e82939 (`check`, `crash`, `storage-gate`) is green.
 
 ### Gate
 
@@ -195,4 +196,37 @@ persistence and damaged-ID detection; `dkvctl status` output.
 - The KV API still uses one local engine per node; sharding and routing arrive in Phase 5.
 - The Docker image and Compose file have never been built or run (Docker unavailable).
 - Not done: an independent second review of the Phase 4 diff against the plan.
+
+## Phase 5: Consistent hashing, sharding and data placement
+
+Status: **done.** All three gate items passed locally on 2026-11-16.
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| A balance test shows shard counts per node within a stated tolerance of the mean | `internal/placement` `TestBalance`. Stated tolerance (ADR 0023): the worst node's replica count is within `3·sqrt((1−p)/(S·p)) + 5%` of the mean, p = RF/N, for at least 95% of random member sets. Checked over 1,000 random member sets for each of S ∈ {64, 256} × N ∈ {3, 4, 5, 7, 10}, RF 3. Default S = 64: p95 0% / 20.8% / 27.6% / 38.5% / 56.3% against tolerances 5% / 26.7% / 35.6% / 48.3% / 62.3%; S = 256: 0% / 14.1% / 17.2% / 23.0% / 28.9% against 5% / 15.8% / 20.3% / 26.7% / 33.6%. | Passed |
+| Adding a node to N nodes moves close to 1/(N+1) of shard assignments and no more | `internal/placement` `TestAddingANodeMovesOnlyItsShare`, 400 random clusters per N: on every trial every changed replica set gains only the new member and loses one old member, and primaries move only to the new member (nothing shuffles between old members). Average moved: 25.1%, 20.0%, 16.6%, 12.4%, 10.0% for N = 3, 4, 5, 7, 9 against optimal 25.0%, 20.0%, 16.7%, 12.5%, 10.0% (required within 10%). | Passed |
+| Any node accepts any key and the request reaches the owner | `test/integration` `TestAnyNodeAcceptsAnyKey`: 4 in-process nodes, 16 shards, RF 2. Every node computes the same placement as `placement.Compute`; 400 keys are written through the four nodes in turn and read back through every node; afterwards each shard's primary has applied exactly the writes to that shard's keys, each secondary none, and nodes outside the replica set hold no replica. `test/e2e` `TestThreeProcessesFormACluster` writes through one real process and reads through another. `internal/router` tests: requests reach the owner via any node, a NotOwner hint is followed to the right node, a non-owner refuses forwarded requests, a dead owner fails within the caller's deadline. | Passed |
+
+### Implemented and tested
+
+- **`internal/placement`:** `ShardOf` (xxhash64 mod S); hash ring with 128 virtual nodes per member; deterministic replica sets of RF distinct members (first is primary), independent of member order; `Fingerprint` (ADR 0023).
+- **`internal/router`:** serves a key's shard locally when this node is the primary, otherwise forwards with `InternalService.Forward`; one hop per attempt; NotOwner answers with an owner hint; retries on `Unavailable` and NotOwner with jittered exponential backoff until the caller's deadline, at most 10 attempts (ADR 0024).
+- **`internal/kvstore`:** per-engine Put/Get/Delete shared by the standalone backend and the router; engine errors become gRPC status codes (`Unavailable`, `DataLoss`).
+- **`internal/node`:** cluster mode opens one engine per shard replica held in `<storage.dir>/shards/NNNN/` with a node-wide block cache and compaction pool (ADR 0004), a node directory lock, and a `CLUSTER` marker that refuses a changed cluster name, shard count or replication factor and keeps standalone and cluster layouts apart.
+- **`internal/config`:** `cluster.shards` (default 64), `cluster.replication_factor` (default 3), `storage.block_cache_bytes`, `storage.compaction_concurrency`; a cluster node's advertise address must appear in `cluster.peers`, and RF cannot exceed the peer count.
+- **Membership:** nodes exchange a placement fingerprint; a peer with a different one is flagged in status.
+- **Protocol and tools:** `InternalService.Forward`, `AdminService.ShardMap`, `dkvctl shards`, `client.ShardMap`.
+- **Docs:** ADRs 0004, 0023, 0024.
+
+Other tests: a shard's keys fail within the deadline while its owner is down and all other keys keep working (`TestOwnerDownAffectsOnlyItsShards`); data survives restarting every node (`TestShardDataSurvivesRestart`); a changed shard count, or a standalone start on cluster data, is refused (`TestClusterSettingsAreFixedAtBootstrap`); a misconfigured node's placement is flagged (`TestPlacementMismatchIsVisible`); `dkv-server` starts and stops as a one-node cluster (`TestRunAsSingleNodeCluster`, which would have caught a startup panic found by the e2e test).
+
+### Known limitations
+
+- Only a shard's primary serves it; while it is down its keys are unavailable. Phase 6 replaces this with Raft groups on the same replica sets.
+- A retried write can be applied twice if a forward fails after the owner applied it; Phase 6 sessions make retries exactly-once.
+- Placement members are configured addresses; changing the peer list changes placement without moving data (Phase 7).
+- With the default 64 shards, primaries can be quite uneven (the busiest node may serve about twice its share); Phase 7's leader balancing addresses it.
+- Not done: an independent second review of the Phase 5 diff against the plan.
 

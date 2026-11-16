@@ -73,6 +73,13 @@ type Cluster struct {
 	// DownAfter is how long a peer may go without answering before it is
 	// reported down.
 	DownAfter time.Duration `yaml:"down_after"`
+	// Shards is the number of shards keys are hashed into. It is fixed when
+	// the cluster is bootstrapped and recorded in every node's data
+	// directory; a node refuses to start with a different value.
+	Shards int `yaml:"shards"`
+	// ReplicationFactor is the number of replicas of each shard. Recorded
+	// like Shards.
+	ReplicationFactor int `yaml:"replication_factor"`
 }
 
 // Transport configures the gRPC connections between nodes.
@@ -99,8 +106,15 @@ type Storage struct {
 	// SyncInterval is the fsync period when Sync is interval.
 	SyncInterval time.Duration `yaml:"sync_interval"`
 	// MemtableBytes is the memtable size at which a new memtable and WAL
-	// segment start.
+	// segment start. A cluster node has one engine per shard replica it
+	// holds, each with its own memtables.
 	MemtableBytes int `yaml:"memtable_bytes"`
+	// BlockCacheBytes is the size of the block cache shared by every engine
+	// on the node.
+	BlockCacheBytes int `yaml:"block_cache_bytes"`
+	// CompactionConcurrency caps how many engines on the node compact at
+	// once.
+	CompactionConcurrency int `yaml:"compaction_concurrency"`
 }
 
 // Limits bounds request sizes.
@@ -121,12 +135,14 @@ type Log struct {
 // or paths: those must always come from the operator.
 func Default() Config {
 	return Config{
-		Server:    Server{ShutdownTimeout: 10 * time.Second},
-		Cluster:   Cluster{Name: "dkv", PingInterval: time.Second, PingTimeout: 500 * time.Millisecond, DownAfter: 5 * time.Second},
+		Server: Server{ShutdownTimeout: 10 * time.Second},
+		Cluster: Cluster{Name: "dkv", PingInterval: time.Second, PingTimeout: 500 * time.Millisecond, DownAfter: 5 * time.Second,
+			Shards: 64, ReplicationFactor: 3},
 		Transport: Transport{DialTimeout: 2 * time.Second, KeepaliveTime: 10 * time.Second, KeepaliveTimeout: 3 * time.Second},
-		Storage:   Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20},
-		Limits:    Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
-		Log:       Log{Level: "info", Format: "json"},
+		Storage: Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20,
+			BlockCacheBytes: 64 << 20, CompactionConcurrency: 2},
+		Limits: Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
+		Log:    Log{Level: "info", Format: "json"},
 	}
 }
 
@@ -163,6 +179,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.MemtableBytes < 64<<10 || c.Storage.MemtableBytes > 1<<30 {
 		bad("storage.memtable_bytes", "must be between %d and %d, got %d", 64<<10, 1<<30, c.Storage.MemtableBytes)
+	}
+	if c.Storage.BlockCacheBytes < 1<<20 {
+		bad("storage.block_cache_bytes", "must be at least %d, got %d", 1<<20, c.Storage.BlockCacheBytes)
+	}
+	if c.Storage.CompactionConcurrency < 1 {
+		bad("storage.compaction_concurrency", "must be at least 1, got %d", c.Storage.CompactionConcurrency)
 	}
 	const maxLimit = 1 << 30 // keeps derived message-size limits far from int overflow
 	if c.Limits.MaxKeyBytes < 1 || c.Limits.MaxKeyBytes > maxLimit {
@@ -259,6 +281,10 @@ var settings = []setting{
 		func(c *Config) *time.Duration { return &c.Cluster.PingTimeout }),
 	durationSetting("cluster.down_after", "silence after which a peer is reported down",
 		func(c *Config) *time.Duration { return &c.Cluster.DownAfter }),
+	intSetting("cluster.shards", "number of shards; fixed when the cluster is bootstrapped",
+		func(c *Config) *int { return &c.Cluster.Shards }),
+	intSetting("cluster.replication_factor", "replicas per shard; fixed when the cluster is bootstrapped",
+		func(c *Config) *int { return &c.Cluster.ReplicationFactor }),
 	durationSetting("transport.dial_timeout", "deadline for connecting to a peer",
 		func(c *Config) *time.Duration { return &c.Transport.DialTimeout }),
 	durationSetting("transport.keepalive_time", "idle time before a keepalive ping on a peer connection",
@@ -273,6 +299,10 @@ var settings = []setting{
 		func(c *Config) *time.Duration { return &c.Storage.SyncInterval }),
 	intSetting("storage.memtable_bytes", "memtable size that starts a new memtable and WAL segment, in bytes",
 		func(c *Config) *int { return &c.Storage.MemtableBytes }),
+	intSetting("storage.block_cache_bytes", "block cache shared by every engine on the node, in bytes",
+		func(c *Config) *int { return &c.Storage.BlockCacheBytes }),
+	intSetting("storage.compaction_concurrency", "engines on the node that may compact at once",
+		func(c *Config) *int { return &c.Storage.CompactionConcurrency }),
 	intSetting("limits.max_key_bytes", "largest accepted key, in bytes",
 		func(c *Config) *int { return &c.Limits.MaxKeyBytes }),
 	intSetting("limits.max_value_bytes", "largest accepted value, in bytes",
@@ -449,6 +479,22 @@ func (c *Config) validateCluster() []error {
 		}
 		seen[p] = true
 	}
+	if cl.Shards < 1 || cl.Shards > 4096 {
+		bad("cluster.shards", "must be between 1 and 4096, got %d", cl.Shards)
+	}
+	if cl.ReplicationFactor < 1 {
+		bad("cluster.replication_factor", "must be at least 1, got %d", cl.ReplicationFactor)
+	}
+	if len(cl.Peers) > 0 {
+		if cl.ReplicationFactor > len(seen) {
+			bad("cluster.replication_factor", "%d needs at least that many peers, have %d", cl.ReplicationFactor, len(seen))
+		}
+		// Placement is computed from these exact strings on every node, so
+		// each node must find its own address among them.
+		if self := c.Cluster.Advertised(); self != "" && !seen[self] {
+			bad("cluster.peers", "must include this node's advertise address %q", self)
+		}
+	}
 	if cl.PingInterval <= 0 {
 		bad("cluster.ping_interval", "must be positive, got %v", cl.PingInterval)
 	}
@@ -495,3 +541,15 @@ func unspecifiedHost(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsUnspecified()
 }
+
+// Advertised returns the internal address other nodes use to reach this
+// node: AdvertiseAddr, or InternalAddr if that is unset.
+func (c Cluster) Advertised() string {
+	if c.AdvertiseAddr != "" {
+		return c.AdvertiseAddr
+	}
+	return c.InternalAddr
+}
+
+// Clustered reports whether the node runs as part of a cluster.
+func (c Cluster) Clustered() bool { return c.InternalAddr != "" }

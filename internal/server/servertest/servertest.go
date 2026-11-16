@@ -50,7 +50,7 @@ func Start(t testing.TB, configure func(*config.Config)) *Node {
 		t.Fatalf("servertest: open engine: %v", err)
 	}
 	self := &dkvv1.NodeInfo{NodeId: "test-node", ClusterName: cfg.Cluster.Name}
-	srv := server.New(&cfg, server.NewStandaloneBackend(db), server.StaticStatus{Self: self}, slog.New(slog.DiscardHandler))
+	srv := server.New(&cfg, server.NewStandaloneBackend(db), server.StaticStatus{Self: self, DB: db}, slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx, lis) }()

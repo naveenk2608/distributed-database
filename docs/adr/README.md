@@ -10,6 +10,7 @@ come up during implementation take the next free number from 0016.
 | [0000](0000-scope.md) | Scope: single-key operations with CAS | Accepted |
 | [0001](0001-replication-model.md) | One Raft group per shard | Accepted |
 | [0002](0002-partitioning.md) | Fixed hash shards placed by consistent hashing | Accepted |
+| [0004](0004-engine-per-shard.md) | One storage engine per shard replica, sharing a node-wide block cache and compaction pool | Accepted |
 | [0005](0005-compaction.md) | Size-tiered compaction over time-ordered runs of adjacent tables | Accepted |
 | [0006](0006-manifest-format.md) | Manifest rewritten in full with an atomic rename | Accepted |
 | [0016](0016-configuration-sources.md) | Configuration sources and precedence | Accepted |
@@ -19,3 +20,5 @@ come up during implementation take the next free number from 0016.
 | [0020](0020-vfs-fault-model.md) | Filesystem interface and the simulated power-loss model | Accepted (revised in Phase 3) |
 | [0021](0021-node-identity-and-bootstrap-membership.md) | Persistent random node IDs and a static bootstrap peer list with ping-based failure detection | Accepted |
 | [0022](0022-internal-transport.md) | Internal gRPC transport: separate port, one connection per peer, fail fast, keepalives | Accepted |
+| [0023](0023-placement.md) | Placement on a consistent hash ring keyed by member address; stated balance tolerance | Accepted |
+| [0024](0024-routing.md) | Routing with one-hop forwarding, NotOwner hints and jittered retries | Accepted |

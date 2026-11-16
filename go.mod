@@ -3,6 +3,7 @@ module github.com/naveenk2608/distributed-database
 go 1.27
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	go.uber.org/goleak v1.3.0
 	go.yaml.in/yaml/v3 v3.0.6
 	google.golang.org/grpc v1.85.0

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package dkv.v1;
 
+import "dkv/v1/kv.proto";
+
 option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
 
 // InternalService is the node-to-node API, served on each node's internal
@@ -12,6 +14,12 @@ service InternalService {
   // in its bootstrap list to detect failures; a peer in another cluster
   // answers with FAILED_PRECONDITION.
   rpc Ping(PingRequest) returns (PingResponse);
+
+  // Forward runs a client request on the node that owns the request's
+  // shard. The receiving node serves it only if it owns the shard;
+  // otherwise it answers not_owner with the owner it knows of, and never
+  // forwards further, so a request makes at most one internal hop per try.
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
 }
 
 // NodeInfo identifies a node.
@@ -23,6 +31,9 @@ message NodeInfo {
   // internal_addr is the address other nodes use to reach this node.
   string internal_addr = 3;
   int64 started_at_unix_nano = 4;
+  // placement fingerprints the shard count, replication factor and member
+  // list; nodes whose fingerprints differ would place shards differently.
+  string placement = 5;
 }
 
 message PingRequest {
@@ -31,4 +42,30 @@ message PingRequest {
 
 message PingResponse {
   NodeInfo node = 1;
+}
+
+message ForwardRequest {
+  uint32 shard = 1;
+  oneof op {
+    PutRequest put = 2;
+    GetRequest get = 3;
+    DeleteRequest delete = 4;
+  }
+}
+
+message ForwardResponse {
+  oneof result {
+    PutResponse put = 1;
+    GetResponse get = 2;
+    DeleteResponse delete = 3;
+    NotOwner not_owner = 4;
+  }
+}
+
+// NotOwner says the receiving node does not serve the shard.
+message NotOwner {
+  uint32 shard = 1;
+  // owner_hint is the internal address of the node the receiver believes
+  // owns the shard, or empty.
+  string owner_hint = 2;
 }

@@ -12,6 +12,10 @@ service AdminService {
   // ClusterStatus returns this node's view of the cluster: every peer in its
   // bootstrap list, including itself, and whether it is reachable.
   rpc ClusterStatus(ClusterStatusRequest) returns (ClusterStatusResponse);
+
+  // ShardMap returns where every shard is placed, and for the shards the
+  // answering node holds, the state of its local copy.
+  rpc ShardMap(ShardMapRequest) returns (ShardMapResponse);
 }
 
 message ClusterStatusRequest {}
@@ -44,4 +48,23 @@ message MemberStatus {
   int64 rtt_nanos = 6;
   uint32 consecutive_failures = 7;
   string last_error = 8;
+}
+
+message ShardMapRequest {}
+
+message ShardMapResponse {
+  uint32 shard_count = 1;
+  uint32 replication_factor = 2;
+  repeated ShardInfo shards = 3;
+}
+
+message ShardInfo {
+  uint32 shard = 1;
+  // replicas are internal addresses; the first is the primary, the only
+  // replica that serves requests until replication arrives.
+  repeated string replicas = 2;
+  // local is true if the answering node holds a replica of the shard.
+  bool local = 3;
+  // last_seq is the local replica's last applied sequence number.
+  uint64 last_seq = 4;
 }

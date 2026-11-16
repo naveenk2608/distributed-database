@@ -4,11 +4,12 @@ A sharded, Raft-replicated key-value store written in Go, with its own LSM-tree
 storage engine. See [docs/PLAN.md](docs/PLAN.md) for the design and roadmap and
 [docs/PROGRESS.md](docs/PROGRESS.md) for what is implemented and tested.
 
-**Current state: Phase 4.** Nodes form a cluster from a bootstrap peer list,
-ping each other over an internal gRPC transport and report peers that stop
-answering (`dkvctl status`). Each node still serves every key from its own
-durable LSM-tree engine (see [docs/storage-format.md](docs/storage-format.md));
-sharding arrives in Phase 5 and replication in Phase 6.
+**Current state: Phase 5.** Keys are hashed into a fixed number of shards,
+placed on nodes with a consistent hash ring; each node keeps one durable
+LSM-tree engine per shard replica it holds, and any node accepts any key and
+forwards it to the shard's owner (`dkvctl shards`, `dkvctl status`).
+Replication with Raft arrives in Phase 6; until then only a shard's primary
+serves it.
 
 ## Quick start
 
@@ -37,6 +38,9 @@ for i in 1 2 3; do
     --cluster.peers=$P --storage.dir=./data/n$i --log.format=text &
 done
 bin/dkvctl --addr=127.0.0.1:7071 status
+bin/dkvctl --addr=127.0.0.1:7072 put greeting hello   # any node accepts any key
+bin/dkvctl --addr=127.0.0.1:7073 get greeting
+bin/dkvctl --addr=127.0.0.1:7071 shards               # where each shard lives
 ```
 
 With Docker: `make compose-up`, then

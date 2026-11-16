@@ -170,3 +170,15 @@ func TestRunPingsUntilCancelled(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestPlacementMismatchIsReported(t *testing.T) {
+	peer, addr := node(t, "c", "peer-1")
+	peer.self.Placement = "v1/s64/rf3/aaaa"
+	m := observer(t, nil, addr)
+	m.cfg.Placement = "v1/s64/rf3/bbbb"
+	m.pingOnce(context.Background(), addr)
+	got := member(m.Status(), addr)
+	if got.GetState() != dkvv1.MemberState_MEMBER_STATE_UP || !strings.Contains(got.GetLastError(), "placement differs") {
+		t.Fatalf("peer with another placement: %v", got)
+	}
+}

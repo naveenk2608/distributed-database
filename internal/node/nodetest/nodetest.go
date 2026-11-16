@@ -207,3 +207,25 @@ func WaitFor(t testing.TB, timeout time.Duration, what string, cond func() bool)
 	}
 	return time.Since(start)
 }
+
+// ShardMap asks member i for the shard map and its local replicas.
+func (c *Cluster) ShardMap(i int) (*dkvv1.ShardMapResponse, error) {
+	conn, err := grpc.NewClient(c.Members[i].PublicAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return dkvv1.NewAdminServiceClient(conn).ShardMap(ctx, &dkvv1.ShardMapRequest{})
+}
+
+// KV returns a KV client for member i, closed at test cleanup.
+func (c *Cluster) KV(i int) dkvv1.KVServiceClient {
+	conn, err := grpc.NewClient(c.Members[i].PublicAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		c.t.Fatalf("nodetest: dial node %d: %v", i, err)
+	}
+	c.t.Cleanup(func() { _ = conn.Close() })
+	return dkvv1.NewKVServiceClient(conn)
+}

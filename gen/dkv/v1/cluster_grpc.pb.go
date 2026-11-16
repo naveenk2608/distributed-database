@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	InternalService_Ping_FullMethodName = "/dkv.v1.InternalService/Ping"
+	InternalService_Ping_FullMethodName    = "/dkv.v1.InternalService/Ping"
+	InternalService_Forward_FullMethodName = "/dkv.v1.InternalService/Forward"
 )
 
 // InternalServiceClient is the client API for InternalService service.
@@ -34,6 +35,11 @@ type InternalServiceClient interface {
 	// in its bootstrap list to detect failures; a peer in another cluster
 	// answers with FAILED_PRECONDITION.
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	// Forward runs a client request on the node that owns the request's
+	// shard. The receiving node serves it only if it owns the shard;
+	// otherwise it answers not_owner with the owner it knows of, and never
+	// forwards further, so a request makes at most one internal hop per try.
+	Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error)
 }
 
 type internalServiceClient struct {
@@ -54,6 +60,16 @@ func (c *internalServiceClient) Ping(ctx context.Context, in *PingRequest, opts 
 	return out, nil
 }
 
+func (c *internalServiceClient) Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ForwardResponse)
+	err := c.cc.Invoke(ctx, InternalService_Forward_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServiceServer is the server API for InternalService service.
 // All implementations must embed UnimplementedInternalServiceServer
 // for forward compatibility.
@@ -66,6 +82,11 @@ type InternalServiceServer interface {
 	// in its bootstrap list to detect failures; a peer in another cluster
 	// answers with FAILED_PRECONDITION.
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	// Forward runs a client request on the node that owns the request's
+	// shard. The receiving node serves it only if it owns the shard;
+	// otherwise it answers not_owner with the owner it knows of, and never
+	// forwards further, so a request makes at most one internal hop per try.
+	Forward(context.Context, *ForwardRequest) (*ForwardResponse, error)
 	mustEmbedUnimplementedInternalServiceServer()
 }
 
@@ -78,6 +99,9 @@ type UnimplementedInternalServiceServer struct{}
 
 func (UnimplementedInternalServiceServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
+}
+func (UnimplementedInternalServiceServer) Forward(context.Context, *ForwardRequest) (*ForwardResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Forward not implemented")
 }
 func (UnimplementedInternalServiceServer) mustEmbedUnimplementedInternalServiceServer() {}
 func (UnimplementedInternalServiceServer) testEmbeddedByValue()                         {}
@@ -118,6 +142,24 @@ func _InternalService_Ping_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _InternalService_Forward_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ForwardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).Forward(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_Forward_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).Forward(ctx, req.(*ForwardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // InternalService_ServiceDesc is the grpc.ServiceDesc for InternalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -128,6 +170,10 @@ var InternalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Ping",
 			Handler:    _InternalService_Ping_Handler,
+		},
+		{
+			MethodName: "Forward",
+			Handler:    _InternalService_Forward_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
