@@ -124,3 +124,23 @@ func TestOutputWriteFailureIsAnError(t *testing.T) {
 		t.Fatalf("get with failing stdout: exit %d, stderr %q; want exit 2 reporting the write error", code, errOut.String())
 	}
 }
+
+func TestStatusStandalone(t *testing.T) {
+	node := servertest.Start(t, nil)
+	r := ctl(t, nil, "--addr="+node.Addr, "status")
+	if r.code != exitOK {
+		t.Fatalf("status: exit %d, stderr %q", r.code, r.stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "ADDRESS") {
+		t.Fatalf("status output:\n%s", r.stdout)
+	}
+	for _, want := range []string{"test-node", "UP", "(this node)"} {
+		if !strings.Contains(lines[1], want) {
+			t.Errorf("member line %q does not contain %q", lines[1], want)
+		}
+	}
+	if r := ctl(t, nil, "--addr="+node.Addr, "status", "extra"); r.code != exitError {
+		t.Errorf("status with an argument: exit %d", r.code)
+	}
+}

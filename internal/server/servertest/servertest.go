@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/server"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
@@ -48,7 +49,8 @@ func Start(t testing.TB, configure func(*config.Config)) *Node {
 		_ = lis.Close()
 		t.Fatalf("servertest: open engine: %v", err)
 	}
-	srv := server.New(&cfg, server.NewStandaloneBackend(db), slog.New(slog.DiscardHandler))
+	self := &dkvv1.NodeInfo{NodeId: "test-node", ClusterName: cfg.Cluster.Name}
+	srv := server.New(&cfg, server.NewStandaloneBackend(db), server.StaticStatus{Self: self}, slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx, lis) }()

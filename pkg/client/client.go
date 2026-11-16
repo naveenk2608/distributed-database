@@ -76,3 +76,13 @@ func (c *Client) Delete(ctx context.Context, key []byte) (found bool, version ui
 	}
 	return resp.GetFound(), resp.GetVersion(), nil
 }
+
+// ClusterStatus returns the node's view of the cluster: every member in its
+// bootstrap list and whether it is reachable.
+func (c *Client) ClusterStatus(ctx context.Context) (*dkvv1.ClusterStatusResponse, error) {
+	resp, err := dkvv1.NewAdminServiceClient(c.conn).ClusterStatus(ctx, &dkvv1.ClusterStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("dkv: cluster status: %w", err)
+	}
+	return resp, nil
+}

@@ -32,10 +32,12 @@ import (
 
 // Config is the complete configuration of a dkv node.
 type Config struct {
-	Server  Server  `yaml:"server"`
-	Storage Storage `yaml:"storage"`
-	Limits  Limits  `yaml:"limits"`
-	Log     Log     `yaml:"log"`
+	Server    Server    `yaml:"server"`
+	Cluster   Cluster   `yaml:"cluster"`
+	Transport Transport `yaml:"transport"`
+	Storage   Storage   `yaml:"storage"`
+	Limits    Limits    `yaml:"limits"`
+	Log       Log       `yaml:"log"`
 }
 
 // Server configures the public API server.
@@ -46,6 +48,43 @@ type Server struct {
 	// ShutdownTimeout bounds how long a graceful shutdown waits for
 	// in-flight requests before closing connections.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+}
+
+// Cluster configures membership. With neither an internal address nor
+// peers, the node runs standalone.
+type Cluster struct {
+	// Name must be the same on every node of a cluster; a peer that reports
+	// another name is never counted as a member.
+	Name string `yaml:"name"`
+	// InternalAddr is the host:port the node-to-node API listens on.
+	// Required when Peers is set.
+	InternalAddr string `yaml:"internal_addr"`
+	// AdvertiseAddr is the internal address other nodes use to reach this
+	// node. It defaults to InternalAddr and is required when InternalAddr
+	// has no specific host (empty, 0.0.0.0 or ::).
+	AdvertiseAddr string `yaml:"advertise_addr"`
+	// Peers is the bootstrap peer list: the internal addresses of the
+	// cluster's nodes. Listing this node's own address is allowed.
+	Peers []string `yaml:"peers"`
+	// PingInterval is how often each peer is pinged.
+	PingInterval time.Duration `yaml:"ping_interval"`
+	// PingTimeout bounds a single ping.
+	PingTimeout time.Duration `yaml:"ping_timeout"`
+	// DownAfter is how long a peer may go without answering before it is
+	// reported down.
+	DownAfter time.Duration `yaml:"down_after"`
+}
+
+// Transport configures the gRPC connections between nodes.
+type Transport struct {
+	// DialTimeout bounds establishing a connection to a peer.
+	DialTimeout time.Duration `yaml:"dial_timeout"`
+	// KeepaliveTime is how long a connection may be idle before a keepalive
+	// ping checks it. gRPC raises values below 10s to 10s.
+	KeepaliveTime time.Duration `yaml:"keepalive_time"`
+	// KeepaliveTimeout is how long to wait for a keepalive answer before
+	// closing the connection.
+	KeepaliveTimeout time.Duration `yaml:"keepalive_timeout"`
 }
 
 // Storage configures the node's storage engine.
@@ -82,10 +121,12 @@ type Log struct {
 // or paths: those must always come from the operator.
 func Default() Config {
 	return Config{
-		Server:  Server{ShutdownTimeout: 10 * time.Second},
-		Storage: Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20},
-		Limits:  Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
-		Log:     Log{Level: "info", Format: "json"},
+		Server:    Server{ShutdownTimeout: 10 * time.Second},
+		Cluster:   Cluster{Name: "dkv", PingInterval: time.Second, PingTimeout: 500 * time.Millisecond, DownAfter: 5 * time.Second},
+		Transport: Transport{DialTimeout: 2 * time.Second, KeepaliveTime: 10 * time.Second, KeepaliveTimeout: 3 * time.Second},
+		Storage:   Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20},
+		Limits:    Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
+		Log:       Log{Level: "info", Format: "json"},
 	}
 }
 
@@ -107,6 +148,7 @@ func (c *Config) Validate() error {
 		bad("server.shutdown_timeout", "must be positive, got %v", c.Server.ShutdownTimeout)
 	}
 
+	errs = append(errs, c.validateCluster()...)
 	if c.Storage.Dir == "" {
 		bad("storage.dir", "required (set it in the config file, DKV_STORAGE_DIR or --storage.dir)")
 	}
@@ -171,6 +213,20 @@ func intSetting(key, usage string, field func(*Config) *int) setting {
 	}}
 }
 
+// stringListSetting parses a comma-separated list; YAML uses a sequence.
+func stringListSetting(key, usage string, field func(*Config) *[]string) setting {
+	return setting{key, usage, func(c *Config, v string) error {
+		var out []string
+		for _, item := range strings.Split(v, ",") {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		*field(c) = out
+		return nil
+	}}
+}
+
 func durationSetting(key, usage string, field func(*Config) *time.Duration) setting {
 	return setting{key, usage, func(c *Config, v string) error {
 		d, err := time.ParseDuration(v)
@@ -189,6 +245,26 @@ var settings = []setting{
 		func(c *Config) *string { return &c.Server.GRPCAddr }),
 	durationSetting("server.shutdown_timeout", "how long graceful shutdown waits for in-flight requests",
 		func(c *Config) *time.Duration { return &c.Server.ShutdownTimeout }),
+	stringSetting("cluster.name", "cluster name; must match on every node",
+		func(c *Config) *string { return &c.Cluster.Name }),
+	stringSetting("cluster.internal_addr", "host:port for the node-to-node API (required with cluster.peers)",
+		func(c *Config) *string { return &c.Cluster.InternalAddr }),
+	stringSetting("cluster.advertise_addr", "internal address other nodes use to reach this one (default cluster.internal_addr)",
+		func(c *Config) *string { return &c.Cluster.AdvertiseAddr }),
+	stringListSetting("cluster.peers", "bootstrap peer list: comma-separated internal addresses",
+		func(c *Config) *[]string { return &c.Cluster.Peers }),
+	durationSetting("cluster.ping_interval", "how often each peer is pinged",
+		func(c *Config) *time.Duration { return &c.Cluster.PingInterval }),
+	durationSetting("cluster.ping_timeout", "deadline for one ping",
+		func(c *Config) *time.Duration { return &c.Cluster.PingTimeout }),
+	durationSetting("cluster.down_after", "silence after which a peer is reported down",
+		func(c *Config) *time.Duration { return &c.Cluster.DownAfter }),
+	durationSetting("transport.dial_timeout", "deadline for connecting to a peer",
+		func(c *Config) *time.Duration { return &c.Transport.DialTimeout }),
+	durationSetting("transport.keepalive_time", "idle time before a keepalive ping on a peer connection",
+		func(c *Config) *time.Duration { return &c.Transport.KeepaliveTime }),
+	durationSetting("transport.keepalive_timeout", "wait for a keepalive answer before closing the connection",
+		func(c *Config) *time.Duration { return &c.Transport.KeepaliveTimeout }),
 	stringSetting("storage.dir", "data directory (required)",
 		func(c *Config) *string { return &c.Storage.Dir }),
 	stringSetting("storage.sync", "WAL sync policy: always, interval or never",
@@ -326,4 +402,96 @@ func loadFile(cfg *Config, path string) error {
 		return fmt.Errorf("parse config file %s: %w", path, err)
 	}
 	return nil
+}
+
+// validateCluster checks the cluster and transport sections.
+func (c *Config) validateCluster() []error {
+	var errs []error
+	bad := func(key, format string, args ...any) {
+		errs = append(errs, fmt.Errorf("%s: %s", key, fmt.Sprintf(format, args...)))
+	}
+	cl := c.Cluster
+	if cl.Name == "" {
+		bad("cluster.name", "must not be empty")
+	}
+	if cl.InternalAddr == "" {
+		if len(cl.Peers) > 0 {
+			bad("cluster.internal_addr", "required when cluster.peers is set")
+		}
+		if cl.AdvertiseAddr != "" {
+			bad("cluster.advertise_addr", "set without cluster.internal_addr")
+		}
+	} else {
+		host, err := splitHostPort(cl.InternalAddr, true)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("cluster.internal_addr: %w", err))
+		} else if cl.AdvertiseAddr == "" && unspecifiedHost(host) {
+			bad("cluster.advertise_addr", "required because cluster.internal_addr %q has no specific host", cl.InternalAddr)
+		}
+		if cl.AdvertiseAddr != "" {
+			if host, err := splitHostPort(cl.AdvertiseAddr, false); err != nil {
+				errs = append(errs, fmt.Errorf("cluster.advertise_addr: %w", err))
+			} else if unspecifiedHost(host) {
+				bad("cluster.advertise_addr", "%q has no specific host", cl.AdvertiseAddr)
+			}
+		}
+		if cl.InternalAddr == c.Server.GRPCAddr {
+			bad("cluster.internal_addr", "must differ from server.grpc_addr")
+		}
+	}
+	seen := map[string]bool{}
+	for _, p := range cl.Peers {
+		if _, err := splitHostPort(p, false); err != nil {
+			errs = append(errs, fmt.Errorf("cluster.peers: %w", err))
+		}
+		if seen[p] {
+			bad("cluster.peers", "%q is listed twice", p)
+		}
+		seen[p] = true
+	}
+	if cl.PingInterval <= 0 {
+		bad("cluster.ping_interval", "must be positive, got %v", cl.PingInterval)
+	}
+	if cl.PingTimeout <= 0 || cl.PingTimeout > cl.PingInterval {
+		bad("cluster.ping_timeout", "must be positive and at most cluster.ping_interval (%v), got %v", cl.PingInterval, cl.PingTimeout)
+	}
+	if cl.DownAfter <= cl.PingInterval {
+		bad("cluster.down_after", "must be longer than cluster.ping_interval (%v), got %v", cl.PingInterval, cl.DownAfter)
+	}
+	t := c.Transport
+	if t.DialTimeout <= 0 {
+		bad("transport.dial_timeout", "must be positive, got %v", t.DialTimeout)
+	}
+	if t.KeepaliveTime < time.Second {
+		bad("transport.keepalive_time", "must be at least 1s, got %v", t.KeepaliveTime)
+	}
+	if t.KeepaliveTimeout <= 0 {
+		bad("transport.keepalive_timeout", "must be positive, got %v", t.KeepaliveTimeout)
+	}
+	return errs
+}
+
+// splitHostPort checks a host:port address and returns the host. Port 0
+// (pick a free port) is allowed only for listen addresses.
+func splitHostPort(addr string, listen bool) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return "", fmt.Errorf("invalid port %q in %q: %w", port, addr, err)
+	}
+	if n == 0 && !listen {
+		return "", fmt.Errorf("port 0 in %q: only a listen address may pick a free port", addr)
+	}
+	return host, nil
+}
+
+func unspecifiedHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }

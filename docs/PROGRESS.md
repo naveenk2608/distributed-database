@@ -2,6 +2,16 @@
 
 Only what is implemented AND tested is listed here. See docs/PLAN.md for the full plan.
 
+## Needs from you
+
+- **Docker.** Docker Desktop is installed on Windows but its engine is not running, and
+  this WSL distro has no Docker integration (`docker` says "could not be found in this
+  WSL 2 distro"; `docker.exe` cannot reach `dockerDesktopLinuxEngine`). Please start Docker
+  Desktop and enable Settings → Resources → WSL integration for this distro. Blocked until
+  then: the Phase 4 Compose gate (`make compose-gate`, which runs
+  `deploy/compose/gate.sh`). The Dockerfile and Compose file are written; the same check
+  runs with three real `dkv-server` processes in `test/e2e`.
+
 ## Phase 1: Skeleton and single-node in-memory store
 
 Status: **done.** All three gate items passed on 2026-11-16.
@@ -86,7 +96,7 @@ Mutation check (each change made by hand, gate tests run, change reverted):
 
 ## Phase 3: SSTables, LSM tree, indexing and compaction
 
-Status: **done.** All three gate items passed locally on 2026-11-16 (`make storage-gate`).
+Status: **done.** All three gate items passed locally on 2026-11-16 (`make storage-gate`); CI run 43929763379 on main at 2d13d1d (`check`, `crash` and `storage-gate` jobs) is green.
 
 ### Gate
 
@@ -131,4 +141,58 @@ Microbenchmarks (`make bench`, i3-1115G4, `t.TempDir()` on tmpfs, so fsync is fr
 - Leveled compaction, the plan's stretch goal, is not implemented.
 - A table `Get` allocates an iterator per lookup, and a full scan of a table larger than the block cache allocates a block per read; both are candidates for the Phase 10 profiling work.
 - Not done: an independent second review of the Phase 3 diff against the plan.
+
+## Phase 4: Multi-node communication and cluster formation
+
+Status: **done except the Docker Compose half of gate item 1**, which needs Docker (see
+"Needs from you"). Everything else passed locally on 2026-11-16.
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| Three nodes form a cluster from config, in-process | `test/integration` `TestThreeNodesFormACluster` (`make test-integration`): `nodetest.Start` runs three full nodes on ephemeral loopback ports with separate data directories and one bootstrap peer list; every node reports all three UP, with the node ID each actually has, itself marked as self. Formed in 29 ms. | Passed |
+| Three nodes form a cluster from config, in Compose | `deploy/compose/docker-compose.yml` (three nodes configured only through `DKV_*` variables) and `deploy/compose/gate.sh` (`make compose-gate`) are written. Not run: Docker is unavailable here. The exact Compose environment was smoke-tested with the real binary outside Docker (the node recognized itself by its advertise address and reported unresolvable peers DOWN after the window). As a stand-in, `test/e2e` `TestThreeProcessesFormACluster` runs three real `dkv-server` processes from one peer list and checks with `dkvctl status` that each sees all three UP. | **Blocked (Docker)** |
+| Status reports a killed peer as down within the configured window | `test/integration` `TestKilledPeerIsReportedDownWithinWindow`: with `down_after` 1 s and 100 ms pings, both survivors report the stopped node DOWN 994–996 ms after it stopped; the test requires between window − interval − 50 ms and window + 300 ms, and that the survivors stay UP. `internal/cluster` `TestDownWindowIsExact` (fake clock) checks UP at exactly the window and DOWN 1 ns later. `test/e2e` `TestThreeProcessesFormACluster` SIGKILLs a real process: reported DOWN 3.2 s after the kill with a 2 s window, measured through repeated `dkvctl` runs, each a separate race-built process. | Passed (in-process and real processes; Compose blocked) |
+| Transport tests cover timeouts and reconnects | `internal/transport`: `TestDeadlineIsEnforced` (peer accepts the call and never answers), `TestSilentPeerTimesOut` (TCP accepted, no HTTP/2), `TestUnreachablePeerFailsFast` (closed port → `Unavailable` at once), `TestReconnectAfterPeerRestart` (calls fail while the peer is down; the same pooled connection recovers 66 ms after the peer returns on the same address), `TestPoolSharesOneConnectionPerPeer`. | Passed |
+
+### Implemented and tested
+
+- **Protocol:** `proto/dkv/v1/cluster.proto` (`InternalService.Ping`, `NodeInfo`) and
+  `admin.proto` (`AdminService.ClusterStatus`, `MemberStatus`, `MemberState`), generated code
+  committed.
+- **`internal/config`:** `cluster.name`, `internal_addr`, `advertise_addr`, `peers` (YAML list
+  or comma-separated env/flag), `ping_interval`, `ping_timeout`, `down_after`;
+  `transport.dial_timeout`, `keepalive_time`, `keepalive_timeout`. Validation: peers need an
+  internal address, a wildcard internal address needs an advertise address, no port 0 or
+  duplicates in peers, timing constraints. With neither peers nor an internal address the
+  node is standalone, as before.
+- **`internal/transport`:** internal gRPC server with keepalive parameters and enforcement
+  policy; `Pool` with one lazily created connection per peer, jittered backoff capped at
+  1 s, keepalives, message size limits (ADR 0022).
+- **`internal/cluster`:** `Membership` pings each bootstrap peer from its own goroutine,
+  derives UP/DOWN/UNKNOWN from the last answer's time, rejects nodes of another cluster,
+  detects itself listed under another address, logs state changes; `PingService`
+  (ADR 0021).
+- **`internal/node`:** composition root shared by `dkv-server` and tests; persistent node
+  ID in `<storage.dir>/NODE_ID` (atomic, fsynced; a damaged file stops startup).
+  `nodetest` runs in-process clusters with stop and restart on the same addresses.
+- **`dkvctl status`** and `client.ClusterStatus`.
+- **Deployment:** `deploy/docker/Dockerfile` (multi-stage, static binaries, distroless
+  nonroot), `deploy/compose/docker-compose.yml`, `deploy/compose/gate.sh`, `.dockerignore`;
+  `make docker-build`, `compose-up`, `compose-down`, `compose-gate`, `test-integration`.
+- **Docs:** ADRs 0021 and 0022.
+
+Other tests: a restarted node rejoins with its original ID (`TestRestartedPeerRejoinsWithItsID`);
+a node configured with another cluster name is never counted as a member and the reason is
+shown (`TestNodeOfAnotherClusterIsNotAMember`); config rules and peer-list parsing; node ID
+persistence and damaged-ID detection; `dkvctl status` output.
+
+### Known limitations
+
+- Membership is static (the bootstrap list) and each node's view is its own; there is no
+  join, decommission or agreed liveness until the meta group in Phase 7.
+- The KV API still uses one local engine per node; sharding and routing arrive in Phase 5.
+- The Docker image and Compose file have never been built or run (Docker unavailable).
+- Not done: an independent second review of the Phase 4 diff against the plan.
 

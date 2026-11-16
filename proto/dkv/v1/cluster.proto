@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
+
+// InternalService is the node-to-node API, served on each node's internal
+// address (cluster.internal_addr). Clients never call it. Later phases add
+// Raft message batches, snapshot streams and request forwarding.
+service InternalService {
+  // Ping returns the receiving node's identity. Every node pings each peer
+  // in its bootstrap list to detect failures; a peer in another cluster
+  // answers with FAILED_PRECONDITION.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// NodeInfo identifies a node.
+message NodeInfo {
+  // node_id is generated on a node's first start and stored in its data
+  // directory, so it survives restarts and address changes.
+  string node_id = 1;
+  string cluster_name = 2;
+  // internal_addr is the address other nodes use to reach this node.
+  string internal_addr = 3;
+  int64 started_at_unix_nano = 4;
+}
+
+message PingRequest {
+  NodeInfo from = 1;
+}
+
+message PingResponse {
+  NodeInfo node = 1;
+}

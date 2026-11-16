@@ -45,7 +45,7 @@ func TestDefaultsNeedAnAddressAndADataDir(t *testing.T) {
 	want := Default()
 	want.Server.GRPCAddr = "127.0.0.1:0"
 	want.Storage.Dir = "/var/lib/dkv-test"
-	if *cfg != want {
+	if !reflect.DeepEqual(*cfg, want) {
 		t.Errorf("got %+v, want defaults %+v", *cfg, want)
 	}
 }
@@ -81,13 +81,15 @@ log:
 		t.Fatal(err)
 	}
 	want := Config{
-		Server: Server{GRPCAddr: "flag:3", ShutdownTimeout: 3 * time.Second}, // flag > env > file
+		Server:    Server{GRPCAddr: "flag:3", ShutdownTimeout: 3 * time.Second}, // flag > env > file
+		Cluster:   Default().Cluster,
+		Transport: Default().Transport,
 		Storage: Storage{Dir: "/flag/dir", Sync: "interval", SyncInterval: 25 * time.Millisecond, // flag > env > file
 			MemtableBytes: 4 << 20}, // default
 		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200}, // env > file; file > default
 		Log:    Log{Level: "debug", Format: "json"},          // file; default
 	}
-	if *cfg != want {
+	if !reflect.DeepEqual(*cfg, want) {
 		t.Errorf("got  %+v\nwant %+v", *cfg, want)
 	}
 }
@@ -133,6 +135,16 @@ func TestRejectsMistakes(t *testing.T) {
 		{name: "zero key limit", args: []string{"--limits.max-key-bytes=0"}, want: "limits.max_key_bytes"},
 		{name: "bad level", args: []string{"--log.level=loud"}, want: "log.level"},
 		{name: "bad format", args: []string{"--log.format=xml"}, want: "log.format"},
+		{name: "peers without internal address", args: []string{"--cluster.peers=10.0.0.1:7100"}, want: "cluster.internal_addr: required when cluster.peers is set"},
+		{name: "wildcard internal address without advertise", args: []string{"--cluster.internal-addr=0.0.0.0:7100"}, want: "cluster.advertise_addr: required"},
+		{name: "advertise without internal address", args: []string{"--cluster.advertise-addr=10.0.0.1:7100"}, want: "cluster.advertise_addr: set without cluster.internal_addr"},
+		{name: "peer with port 0", args: []string{"--cluster.internal-addr=127.0.0.1:7100", "--cluster.peers=127.0.0.1:0"}, want: "only a listen address may pick a free port"},
+		{name: "duplicate peer", args: []string{"--cluster.internal-addr=127.0.0.1:7100", "--cluster.peers=a:1,a:1"}, want: `"a:1" is listed twice`},
+		{name: "same port for both APIs", args: []string{"--server.grpc-addr=127.0.0.1:7000", "--cluster.internal-addr=127.0.0.1:7000"}, want: "must differ from server.grpc_addr"},
+		{name: "ping timeout above interval", args: []string{"--cluster.ping-timeout=2s"}, want: "cluster.ping_timeout"},
+		{name: "down window not above interval", args: []string{"--cluster.down-after=1s"}, want: "cluster.down_after: must be longer"},
+		{name: "short keepalive", args: []string{"--transport.keepalive-time=10ms"}, want: "transport.keepalive_time"},
+		{name: "empty cluster name", args: []string{"--cluster.name="}, want: "cluster.name"},
 		{name: "bad sync policy", args: []string{"--storage.sync=sometimes"}, want: `storage.sync: must be always, interval or never, got "sometimes"`},
 		{name: "interval without period", args: []string{"--storage.sync=interval", "--storage.sync-interval=0s"}, want: "storage.sync_interval: must be positive"},
 		{name: "tiny memtable", args: []string{"--storage.memtable-bytes=1024"}, want: "storage.memtable_bytes"},
@@ -220,5 +232,32 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	if cfg.Server.GRPCAddr == "" || cfg.Storage.Dir == "" {
 		t.Error("example config does not set server.grpc_addr and storage.dir")
+	}
+}
+
+// TestClusterPeersFromEachSource checks the list setting in YAML (a
+// sequence), the environment and flags (comma-separated).
+func TestClusterPeersFromEachSource(t *testing.T) {
+	base := append([]string{"--cluster.internal-addr=10.0.0.1:7100"}, required...)
+	file := writeFile(t, "cluster:\n  peers: [\"10.0.0.1:7100\", \"10.0.0.2:7100\"]\n")
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  []string
+		want []string
+	}{
+		{"yaml", append([]string{"--config", file}, base...), nil, []string{"10.0.0.1:7100", "10.0.0.2:7100"}},
+		{"env", base, []string{"DKV_CLUSTER_PEERS=10.0.0.1:7100, 10.0.0.3:7100,"}, []string{"10.0.0.1:7100", "10.0.0.3:7100"}},
+		{"flag beats env", append(base, "--cluster.peers=n1:1,n2:2,n3:3"), []string{"DKV_CLUSTER_PEERS=x:1"}, []string{"n1:1", "n2:2", "n3:3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := load(t, tc.args, tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(cfg.Cluster.Peers, tc.want) {
+				t.Errorf("peers = %q, want %q", cfg.Cluster.Peers, tc.want)
+			}
+		})
 	}
 }

@@ -1,0 +1,59 @@
+# Three-node dkv cluster. Every setting comes from DKV_* variables; see
+# deploy/config/dkv-server.example.yaml for what each one means.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up -d --build
+#   docker compose -f deploy/compose/docker-compose.yml exec n1 dkvctl --addr=localhost:7070 status
+#
+# Public API: localhost:7071, 7072, 7073. deploy/compose/gate.sh runs the
+# Phase 4 gate against this file.
+name: dkv
+
+x-node: &node
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+  image: dkv:dev
+  restart: "no"
+  stop_grace_period: 15s
+
+x-env: &env
+  DKV_SERVER_GRPC_ADDR: "0.0.0.0:7070"
+  DKV_CLUSTER_NAME: "dkv-compose"
+  DKV_CLUSTER_INTERNAL_ADDR: "0.0.0.0:7100"
+  DKV_CLUSTER_PEERS: "n1:7100,n2:7100,n3:7100"
+  DKV_CLUSTER_PING_INTERVAL: "500ms"
+  DKV_CLUSTER_PING_TIMEOUT: "500ms"
+  DKV_CLUSTER_DOWN_AFTER: "3s"
+  DKV_STORAGE_DIR: "/data"
+  DKV_LOG_FORMAT: "json"
+
+services:
+  n1:
+    <<: *node
+    hostname: n1
+    environment:
+      <<: *env
+      DKV_CLUSTER_ADVERTISE_ADDR: "n1:7100"
+    ports: ["7071:7070"]
+    volumes: ["n1-data:/data"]
+  n2:
+    <<: *node
+    hostname: n2
+    environment:
+      <<: *env
+      DKV_CLUSTER_ADVERTISE_ADDR: "n2:7100"
+    ports: ["7072:7070"]
+    volumes: ["n2-data:/data"]
+  n3:
+    <<: *node
+    hostname: n3
+    environment:
+      <<: *env
+      DKV_CLUSTER_ADVERTISE_ADDR: "n3:7100"
+    ports: ["7073:7070"]
+    volumes: ["n3-data:/data"]
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:

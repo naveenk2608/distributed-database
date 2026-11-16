@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -91,13 +92,13 @@ func TestRunFailsWhenAddressInUse(t *testing.T) {
 	<-done
 }
 
-// boundAddr extracts the listen address from JSON logs, or "".
+// boundAddr extracts the public listen address from JSON logs, or "".
 func boundAddr(logs string) string {
-	const marker = `"msg":"serving KV API","addr":"`
-	i := strings.Index(logs, marker)
-	if i < 0 {
-		return ""
+	for _, line := range strings.Split(logs, "\n") {
+		var rec struct{ Msg, Addr string }
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "serving KV API" {
+			return rec.Addr
+		}
 	}
-	rest := logs[i+len(marker):]
-	return rest[:strings.IndexByte(rest, '"')]
+	return ""
 }

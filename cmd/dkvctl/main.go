@@ -3,6 +3,7 @@
 //	dkvctl [flags] put <key> <value>
 //	dkvctl [flags] get <key>
 //	dkvctl [flags] delete <key>
+//	dkvctl [flags] status
 //
 // Flags go before the command. Exit status follows grep: 0 on success,
 // 1 when get finds no value, 2 on any error.
@@ -16,9 +17,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
+	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/pkg/client"
 )
 
@@ -87,6 +91,7 @@ Commands:
   put <key> <value>   store value under key; prints the new version
   get <key>           print the value of key (exit status 1 if not found)
   delete <key>        delete key; prints the version of the delete
+  status              show the node's view of the cluster
 
 Flags:
 `)
@@ -108,7 +113,7 @@ Flags:
 	if len(cmd) == 0 {
 		return usage("missing command")
 	}
-	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1}
+	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "status": 0}
 	n, ok := wantArgs[cmd[0]]
 	if !ok {
 		return usage(fmt.Sprintf("unknown command %q", cmd[0]))
@@ -129,6 +134,15 @@ Flags:
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
+	if cmd[0] == "status" {
+		resp, err := c.ClusterStatus(ctx)
+		if err != nil {
+			out.errorf("%v", err)
+			return exitError
+		}
+		printStatus(out, resp, time.Now())
+		return exitOK
+	}
 	key := []byte(cmd[1])
 	switch cmd[0] {
 	case "put":
@@ -162,4 +176,32 @@ Flags:
 		}
 	}
 	return exitOK
+}
+
+// printStatus writes one line per member: address, node ID, state, when it
+// last answered, round-trip time and last error.
+func printStatus(out *output, resp *dkvv1.ClusterStatusResponse, now time.Time) {
+	var b strings.Builder
+	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "ADDRESS\tNODE ID\tSTATE\tLAST SEEN\tRTT\tERROR")
+	for _, m := range resp.GetMembers() {
+		id := m.GetNode().GetNodeId()
+		if id == "" {
+			id = "-"
+		}
+		seen, rtt := "never", "-"
+		switch {
+		case m.GetSelf():
+			seen = "(this node)"
+		case m.GetLastSeenUnixNano() != 0:
+			seen = now.Sub(time.Unix(0, m.GetLastSeenUnixNano())).Round(time.Millisecond).String() + " ago"
+		}
+		if m.GetRttNanos() > 0 {
+			rtt = time.Duration(m.GetRttNanos()).Round(10 * time.Microsecond).String()
+		}
+		state := strings.TrimPrefix(m.GetState().String(), "MEMBER_STATE_")
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.GetAddr(), id, state, seen, rtt, m.GetLastError())
+	}
+	_ = tw.Flush() // writes to a strings.Builder cannot fail
+	out.result("%s", b.String())
 }

@@ -28,14 +28,16 @@ type Server struct {
 	grpc *grpc.Server
 }
 
-// New returns a server for backend. It does not listen until Run.
-func New(cfg *config.Config, backend Backend, log *slog.Logger) *Server {
+// New returns a server for backend that answers cluster status from
+// status. It does not listen until Run.
+func New(cfg *config.Config, backend Backend, status StatusSource, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg.Server, log: log}
 	s.grpc = grpc.NewServer(
 		grpc.MaxRecvMsgSize(cfg.Limits.MaxKeyBytes+cfg.Limits.MaxValueBytes+grpcOverheadBytes),
 		grpc.ChainUnaryInterceptor(s.logRequests),
 	)
 	dkvv1.RegisterKVServiceServer(s.grpc, &kvService{backend: backend, limits: cfg.Limits})
+	dkvv1.RegisterAdminServiceServer(s.grpc, &adminService{status: status})
 	return s
 }
 

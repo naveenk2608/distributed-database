@@ -17,3 +17,5 @@ come up during implementation take the next free number from 0016.
 | [0018](0018-batch-sequence-numbers.md) | One sequence number per batch; last write wins inside a batch; one log record per batch in group commit | Accepted (revised in Phase 2) |
 | [0019](0019-wal-format-and-recovery.md) | WAL format, segments and torn-tail vs corruption rules | Accepted |
 | [0020](0020-vfs-fault-model.md) | Filesystem interface and the simulated power-loss model | Accepted (revised in Phase 3) |
+| [0021](0021-node-identity-and-bootstrap-membership.md) | Persistent random node IDs and a static bootstrap peer list with ping-based failure detection | Accepted |
+| [0022](0022-internal-transport.md) | Internal gRPC transport: separate port, one connection per peer, fail fast, keepalives | Accepted |

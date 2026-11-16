@@ -7,6 +7,21 @@ server:
   grpc_addr: "127.0.0.1:7070"
   shutdown_timeout: 10s
 
+cluster:
+  # Leave internal_addr and peers unset to run a single standalone node.
+  name: dkv
+  # internal_addr: "10.0.0.1:7100"     # node-to-node API
+  # advertise_addr: "10.0.0.1:7100"    # needed if internal_addr is 0.0.0.0:PORT
+  # peers: ["10.0.0.1:7100", "10.0.0.2:7100", "10.0.0.3:7100"]
+  ping_interval: 1s
+  ping_timeout: 500ms
+  down_after: 5s                       # silence before a peer is reported down
+
+transport:
+  dial_timeout: 2s
+  keepalive_time: 10s
+  keepalive_timeout: 3s
+
 storage:
   # Required. Data directory; created if missing. One engine per node until
   # Phase 5 adds one per shard.

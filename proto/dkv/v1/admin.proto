@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+import "dkv/v1/cluster.proto";
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
+
+// AdminService is the operator API, served on every node's public address
+// next to KVService.
+service AdminService {
+  // ClusterStatus returns this node's view of the cluster: every peer in its
+  // bootstrap list, including itself, and whether it is reachable.
+  rpc ClusterStatus(ClusterStatusRequest) returns (ClusterStatusResponse);
+}
+
+message ClusterStatusRequest {}
+
+message ClusterStatusResponse {
+  NodeInfo self = 1;
+  repeated MemberStatus members = 2;
+}
+
+enum MemberState {
+  MEMBER_STATE_UNSPECIFIED = 0;
+  // Not reached yet since this node started.
+  MEMBER_STATE_UNKNOWN = 1;
+  // Answered a ping within the configured window (cluster.down_after).
+  MEMBER_STATE_UP = 2;
+  // No answer for longer than the window.
+  MEMBER_STATE_DOWN = 3;
+}
+
+message MemberStatus {
+  // addr is the peer's address as listed in the bootstrap peer list.
+  string addr = 1;
+  // node is the identity the peer reported in its last answer; empty if it
+  // has never answered.
+  NodeInfo node = 2;
+  MemberState state = 3;
+  // self is true for the node answering this request.
+  bool self = 4;
+  int64 last_seen_unix_nano = 5;
+  int64 rtt_nanos = 6;
+  uint32 consecutive_failures = 7;
+  string last_error = 8;
+}

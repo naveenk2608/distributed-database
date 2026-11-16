@@ -75,12 +75,13 @@ type serverProc struct {
 	waitDone chan struct{}
 }
 
-// startServer starts dkv-server on a free port with dataDir and waits for
-// it to report its address. If wantExit is true it instead waits for the
+// startServer starts dkv-server on a free public port with dataDir (and any
+// extra flags) and waits for it to report its address. If wantExit is true it instead waits for the
 // process to exit and returns it.
-func startServer(t *testing.T, bin, dataDir string, wantExit bool) *serverProc {
+func startServer(t *testing.T, bin, dataDir string, wantExit bool, extraArgs ...string) *serverProc {
 	t.Helper()
-	cmd := exec.Command(bin, "--server.grpc-addr=127.0.0.1:0", "--log.format=json", "--storage.dir="+dataDir)
+	args := append([]string{"--server.grpc-addr=127.0.0.1:0", "--log.format=json", "--storage.dir=" + dataDir}, extraArgs...)
+	cmd := exec.Command(bin, args...)
 	cmd.Env = []string{} // the test must not depend on the caller's DKV_* variables
 	stderr, err := cmd.StderrPipe()
 	if err != nil {

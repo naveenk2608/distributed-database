@@ -262,7 +262,7 @@ func TestRunReturnsServeError(t *testing.T) {
 	_ = lis.Close() // Accept now fails permanently
 	db := lsm.OpenInMemory()
 	defer func() { _ = db.Close() }()
-	srv := server.New(&cfg, server.NewStandaloneBackend(db), slog.New(slog.DiscardHandler))
+	srv := server.New(&cfg, server.NewStandaloneBackend(db), server.StaticStatus{}, slog.New(slog.DiscardHandler))
 	if err := srv.Run(context.Background(), lis); err == nil {
 		t.Fatal("Run on a closed listener returned nil")
 	}

@@ -7,7 +7,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short crash storage-gate bench fuzz proto proto-check tools clean
+.PHONY: all build check fmt fmt-check vet lint test test-short test-integration crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
 
 all: check build
 
@@ -40,6 +40,10 @@ test:
 test-short:
 	go test -race -count=1 -short ./...
 
+## test-integration: in-process multi-node clusters
+test-integration:
+	go test -race -count=1 -v ./test/integration/...
+
 ## crash: kill -9 harness (Phase 2 gate: at least 100 cycles, no race detector)
 CYCLES ?= 150
 crash:
@@ -60,6 +64,20 @@ fuzz:
 	go test -run='^$$' -fuzz='^FuzzRecover$$' -fuzztime=$(FUZZTIME) ./internal/storage/wal
 	go test -run='^$$' -fuzz='^FuzzDecodeBatch$$' -fuzztime=$(FUZZTIME) ./internal/storage/lsm
 	go test -run='^$$' -fuzz='^FuzzOpenAndScan$$' -fuzztime=$(FUZZTIME) ./internal/storage/sstable
+
+## docker-build: build the node image (dkv:dev)
+docker-build:
+	docker build -f deploy/docker/Dockerfile -t dkv:dev .
+
+## compose-up / compose-down: three-node cluster in Docker Compose
+compose-up:
+	docker compose -f deploy/compose/docker-compose.yml up -d --build
+compose-down:
+	docker compose -f deploy/compose/docker-compose.yml down -v --remove-orphans
+
+## compose-gate: Phase 4 gate in Compose (needs Docker)
+compose-gate:
+	deploy/compose/gate.sh
 
 ## proto: lint the protobuf API and regenerate gen/
 proto:

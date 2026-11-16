@@ -4,13 +4,11 @@ A sharded, Raft-replicated key-value store written in Go, with its own LSM-tree
 storage engine. See [docs/PLAN.md](docs/PLAN.md) for the design and roadmap and
 [docs/PROGRESS.md](docs/PROGRESS.md) for what is implemented and tested.
 
-**Current state: Phase 3.** A single standalone node with a durable LSM-tree
-engine: writes go to a checksummed write-ahead log (fsynced before they are
-acknowledged, with group commit) and a memtable; full memtables are flushed
-to SSTables with bloom filters, and size-tiered compaction merges them.
-Recovery survives crashes at any point. See
-[docs/storage-format.md](docs/storage-format.md) for the on-disk format.
-Replication arrives in Phase 6.
+**Current state: Phase 4.** Nodes form a cluster from a bootstrap peer list,
+ping each other over an internal gRPC transport and report peers that stop
+answering (`dkvctl status`). Each node still serves every key from its own
+durable LSM-tree engine (see [docs/storage-format.md](docs/storage-format.md));
+sharding arrives in Phase 5 and replication in Phase 6.
 
 ## Quick start
 
@@ -30,6 +28,20 @@ bin/dkvctl delete greeting          # deleted (version 2)
 bin/dkvctl get greeting             # exit status 1: not found
 ```
 
+### Three local nodes
+
+```sh
+P=127.0.0.1:7101,127.0.0.1:7102,127.0.0.1:7103
+for i in 1 2 3; do
+  bin/dkv-server --server.grpc-addr=127.0.0.1:707$i --cluster.internal-addr=127.0.0.1:710$i \
+    --cluster.peers=$P --storage.dir=./data/n$i --log.format=text &
+done
+bin/dkvctl --addr=127.0.0.1:7071 status
+```
+
+With Docker: `make compose-up`, then
+`docker compose -f deploy/compose/docker-compose.yml exec n1 dkvctl --addr=localhost:7070 status`.
+
 ## Development
 
 ```sh
@@ -38,6 +50,8 @@ make check        # gofmt, go vet, golangci-lint, go test -race ./...
 make proto        # buf lint + regenerate gen/ from proto/
 make proto-check  # fail if gen/ is stale
 make crash        # kill -9 harness: CYCLES=150 writer crashes, every ack checked
+make test-integration # in-process multi-node clusters
+make compose-gate # Phase 4 gate in Docker Compose (needs Docker)
 make storage-gate # Phase 3 gate: 1M-op model test, crash at every flush/compaction step, bloom rate
 make bench        # storage microbenchmarks
 make fuzz         # fuzz the WAL, batch and SSTable decoders (FUZZTIME=30s each)
