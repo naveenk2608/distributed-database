@@ -46,3 +46,18 @@ jobs:
 
       - name: kill -9 cycles
         run: make crash
+
+  storage-gate:
+    # Phase 3 gate at full size: a million-operation model test and a crash
+    # at every step of flush and compaction, without the race detector.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: storage gate
+        run: make storage-gate

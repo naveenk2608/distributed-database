@@ -28,7 +28,11 @@ var ErrCrashed = errors.New("vfs: simulated crash")
 //     was only partly written.
 //   - Directory entries (create, rename, link, remove) are durable as of the
 //     directory's last SyncDir. A file whose entry was never made durable
-//     disappears on a crash, even if its contents were synced.
+//     disappears on a crash, even if its contents were synced. Like a
+//     journaling filesystem, which may commit metadata changes before any
+//     fsync but always in order, CrashImage may also keep an in-order prefix
+//     of a directory's unsynced changes: a later change never survives
+//     without the earlier ones.
 //   - Directories made by MkdirAll are durable immediately. This is a
 //     simplification; real code still syncs the parent directory.
 //
@@ -47,6 +51,15 @@ type MemFS struct {
 type memDir struct {
 	live    map[string]*memNode // base name -> file
 	durable map[string]*memNode // entries as of the last SyncDir
+	pending []dirOp             // changes since the last SyncDir, in order
+}
+
+// dirOp is one change to a directory's entries. A rename within one
+// directory is a single op, so it is atomic in every crash image.
+type dirOp struct {
+	remove string   // entry removed, or ""
+	add    string   // entry added, or ""
+	node   *memNode // the file added
 }
 
 type memNode struct {
@@ -99,8 +112,9 @@ func (m *MemFS) Crashed() bool {
 
 // CrashImage crashes the filesystem if it has not crashed yet and returns a
 // new MemFS holding only what survived. If rng is nil, exactly the durable
-// state survives. Otherwise some unsynced appended bytes may survive too, as
-// described on MemFS; the same rng seed gives the same image.
+// state survives. Otherwise some unsynced appended bytes and a prefix of each
+// directory's unsynced changes may survive too, as described on MemFS; the
+// same rng seed gives the same image.
 func (m *MemFS) CrashImage(rng *rand.Rand) *MemFS {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,9 +123,28 @@ func (m *MemFS) CrashImage(rng *rand.Rand) *MemFS {
 	converted := map[*memNode]*memNode{} // hard links stay shared
 	for _, path := range slices.Sorted(maps.Keys(m.dirs)) {
 		d := m.dirs[path]
+		entries := maps.Clone(d.durable)
+		if rng != nil && len(d.pending) > 0 {
+			var k int
+			switch rng.IntN(3) {
+			case 0: // no unsynced change reached the disk
+			case 1:
+				k = len(d.pending) // all of them did
+			default:
+				k = rng.IntN(len(d.pending) + 1)
+			}
+			for _, op := range d.pending[:k] {
+				if op.remove != "" {
+					delete(entries, op.remove)
+				}
+				if op.add != "" {
+					entries[op.add] = op.node
+				}
+			}
+		}
 		nd := newMemDir()
-		for _, name := range slices.Sorted(maps.Keys(d.durable)) {
-			n := d.durable[name]
+		for _, name := range slices.Sorted(maps.Keys(entries)) {
+			n := entries[name]
 			nn, ok := converted[n]
 			if !ok {
 				data := survivingContents(n, rng)
@@ -198,6 +231,7 @@ func (m *MemFS) Create(name string) (File, error) {
 	} else {
 		n = &memNode{}
 		d.live[base] = n
+		d.pending = append(d.pending, dirOp{add: base, node: n})
 	}
 	return &memFile{fs: m, n: n, name: name, writable: true}, nil
 }
@@ -245,6 +279,7 @@ func (m *MemFS) Remove(name string) error {
 		return &fs.PathError{Op: "remove", Path: name, Err: fs.ErrNotExist}
 	}
 	delete(d.live, base)
+	d.pending = append(d.pending, dirOp{remove: base})
 	return nil
 }
 
@@ -277,6 +312,12 @@ func (m *MemFS) Rename(oldname, newname string) error {
 	}
 	delete(od.live, obase)
 	nd.live[nbase] = n
+	if od == nd {
+		od.pending = append(od.pending, dirOp{remove: obase, add: nbase, node: n})
+	} else {
+		od.pending = append(od.pending, dirOp{remove: obase})
+		nd.pending = append(nd.pending, dirOp{add: nbase, node: n})
+	}
 	return nil
 }
 
@@ -302,6 +343,7 @@ func (m *MemFS) Link(oldname, newname string) error {
 		return &fs.PathError{Op: "link", Path: newname, Err: fs.ErrExist}
 	}
 	nd.live[nbase] = n
+	nd.pending = append(nd.pending, dirOp{add: nbase, node: n})
 	return nil
 }
 
@@ -360,6 +402,7 @@ func (m *MemFS) SyncDir(dir string) error {
 		return &fs.PathError{Op: "syncdir", Path: dir, Err: fs.ErrNotExist}
 	}
 	d.durable = maps.Clone(d.live)
+	d.pending = nil
 	return nil
 }
 
@@ -378,7 +421,9 @@ func (m *MemFS) Lock(name string) (io.Closer, error) {
 		return nil, fmt.Errorf("%w: %s", ErrLocked, name)
 	}
 	if _, ok := d.live[base]; !ok {
-		d.live[base] = &memNode{} // like the OS version, the lock file is created
+		n := &memNode{} // like the OS version, the lock file is created
+		d.live[base] = n
+		d.pending = append(d.pending, dirOp{add: base, node: n})
 	}
 	m.locks[clean] = true
 	return &memLock{fs: m, name: clean}, nil

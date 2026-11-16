@@ -4,12 +4,13 @@ A sharded, Raft-replicated key-value store written in Go, with its own LSM-tree
 storage engine. See [docs/PLAN.md](docs/PLAN.md) for the design and roadmap and
 [docs/PROGRESS.md](docs/PROGRESS.md) for what is implemented and tested.
 
-**Current state: Phase 2.** A single standalone node with a durable engine:
-every write goes to a checksummed write-ahead log in `storage.dir` and is
-fsynced before it is acknowledged (group commit shares fsyncs between
-concurrent writes), and a restart replays the log. SSTables and compaction
-arrive in Phase 3; until then the log grows without bound. Replication
-arrives in Phase 6.
+**Current state: Phase 3.** A single standalone node with a durable LSM-tree
+engine: writes go to a checksummed write-ahead log (fsynced before they are
+acknowledged, with group commit) and a memtable; full memtables are flushed
+to SSTables with bloom filters, and size-tiered compaction merges them.
+Recovery survives crashes at any point. See
+[docs/storage-format.md](docs/storage-format.md) for the on-disk format.
+Replication arrives in Phase 6.
 
 ## Quick start
 
@@ -37,7 +38,9 @@ make check        # gofmt, go vet, golangci-lint, go test -race ./...
 make proto        # buf lint + regenerate gen/ from proto/
 make proto-check  # fail if gen/ is stale
 make crash        # kill -9 harness: CYCLES=150 writer crashes, every ack checked
-make fuzz         # fuzz the WAL and batch decoders (FUZZTIME=30s each)
+make storage-gate # Phase 3 gate: 1M-op model test, crash at every flush/compaction step, bloom rate
+make bench        # storage microbenchmarks
+make fuzz         # fuzz the WAL, batch and SSTable decoders (FUZZTIME=30s each)
 ```
 
 Randomized tests log their seed; rerun a failure with

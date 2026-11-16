@@ -223,3 +223,7 @@ func (it *Iter) Key() ikey.Key { return it.n.key }
 
 // Value returns the current value. Its bytes must not be modified.
 func (it *Iter) Value() []byte { return it.n.value }
+
+// Err always returns nil: a memtable cannot fail to read. It lets Iter
+// stand in wherever an iterator over files is expected.
+func (it *Iter) Err() error { return nil }

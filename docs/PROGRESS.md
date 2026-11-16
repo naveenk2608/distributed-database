@@ -77,9 +77,58 @@ Mutation check (each change made by hand, gate tests run, change reverted):
 
 ### Known limitations
 
-- **The WAL and the memtables grow without bound** until Phase 3 adds flushes: no segment is ever deleted, every restart replays the whole log, and all data stays in memory. This is the planned one-phase limitation.
+- **The WAL and the memtables grow without bound** until Phase 3 adds flushes: no segment is ever deleted, every restart replays the whole log, and all data stays in memory. This is the planned one-phase limitation. (Resolved in Phase 3: flushed segments are deleted, and recovery replays at most the unflushed memtables.)
 - `SyncInterval` is accepted in config; the plan allows it in standalone mode only, which is the only mode so far. Phase 6 must reject it for replicas.
 - Damage to the very last record of the newest segment is indistinguishable from a torn write, so that record is dropped (documented by `TestDamagedLastRecordIsATornTail`; ADR 0019).
 - The fault model does not simulate out-of-order persistence of unsynced pages or disks that ignore fsync (ADR 0020).
 - `/tmp` on the development machine is tmpfs, where fsync is free, so tests using `t.TempDir()` do not measure fsync cost. Durability correctness is covered by `MemFS`; fsync cost will matter for the Phase 10 benchmarks, which must run on a real disk.
 - Not done: an independent second review of the Phase 2 diff against the plan.
+
+## Phase 3: SSTables, LSM tree, indexing and compaction
+
+Status: **done.** All three gate items passed locally on 2026-11-16 (`make storage-gate`).
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| A model test of one million random operations, with flushes, compactions and restarts interleaved, matches a Go map exactly | `internal/storage/lsm` `TestModelMillionOps` via `make storage-gate`: 1,000,000 operations (55% single puts, 15% deletes, 5% multi-key batches, 25% point reads checked against the map, values and versions both) on 20,000 keys, with 32 KiB memtables so background flushes and compactions run constantly, 10 clean restarts, up to 3 live snapshots checked against frozen copies of the map, and full scans every 100,000 operations. Last run: 250,351 point reads and 179 snapshot checks matched; 3,415 flushes, 1,073 compactions. `make check` runs 200,000 operations under `-race`; CI runs the full size in its `storage-gate` job. | Passed |
+| The measured bloom filter false-positive rate is close to the configured one | `internal/storage/sstable` `TestBloomFalsePositiveRate`: 100,000 keys, 1,000,000 absent probes, no false negatives; at the default 10 bits per key 0.84% measured vs 0.82% expected (6, 14 and 20 bits per key: 6.2% vs 5.6%, 0.13% vs 0.12%, 0.008% vs 0.007%); the test allows 25%. `TestTableFilterRate` measures through a real table's `Get`: 0.78% of 200,000 absent lookups passed the filter. | Passed |
+| A crash injected at every step of flush and compaction recovers to a consistent state | `internal/storage/lsm` `TestCrashDuringFlushAndCompaction`: a workload that writes, flushes, compacts (including a final bottom compaction) runs in manual mode so every run performs the same filesystem operations; the test crashes at each of the 412 operations, recovers from the exact durable state and from a torn image, and for every 7th point also crashes at every step of the recovery. Every recovery checks that each acknowledged batch survived at its version, that the surviving sequence numbers are exactly a prefix, and that the whole state matches. Last run: 1,827 recoveries. The Phase 2 power-loss test now also crashes during real background flushes and compactions. | Passed |
+
+Mutation check (each change made by hand, gate tests run, change reverted; a test counts only if it fails by name):
+
+| Mutation | Caught by |
+| --- | --- |
+| Tombstones dropped by a compaction that does not reach the oldest table | `TestModelMillionOps`, `TestPowerLossKeepsAcknowledgedWrites`, `TestTombstoneOutlivesNonBottomCompaction` |
+| Compaction ignores live snapshots | `TestModelMillionOps`, `TestSnapshotsKeepVersionsThroughCompaction` |
+| No fsync of a new table before the manifest names it | `TestCrashDuringFlushAndCompaction`, `TestPowerLossKeepsAcknowledgedWrites` |
+| Log segments deleted before the manifest that flushed them is durable | `TestCrashDuringFlushAndCompaction`, `TestPowerLossKeepsAcknowledgedWrites` |
+| No directory fsync after the manifest rename | `TestCrashDuringFlushAndCompaction` |
+| Iterator keeps a key that aliases a table block | `TestCrashDuringFlushAndCompaction`, `TestModelMillionOps`, `TestPowerLossKeepsAcknowledgedWrites`, `TestReopenModel` |
+| Compaction inputs deleted before the new manifest is written | `TestCrashDuringFlushAndCompaction`, `TestPowerLossKeepsAcknowledgedWrites`. This one was first **missed**: the fault model made all of a directory's changes durable together. `MemFS` now keeps an in-order prefix of unsynced directory changes, as a journaling filesystem may (ADR 0020 revision), and every crash test still passes. |
+
+### Implemented and tested
+
+- **`internal/storage/sstable`:** writer and reader for the plan's format: ~4 KiB data blocks with prefix-compressed keys and restart points, one bloom filter per table over user keys (FNV-1a + SplitMix64, double hashing), index, properties and footer; CRC-32C on every block, verified on read. Byte-capped LRU block cache shared through `Options.BlockCache`. Tests: round trip and seeks against a sorted model, point reads at random snapshots, corruption of data/metadata blocks and truncation, cache eviction, `FuzzOpenAndScan`.
+- **`internal/storage/lsm`:**
+  - Background flush of immutable memtables to tables; a flush deletes the log segments it covered once the manifest is durable.
+  - Manifest rewritten in full via temp file, fsync, rename, directory fsync (ADR 0006); recovery deletes leftovers (`MANIFEST.tmp`, unlisted tables, flushed segments), refuses to start on a missing or damaged table or manifest, replays the log above the flushed sequence number and flushes it.
+  - Reads through memtables and then tables newest first, stopping at the first visible version; a merging iterator over all of them; reference-counted read states, so files are closed and deleted only after the last reader lets go.
+  - Size-tiered compaction of adjacent runs with LevelDB's snapshot-aware garbage collection and bottom-only tombstone removal (ADR 0005); rate limiter; `CompactionPool` to share a limit across engines.
+  - Write slowdown and stalls (too many tables, too many memtables awaiting flush); read snapshots with `Release`; `Checkpoint(dir)` by hard links; `Flush`; `Metrics`.
+- **`internal/storage/vfs`:** `MemFS` keeps an in-order prefix of unsynced directory changes in crash images.
+- **Docs:** `docs/storage-format.md`; ADRs 0005 and 0006; ADR 0020 revised.
+- **Tooling:** `make storage-gate`, `make bench`, `FuzzOpenAndScan` in `make fuzz`, CI `storage-gate` job.
+
+Other tests: snapshots keep their versions through compaction and lose them after release; a tombstone survives a compaction that does not reach the oldest table; the compaction picker's rules; checkpoints are hard links (`os.SameFile`) and reopen at the right sequence number after the source compacts its tables away; writes stall while a flush is held and resume when it finishes; the rate limiter bounds compaction speed; flushes delete covered log segments; readers using snapshots never see half a batch while flushes and compactions replace tables underneath them.
+
+Microbenchmarks (`make bench`, i3-1115G4, `t.TempDir()` on tmpfs, so fsync is free and these show engine overhead only): apply with `SyncNever` 2.2 µs; parallel apply with `SyncAlways` 3.4 µs; get from the memtable 0.69 µs; get from a table 4.5 µs (9 allocations, from building an iterator per lookup); get of an absent key 0.27 µs; scanning 100,000 keys 26 ms.
+
+### Known limitations
+
+- Engine options beyond the Phase 2 ones (block cache size, compaction thresholds and rate) are not in `internal/config` yet; the node uses the defaults. Phase 5 adds per-node settings when one node runs many engines that share a cache and a compaction pool.
+- Leveled compaction, the plan's stretch goal, is not implemented.
+- A table `Get` allocates an iterator per lookup, and a full scan of a table larger than the block cache allocates a block per read; both are candidates for the Phase 10 profiling work.
+- Not done: an independent second review of the Phase 3 diff against the plan.
+

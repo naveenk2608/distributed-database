@@ -20,6 +20,15 @@ var seedFlag = flag.Uint64("seed", 0, "seed for randomized tests (0 = derive fro
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
+// memDB opens an in-memory database that is closed when the test ends;
+// its background goroutines would otherwise outlive the test.
+func memDB(t *testing.T) *DB {
+	t.Helper()
+	d := OpenInMemory()
+	t.Cleanup(func() { _ = d.Close() }) // ErrClosed if the test closed it already
+	return d
+}
+
 func testSeed(t *testing.T) uint64 {
 	t.Helper()
 	seed := *seedFlag
@@ -81,7 +90,7 @@ func checkState(t *testing.T, d *DB, snap *Snapshot, want state, probeKeys [][]b
 }
 
 func TestBasicOperations(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	defer func() { _ = d.Close() }()
 
 	if _, _, err := d.Get([]byte("a"), nil); !errors.Is(err, ErrNotFound) {
@@ -119,7 +128,7 @@ func TestBasicOperations(t *testing.T) {
 // applied at log index i makes every key it writes have version i, and the
 // next log index is still accepted.
 func TestBatchSharesOneSequenceNumber(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set([]byte("value-key"), []byte("v"))
 	b.Set([]byte("session-row"), []byte("client-1:req-7"))
@@ -135,7 +144,7 @@ func TestBatchSharesOneSequenceNumber(t *testing.T) {
 }
 
 func TestBatchDeleteThenSetSameKey(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set([]byte("k"), []byte("old"))
 	mustApply(t, d, &b, 0)
@@ -150,7 +159,7 @@ func TestBatchDeleteThenSetSameKey(t *testing.T) {
 }
 
 func TestEmptyKeyAndValue(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set(nil, nil)
 	mustApply(t, d, &b, 0)
@@ -161,7 +170,7 @@ func TestEmptyKeyAndValue(t *testing.T) {
 }
 
 func TestGetReturnsCopy(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set([]byte("k"), []byte("value"))
 	mustApply(t, d, &b, 0)
@@ -173,7 +182,7 @@ func TestGetReturnsCopy(t *testing.T) {
 }
 
 func TestExplicitSequenceNumbers(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set([]byte("k"), []byte("v"))
 	if got := mustApply(t, d, &b, 10); got != 10 {
@@ -216,7 +225,7 @@ func TestExplicitSequenceNumbers(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	b.Set([]byte("k"), []byte("v"))
 	mustApply(t, d, &b, 0)
@@ -246,7 +255,7 @@ func TestClose(t *testing.T) {
 }
 
 func TestIteratorSeekGE(t *testing.T) {
-	d := OpenInMemory()
+	d := memDB(t)
 	var b Batch
 	for _, k := range []string{"a", "c", "e", "g"} {
 		b.Set([]byte(k), []byte(k))
@@ -274,7 +283,7 @@ func TestIteratorSeekGE(t *testing.T) {
 func TestModelRandomized(t *testing.T) {
 	r := rand.New(rand.NewPCG(testSeed(t), 1))
 	const rounds, numKeys = 3000, 200
-	d := OpenInMemory()
+	d := memDB(t)
 	model := state{}
 	probe := make([][]byte, numKeys+5)
 	for i := range probe {
@@ -340,7 +349,7 @@ func TestModelRandomized(t *testing.T) {
 // value, and readers using snapshots must always see all keys equal.
 func TestConcurrentReadsSeeWholeBatches(t *testing.T) {
 	const numKeys, numBatches, numReaders = 16, 2000, 6
-	d := OpenInMemory()
+	d := memDB(t)
 	keys := make([][]byte, numKeys)
 	for i := range keys {
 		keys[i] = []byte(fmt.Sprintf("key-%02d", i))

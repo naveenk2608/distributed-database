@@ -11,6 +11,9 @@ type internalIterator interface {
 	Valid() bool
 	Key() ikey.Key
 	Value() []byte
+	// Err returns the first error the iterator hit; an iterator that hit
+	// one is no longer valid.
+	Err() error
 }
 
 // mergingIter merges several internal iterators into one ordered stream with
@@ -51,6 +54,17 @@ func (m *mergingIter) Next() {
 	if len(m.heap) > 0 {
 		m.down(0)
 	}
+}
+
+// Err returns the first error of any input. An input that fails drops out
+// of the merge, so callers must check Err before trusting the result.
+func (m *mergingIter) Err() error {
+	for _, it := range m.iters {
+		if err := it.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *mergingIter) Valid() bool   { return len(m.heap) > 0 }

@@ -61,3 +61,27 @@ from contents:
   metadata-only fsync (`fdatasync`) differences, and filesystems that lie
   about fsync. Those are covered only by the assumptions stated in
   docs/PLAN.md ("provided the disks honor fsync").
+
+## Revision (Phase 3): unsynced directory changes survive as an in-order prefix
+
+Status: Accepted (Phase 3)
+
+The Phase 3 mutation check found a blind spot. Deleting a compaction's input
+tables *before* writing the new manifest is a real bug: on a journaling
+filesystem, a periodic journal commit can persist the unlinks while the
+manifest rename is still unwritten, leaving the old manifest pointing at
+deleted tables. The original model made a directory's changes durable only
+all together at the next `SyncDir`, so no crash image ever separated the
+unlinks from the rename, and the tests passed with the bug in place.
+
+`MemFS` now records each directory's unsynced changes in order, and
+`CrashImage` with an rng keeps an in-order prefix of them (none, all, or a
+random number), with a same-directory rename as one atomic change. This
+matches what ext4 and XFS guarantee for metadata: changes may become durable
+before any fsync, but in the order they were made. With the stronger model
+every crash test still passes, and the mutation is caught by
+`TestCrashDuringFlushAndCompaction` and `TestPowerLossKeepsAcknowledgedWrites`.
+
+Still not modeled: filesystems that reorder metadata changes (ext4 with
+journaling disabled), and the subtleties of `rename` over an existing file
+on filesystems without `auto_da_alloc`.

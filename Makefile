@@ -7,7 +7,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short crash fuzz proto proto-check tools clean
+.PHONY: all build check fmt fmt-check vet lint test test-short crash storage-gate bench fuzz proto proto-check tools clean
 
 all: check build
 
@@ -45,11 +45,21 @@ CYCLES ?= 150
 crash:
 	go test -count=1 -v -run '^TestKill9Cycles$$' ./test/crash -cycles=$(CYCLES)
 
+## storage-gate: Phase 3 gate at full size (make check runs smaller versions under -race)
+storage-gate:
+	go test -count=1 -v -run '^(TestModelMillionOps|TestCrashDuringFlushAndCompaction)$$' ./internal/storage/lsm -model-ops=1000000
+	go test -count=1 -v -run '^(TestBloomFalsePositiveRate|TestTableFilterRate)$$' ./internal/storage/sstable
+
+## bench: storage microbenchmarks
+bench:
+	go test -run '^$$' -bench . -benchmem ./internal/storage/sstable ./internal/storage/lsm
+
 ## fuzz: run every fuzz target for FUZZTIME each
 FUZZTIME ?= 30s
 fuzz:
 	go test -run='^$$' -fuzz='^FuzzRecover$$' -fuzztime=$(FUZZTIME) ./internal/storage/wal
 	go test -run='^$$' -fuzz='^FuzzDecodeBatch$$' -fuzztime=$(FUZZTIME) ./internal/storage/lsm
+	go test -run='^$$' -fuzz='^FuzzOpenAndScan$$' -fuzztime=$(FUZZTIME) ./internal/storage/sstable
 
 ## proto: lint the protobuf API and regenerate gen/
 proto:

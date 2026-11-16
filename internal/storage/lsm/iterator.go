@@ -14,13 +14,15 @@ type IterOptions struct {
 
 // Iterator walks live user keys in ascending order, yielding the newest
 // version of each key visible at its snapshot and skipping deleted keys.
-// It is not safe for concurrent use.
+// It holds the files it reads open until Close, so always close it. It is
+// not safe for concurrent use.
 type Iterator struct {
-	it  internalIterator
-	seq uint64
+	state *readState
+	it    internalIterator
+	seq   uint64
 
 	valid   bool
-	key     []byte
+	key     []byte // owned copy: table iterators reuse their key buffers
 	value   []byte
 	version uint64
 }
@@ -30,17 +32,26 @@ func (d *DB) NewIterator(opts IterOptions) (*Iterator, error) {
 	if d.closed.Load() {
 		return nil, ErrClosed
 	}
-	seq, v := d.readState(opts.Snapshot)
-	iters := make([]internalIterator, 0, 1+len(v.imm))
-	iters = append(iters, v.mem.NewIter())
-	for _, m := range v.imm {
-		iters = append(iters, m.NewIter())
+	seq := d.readSeq(opts.Snapshot)
+	s := d.loadState()
+	if s == nil {
+		return nil, ErrClosed
+	}
+	iters := make([]internalIterator, 0, 1+len(s.imm)+len(s.tables))
+	iters = append(iters, s.mem.NewIter())
+	for _, m := range s.imm {
+		iters = append(iters, m.mt.NewIter())
+	}
+	for _, t := range s.tables {
+		if t.meta.minSeq <= seq {
+			iters = append(iters, t.reader.NewIter())
+		}
 	}
 	it := iters[0]
 	if len(iters) > 1 {
 		it = newMergingIter(iters...)
 	}
-	return &Iterator{it: it, seq: seq}, nil
+	return &Iterator{state: s, it: it, seq: seq}, nil
 }
 
 // First positions the iterator at the smallest live key.
@@ -61,7 +72,8 @@ func (i *Iterator) Next() {
 	i.settle()
 }
 
-// Valid reports whether the iterator is positioned at a key.
+// Valid reports whether the iterator is positioned at a key. After a read
+// error it is false; check Err.
 func (i *Iterator) Valid() bool { return i.valid }
 
 // Key returns the current user key. It is valid until the next positioning
@@ -76,16 +88,32 @@ func (i *Iterator) Value() []byte { return i.value }
 // current value.
 func (i *Iterator) Version() uint64 { return i.version }
 
-// Close releases the iterator.
+// Err returns the first read error, such as a corrupt block. A scan that
+// ends with an error is incomplete.
+func (i *Iterator) Err() error {
+	if i.it == nil {
+		return nil
+	}
+	if err := i.it.Err(); err != nil {
+		return readError(err)
+	}
+	return nil
+}
+
+// Close releases the files the iterator holds.
 func (i *Iterator) Close() error {
-	i.valid, i.key, i.value, i.it = false, nil, nil, nil
+	if i.state != nil {
+		i.state.unref()
+		i.state = nil
+	}
+	i.valid, i.value = false, nil
 	return nil
 }
 
 // settle advances the underlying iterator to the newest visible version of
 // the next live user key, starting at its current position.
 func (i *Iterator) settle() {
-	for i.it.Valid() {
+	for i.it.Valid() && i.it.Err() == nil {
 		k := i.it.Key()
 		if k.Seq() > i.seq {
 			i.it.Next() // written after the snapshot
@@ -93,17 +121,19 @@ func (i *Iterator) settle() {
 		}
 		// Entries for a user key are ordered newest first, so the first one
 		// visible at the snapshot is the version the snapshot sees.
+		i.key = append(i.key[:0], k.UserKey...)
 		if k.Kind() == ikey.KindDelete {
-			i.skipUserKey(k.UserKey)
+			i.skipUserKey(i.key)
 			continue
 		}
-		i.valid, i.key, i.value, i.version = true, k.UserKey, i.it.Value(), k.Seq()
+		i.valid, i.value, i.version = true, i.it.Value(), k.Seq()
 		return
 	}
-	i.valid, i.key, i.value, i.version = false, nil, nil, 0
+	i.valid, i.value, i.version = false, nil, 0
 }
 
-// skipUserKey advances past every remaining entry for userKey.
+// skipUserKey advances past every remaining entry for userKey, which must
+// not alias the underlying iterator's key.
 func (i *Iterator) skipUserKey(userKey []byte) {
 	for i.it.Valid() && bytes.Equal(i.it.Key().UserKey, userKey) {
 		i.it.Next()

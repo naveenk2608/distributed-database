@@ -3,6 +3,7 @@ package vfs
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -271,5 +272,46 @@ func TestMemHardLinksShareContents(t *testing.T) {
 	}
 	if got := readAll(t, img, "/d/b"); string(got) != "v2" {
 		t.Errorf("link did not survive the crash as a link: %q", got)
+	}
+}
+
+// TestMemCrashImageKeepsAPrefixOfDirectoryChanges checks the journaling
+// model: unsynced directory changes survive a crash only as an in-order
+// prefix, and a rename is atomic.
+func TestMemCrashImageKeepsAPrefixOfDirectoryChanges(t *testing.T) {
+	setup := func() *MemFS {
+		m := NewMemFS()
+		_ = m.MkdirAll("/d")
+		writeFile(t, m, "/d/old", []byte("o"), true)
+		writeFile(t, m, "/d/tmp", []byte("t"), true)
+		_ = m.SyncDir("/d")
+		writeFile(t, m, "/d/a", []byte("a"), true) // 1: add a
+		_ = m.Remove("/d/old")                     // 2: remove old
+		_ = m.Rename("/d/tmp", "/d/final")         // 3: tmp -> final, atomically
+		writeFile(t, m, "/d/b", []byte("b"), true) // 4: add b
+		return m
+	}
+	prefixes := []string{
+		"[old tmp]",
+		"[a old tmp]",
+		"[a tmp]",
+		"[a final]",
+		"[a b final]",
+	}
+	seen := map[string]int{}
+	for seed := range uint64(200) {
+		img := setup().CrashImage(rand.New(rand.NewPCG(seed, 3)))
+		names, _ := img.List("/d")
+		got := fmt.Sprint(names)
+		if !slices.Contains(prefixes, got) {
+			t.Fatalf("seed %d: entries %s are not an in-order prefix of the unsynced changes", seed, got)
+		}
+		seen[got]++
+	}
+	if seen[prefixes[0]] == 0 || seen[prefixes[len(prefixes)-1]] == 0 || len(seen) < 4 {
+		t.Errorf("prefix outcomes %v: expected none, all and partial prefixes", seen)
+	}
+	if names, _ := setup().CrashImage(nil).List("/d"); fmt.Sprint(names) != prefixes[0] {
+		t.Errorf("exact image %v, want only the synced entries", names)
 	}
 }

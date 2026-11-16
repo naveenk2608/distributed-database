@@ -296,7 +296,10 @@ func runSequential(d *DB, w *workload, r *rand.Rand, n int) {
 // again at every step of that recovery, which must also be safe to repeat.
 func TestCrashAtEveryStep(t *testing.T) {
 	const batches = 40
-	opts := Options{MemtableBytes: 1 << 10}
+	// manual: no background goroutines, so every run performs the same
+	// filesystem operations in the same order. Flush and compaction crash
+	// points are covered by TestCrashDuringFlushAndCompaction.
+	opts := Options{MemtableBytes: 1 << 10, manual: true}
 	run := func(fs *vfs.MemFS, w *workload) {
 		o := opts
 		o.FS = fs
@@ -331,12 +334,12 @@ func TestCrashAtEveryStep(t *testing.T) {
 			for recoverCrash := int64(0); ; recoverCrash++ {
 				attempt := img.CrashImage(nil) // a fresh copy of the crashed state
 				attempt.CrashAfter(recoverCrash)
-				d, err := Open(testDir, Options{FS: attempt})
+				d, err := Open(testDir, Options{FS: attempt, manual: true})
 				if err == nil {
 					_ = d.Close()
 				}
 				finished := !attempt.Crashed()
-				d, err = Open(testDir, Options{FS: attempt.CrashImage(nil)})
+				d, err = Open(testDir, Options{FS: attempt.CrashImage(nil), manual: true})
 				if err != nil {
 					t.Fatalf("crash at op %d (torn=%d), recovery crashed at op %d: reopen: %v", crashAt, torn, recoverCrash, err)
 				}
@@ -368,7 +371,9 @@ func TestCorruptRecordMidLogStopsOpen(t *testing.T) {
 	for _, where := range []string{"older segment", "middle of newest segment"} {
 		t.Run(where, func(t *testing.T) {
 			fs := vfs.NewMemFS()
-			d := openMem(t, fs, Options{MemtableBytes: 4 << 10})
+			// manual: nothing is flushed, so the records stay in log
+			// segments for the test to damage.
+			d := openMem(t, fs, Options{MemtableBytes: 4 << 10, manual: true})
 			writeBatches(t, d, 200)
 			if err := d.Close(); err != nil {
 				t.Fatal(err)
@@ -381,7 +386,7 @@ func TestCorruptRecordMidLogStopsOpen(t *testing.T) {
 			if where == "middle of newest segment" {
 				// Reopen and write more, so the newest segment holds
 				// records rather than being the empty one Close left.
-				d = openMem(t, fs, Options{})
+				d = openMem(t, fs, Options{manual: true})
 				writeBatches(t, d, 20)
 				if err := d.Close(); err != nil {
 					t.Fatal(err)
@@ -601,6 +606,7 @@ func TestSyncPolicies(t *testing.T) {
 		if has(mem.CrashImage(nil), "a") {
 			t.Error("SyncNever write survived a power loss; the test cannot tell the policies apart")
 		}
+		_ = d.Close() // fails on the crashed filesystem but stops background work
 		mem = vfs.NewMemFS()
 		d = openMem(t, mem, Options{Sync: SyncNever})
 		put(d, "a")
@@ -638,18 +644,22 @@ func TestSyncPolicies(t *testing.T) {
 func TestReopenModel(t *testing.T) {
 	r := rand.New(rand.NewPCG(testSeed(t), 11))
 	fs := vfs.NewMemFS()
-	d := openMem(t, fs, Options{MemtableBytes: 512})
+	opts := Options{MemtableBytes: 512, manual: true} // memtables pile up unflushed
+	d := openMem(t, fs, opts)
 	w := newWorkload()
 	maxImm := 0
 	for round := range 2000 {
 		id, b := w.newBatch(r, 60)
 		w.ack(id, mustApply(t, d, b, 0))
-		maxImm = max(maxImm, len(d.view.Load().imm))
+		if s := d.loadState(); s != nil {
+			maxImm = max(maxImm, len(s.imm))
+			s.unref()
+		}
 		if r.IntN(200) == 0 {
 			if err := d.Close(); err != nil {
 				t.Fatal(err)
 			}
-			d = openMem(t, fs, Options{MemtableBytes: 512})
+			d = openMem(t, fs, opts)
 		}
 		if round%400 == 0 {
 			w.verify(t, d)
