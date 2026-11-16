@@ -1,0 +1,16 @@
+# Example dkv-server configuration. Every key can also be set with a
+# DKV_* environment variable or a flag; run `dkv-server -h` for the list.
+# Priority: flags > environment > this file > built-in defaults.
+
+server:
+  # Required. Port 0 picks a free port; the bound address is logged.
+  grpc_addr: "127.0.0.1:7070"
+  shutdown_timeout: 10s
+
+limits:
+  max_key_bytes: 4096
+  max_value_bytes: 1048576
+
+log:
+  level: info   # debug, info, warn, error
+  format: json  # json or text

@@ -1,0 +1,92 @@
+# golangci-lint v2 configuration (the version is pinned in the Makefile).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - misspell
+    - errorlint
+    - bodyclose
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # Project hard rule: no existing Raft library, storage engine or
+        # database in core functionality.
+        banned-core-libraries:
+          files: ["$all"]
+          deny:
+            - pkg: github.com/hashicorp/raft
+              desc: dkv implements its own Raft (internal/raft)
+            - pkg: go.etcd.io/raft
+              desc: dkv implements its own Raft (internal/raft)
+            - pkg: go.etcd.io/etcd/raft
+              desc: dkv implements its own Raft (internal/raft)
+            - pkg: github.com/cockroachdb/pebble
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: github.com/dgraph-io/badger
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: go.etcd.io/bbolt
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: github.com/boltdb/bolt
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: github.com/syndtr/goleveldb
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: github.com/linxGnu/grocksdb
+              desc: dkv implements its own storage engine (internal/storage)
+            - pkg: github.com/tecbot/gorocksdb
+              desc: dkv implements its own storage engine (internal/storage)
+        # PostgreSQL is allowed only in cmd/dkv-console.
+        postgres-only-in-console:
+          files: ["$all", "!**/cmd/dkv-console/**"]
+          deny:
+            - pkg: github.com/jackc/pgx
+              desc: PostgreSQL is only for cmd/dkv-console
+            - pkg: github.com/lib/pq
+              desc: PostgreSQL is only for cmd/dkv-console
+            - pkg: database/sql
+              desc: no SQL databases outside cmd/dkv-console
+        # Architecture boundary: storage knows nothing about Raft, gRPC or clusters.
+        storage-is-standalone:
+          files: ["**/internal/storage/**"]
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: internal/storage must not depend on gRPC
+            - pkg: google.golang.org/protobuf
+              desc: internal/storage must not depend on protobuf
+            - pkg: github.com/naveenk2608/distributed-database/gen
+              desc: internal/storage must not depend on the wire API
+            - pkg: github.com/naveenk2608/distributed-database/internal/raft
+              desc: internal/storage must not depend on Raft
+            - pkg: github.com/naveenk2608/distributed-database/internal/replica
+              desc: internal/storage must not depend on replicas
+            - pkg: github.com/naveenk2608/distributed-database/internal/transport
+              desc: internal/storage must not depend on the transport
+            - pkg: github.com/naveenk2608/distributed-database/internal/cluster
+              desc: internal/storage must not depend on cluster management
+            - pkg: github.com/naveenk2608/distributed-database/internal/placement
+              desc: internal/storage must not depend on placement
+            - pkg: github.com/naveenk2608/distributed-database/internal/router
+              desc: internal/storage must not depend on routing
+            - pkg: github.com/naveenk2608/distributed-database/internal/server
+              desc: internal/storage must not depend on the API server
+            - pkg: github.com/naveenk2608/distributed-database/internal/config
+              desc: internal/storage takes plain options, not node config
+
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/naveenk2608/distributed-database
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,13 +1,9 @@
 version: v2
-name: buf.build/naveenk2608/dkv
-deps:
-  - buf.build/googleapis/googleapis
+modules:
+  - path: proto
 lint:
   use:
-    - DEFAULT
-    - PROTO_PACKAGE_VERSION_SUFFIX
-  except:
-    - PACKAGE_VERSION_SUFFIX
+    - STANDARD
 breaking:
   use:
     - FILE

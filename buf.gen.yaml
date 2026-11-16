@@ -1,12 +1,10 @@
+# Generated code is committed so a fresh clone builds without these tools.
+# Regenerate with `make proto`; plugin versions are pinned in the Makefile.
 version: v2
-managed:
-  enabled: true
-  go_package_prefix:
-    default: github.com/naveenk2608/distributed-database/gen
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - local: protoc-gen-go
     out: gen
     opt: paths=source_relative
-  - remote: buf.build/grpc/go
+  - local: protoc-gen-go-grpc
     out: gen
-    opt: paths=source_relative,require_unimplemented_servers=false
+    opt: paths=source_relative

@@ -2,9 +2,17 @@ module github.com/naveenk2608/distributed-database
 
 go 1.27
 
-require gopkg.in/yaml.v3 v3.0.1
+require (
+	go.uber.org/goleak v1.3.0
+	go.yaml.in/yaml/v3 v3.0.6
+	google.golang.org/grpc v1.85.0
+	google.golang.org/protobuf v1.36.12
+)
 
 require (
-	github.com/kr/pretty v0.3.1 // indirect
-	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 )

@@ -1,64 +1,62 @@
-.PHONY: check test test-integration sim chaos proto build lint vet fmt
+# Tool versions. CI installs exactly these; `make tools` installs them locally.
+GOLANGCI_LINT_VERSION      := v2.15.0
+BUF_VERSION                := v1.75.0
+PROTOC_GEN_GO_VERSION      := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 
-# Build the server and CLI binaries
+GOBIN := $(shell go env GOPATH)/bin
+export PATH := $(GOBIN):$(PATH)
+
+.PHONY: all build check fmt fmt-check vet lint test test-short proto proto-check tools clean
+
+all: check build
+
+## build: compile dkv-server and dkvctl into bin/
 build:
 	go build -o bin/dkv-server ./cmd/dkv-server
 	go build -o bin/dkvctl ./cmd/dkvctl
 
-# Run all checks: format, vet, lint, test with race detector
-check: fmt vet lint test
+## check: everything CI runs: formatting, vet, lint, race-enabled tests
+check: fmt-check vet lint test
 
-# Format code
+## fmt: rewrite Go files with gofmt
 fmt:
 	gofmt -s -w .
 
-# Go vet
+fmt-check:
+	@out="$$(gofmt -s -l .)"; if [ -n "$$out" ]; then echo "gofmt needed on:"; echo "$$out"; exit 1; fi
+
 vet:
 	go vet ./...
 
-# Golangci-lint
 lint:
 	golangci-lint run ./...
 
-# Run all tests with race detector
+## test: all tests with the race detector
 test:
 	go test -race -count=1 ./...
 
-# Run integration tests (in-process multi-node)
-test-integration:
-	go test -race -count=1 -tags=integration ./test/integration/...
+## test-short: skip slow tests (the e2e binary test)
+test-short:
+	go test -race -count=1 -short ./...
 
-# Run deterministic Raft/cluster simulation
-# Usage: make sim SEEDS=1000
-sim:
-	go test -race -count=1 -run=TestSim -v ./internal/sim/... -seeds=$(SEEDS)
-
-# Run chaos tests (Docker fault scenarios)
-chaos:
-	go test -race -count=1 -tags=chaos -timeout=30m ./test/chaos/...
-
-# Generate protobuf code
+## proto: lint the protobuf API and regenerate gen/
 proto:
+	buf lint
 	buf generate
 
-# Download and verify dependencies
-deps:
-	go mod download
-	go mod verify
+## proto-check: fail if gen/ is out of date with proto/
+proto-check: proto
+	@git diff --exit-code -- gen/ || (echo "gen/ is stale: run make proto and commit"; exit 1)
+	@test -z "$$(git ls-files --others --exclude-standard -- gen/)" || (echo "untracked files in gen/: run make proto and commit"; exit 1)
 
-# Tidy dependencies
-tidy:
-	go mod tidy
-
-# Install development tools
+## tools: install pinned development tools into GOBIN
 tools:
-	go install github.com/bufbuild/buf/cmd/buf@latest
-	go install golang.org/x/tools/cmd/goimports@latest
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
-# Clean build artifacts
 clean:
-	rm -rf bin/
-	rm -f coverage.out
+	go clean
+	rm -f bin/dkv-server bin/dkvctl
