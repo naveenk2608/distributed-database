@@ -52,7 +52,7 @@ test("a killed node shows on the dashboard, then the events in order", async ({ 
   }).toPass({ timeout: 120_000 });
   console.log(`events: ${order.join(", ")}`);
 
-  await page.getByRole("link", { name: "Events" }).click();
+  await page.getByRole("link", { name: "Events", exact: true }).click();
   for (const kind of ["leader_elected", "node_dead", "replica_added"]) {
     await expect(page.locator(`tr[data-kind="${kind}"]`).first()).toBeVisible();
   }
