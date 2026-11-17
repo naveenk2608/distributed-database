@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	InternalService_Ping_FullMethodName    = "/dkv.v1.InternalService/Ping"
 	InternalService_Forward_FullMethodName = "/dkv.v1.InternalService/Forward"
+	InternalService_Raft_FullMethodName    = "/dkv.v1.InternalService/Raft"
 )
 
 // InternalServiceClient is the client API for InternalService service.
@@ -40,6 +41,9 @@ type InternalServiceClient interface {
 	// otherwise it answers not_owner with the owner it knows of, and never
 	// forwards further, so a request makes at most one internal hop per try.
 	Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error)
+	// Raft delivers a batch of Raft messages for any number of shards.
+	// Delivery is best effort: Raft tolerates lost messages.
+	Raft(ctx context.Context, in *RaftRequest, opts ...grpc.CallOption) (*RaftResponse, error)
 }
 
 type internalServiceClient struct {
@@ -70,6 +74,16 @@ func (c *internalServiceClient) Forward(ctx context.Context, in *ForwardRequest,
 	return out, nil
 }
 
+func (c *internalServiceClient) Raft(ctx context.Context, in *RaftRequest, opts ...grpc.CallOption) (*RaftResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RaftResponse)
+	err := c.cc.Invoke(ctx, InternalService_Raft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServiceServer is the server API for InternalService service.
 // All implementations must embed UnimplementedInternalServiceServer
 // for forward compatibility.
@@ -87,6 +101,9 @@ type InternalServiceServer interface {
 	// otherwise it answers not_owner with the owner it knows of, and never
 	// forwards further, so a request makes at most one internal hop per try.
 	Forward(context.Context, *ForwardRequest) (*ForwardResponse, error)
+	// Raft delivers a batch of Raft messages for any number of shards.
+	// Delivery is best effort: Raft tolerates lost messages.
+	Raft(context.Context, *RaftRequest) (*RaftResponse, error)
 	mustEmbedUnimplementedInternalServiceServer()
 }
 
@@ -102,6 +119,9 @@ func (UnimplementedInternalServiceServer) Ping(context.Context, *PingRequest) (*
 }
 func (UnimplementedInternalServiceServer) Forward(context.Context, *ForwardRequest) (*ForwardResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Forward not implemented")
+}
+func (UnimplementedInternalServiceServer) Raft(context.Context, *RaftRequest) (*RaftResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Raft not implemented")
 }
 func (UnimplementedInternalServiceServer) mustEmbedUnimplementedInternalServiceServer() {}
 func (UnimplementedInternalServiceServer) testEmbeddedByValue()                         {}
@@ -160,6 +180,24 @@ func _InternalService_Forward_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _InternalService_Raft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RaftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).Raft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_Raft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).Raft(ctx, req.(*RaftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // InternalService_ServiceDesc is the grpc.ServiceDesc for InternalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -174,6 +212,10 @@ var InternalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Forward",
 			Handler:    _InternalService_Forward_Handler,
+		},
+		{
+			MethodName: "Raft",
+			Handler:    _InternalService_Raft_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KVService_Put_FullMethodName    = "/dkv.v1.KVService/Put"
-	KVService_Get_FullMethodName    = "/dkv.v1.KVService/Get"
-	KVService_Delete_FullMethodName = "/dkv.v1.KVService/Delete"
+	KVService_Put_FullMethodName           = "/dkv.v1.KVService/Put"
+	KVService_Get_FullMethodName           = "/dkv.v1.KVService/Get"
+	KVService_Delete_FullMethodName        = "/dkv.v1.KVService/Delete"
+	KVService_CompareAndSet_FullMethodName = "/dkv.v1.KVService/CompareAndSet"
 )
 
 // KVServiceClient is the client API for KVService service.
@@ -44,11 +45,15 @@ const (
 type KVServiceClient interface {
 	// Put stores value under key and returns the new version.
 	Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*PutResponse, error)
-	// Get returns the current value of key, if any.
+	// Get returns the value of key, if any. By default the read is
+	// linearizable; consistency STALE reads a replica's applied state.
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
 	// Delete removes key. Deleting a missing key succeeds with found=false,
 	// so retries are harmless.
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// CompareAndSet stores value under key only if the key's current version
+	// is expected_version (0 means the key must have no value).
+	CompareAndSet(ctx context.Context, in *CompareAndSetRequest, opts ...grpc.CallOption) (*CompareAndSetResponse, error)
 }
 
 type kVServiceClient struct {
@@ -89,6 +94,16 @@ func (c *kVServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts ..
 	return out, nil
 }
 
+func (c *kVServiceClient) CompareAndSet(ctx context.Context, in *CompareAndSetRequest, opts ...grpc.CallOption) (*CompareAndSetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompareAndSetResponse)
+	err := c.cc.Invoke(ctx, KVService_CompareAndSet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KVServiceServer is the server API for KVService service.
 // All implementations must embed UnimplementedKVServiceServer
 // for forward compatibility.
@@ -109,11 +124,15 @@ func (c *kVServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts ..
 type KVServiceServer interface {
 	// Put stores value under key and returns the new version.
 	Put(context.Context, *PutRequest) (*PutResponse, error)
-	// Get returns the current value of key, if any.
+	// Get returns the value of key, if any. By default the read is
+	// linearizable; consistency STALE reads a replica's applied state.
 	Get(context.Context, *GetRequest) (*GetResponse, error)
 	// Delete removes key. Deleting a missing key succeeds with found=false,
 	// so retries are harmless.
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	// CompareAndSet stores value under key only if the key's current version
+	// is expected_version (0 means the key must have no value).
+	CompareAndSet(context.Context, *CompareAndSetRequest) (*CompareAndSetResponse, error)
 	mustEmbedUnimplementedKVServiceServer()
 }
 
@@ -132,6 +151,9 @@ func (UnimplementedKVServiceServer) Get(context.Context, *GetRequest) (*GetRespo
 }
 func (UnimplementedKVServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedKVServiceServer) CompareAndSet(context.Context, *CompareAndSetRequest) (*CompareAndSetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompareAndSet not implemented")
 }
 func (UnimplementedKVServiceServer) mustEmbedUnimplementedKVServiceServer() {}
 func (UnimplementedKVServiceServer) testEmbeddedByValue()                   {}
@@ -208,6 +230,24 @@ func _KVService_Delete_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KVService_CompareAndSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompareAndSetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).CompareAndSet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_CompareAndSet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).CompareAndSet(ctx, req.(*CompareAndSetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KVService_ServiceDesc is the grpc.ServiceDesc for KVService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -226,6 +266,10 @@ var KVService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _KVService_Delete_Handler,
+		},
+		{
+			MethodName: "CompareAndSet",
+			Handler:    _KVService_CompareAndSet_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

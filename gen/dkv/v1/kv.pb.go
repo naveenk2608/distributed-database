@@ -21,10 +21,65 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type Consistency int32
+
+const (
+	// The default: linearizable.
+	Consistency_CONSISTENCY_UNSPECIFIED Consistency = 0
+	// Linearizable: the read reflects every write acknowledged before it.
+	Consistency_CONSISTENCY_LINEARIZABLE Consistency = 1
+	// Stale: any replica answers from its applied state at once; the
+	// response's applied_index says how far that state goes.
+	Consistency_CONSISTENCY_STALE Consistency = 2
+)
+
+// Enum value maps for Consistency.
+var (
+	Consistency_name = map[int32]string{
+		0: "CONSISTENCY_UNSPECIFIED",
+		1: "CONSISTENCY_LINEARIZABLE",
+		2: "CONSISTENCY_STALE",
+	}
+	Consistency_value = map[string]int32{
+		"CONSISTENCY_UNSPECIFIED":  0,
+		"CONSISTENCY_LINEARIZABLE": 1,
+		"CONSISTENCY_STALE":        2,
+	}
+)
+
+func (x Consistency) Enum() *Consistency {
+	p := new(Consistency)
+	*p = x
+	return p
+}
+
+func (x Consistency) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Consistency) Descriptor() protoreflect.EnumDescriptor {
+	return file_dkv_v1_kv_proto_enumTypes[0].Descriptor()
+}
+
+func (Consistency) Type() protoreflect.EnumType {
+	return &file_dkv_v1_kv_proto_enumTypes[0]
+}
+
+func (x Consistency) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Consistency.Descriptor instead.
+func (Consistency) EnumDescriptor() ([]byte, []int) {
+	return file_dkv_v1_kv_proto_rawDescGZIP(), []int{0}
+}
+
 type PutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	ClientId      string                 `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RequestId     uint64                 `protobuf:"varint,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -73,6 +128,20 @@ func (x *PutRequest) GetValue() []byte {
 	return nil
 }
 
+func (x *PutRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *PutRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
 type PutResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -118,8 +187,12 @@ func (x *PutResponse) GetVersion() uint64 {
 }
 
 type GetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Key         []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Consistency Consistency            `protobuf:"varint,2,opt,name=consistency,proto3,enum=dkv.v1.Consistency" json:"consistency,omitempty"`
+	// min_version, for a stale read, makes the replica wait until it has
+	// applied at least this version of the key's shard (read-your-writes).
+	MinVersion    uint64 `protobuf:"varint,3,opt,name=min_version,json=minVersion,proto3" json:"min_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -161,12 +234,28 @@ func (x *GetRequest) GetKey() []byte {
 	return nil
 }
 
+func (x *GetRequest) GetConsistency() Consistency {
+	if x != nil {
+		return x.Consistency
+	}
+	return Consistency_CONSISTENCY_UNSPECIFIED
+}
+
+func (x *GetRequest) GetMinVersion() uint64 {
+	if x != nil {
+		return x.MinVersion
+	}
+	return 0
+}
+
 type GetResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// found is false if the key has no value; value and version are then unset.
-	Found         bool   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
-	Value         []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	Version       uint64 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	Found   bool   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	Value   []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Version uint64 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	// applied_index is the shard's applied index at the replica that answered.
+	AppliedIndex  uint64 `protobuf:"varint,4,opt,name=applied_index,json=appliedIndex,proto3" json:"applied_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -222,9 +311,18 @@ func (x *GetResponse) GetVersion() uint64 {
 	return 0
 }
 
+func (x *GetResponse) GetAppliedIndex() uint64 {
+	if x != nil {
+		return x.AppliedIndex
+	}
+	return 0
+}
+
 type DeleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	ClientId      string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RequestId     uint64                 `protobuf:"varint,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -264,6 +362,20 @@ func (x *DeleteRequest) GetKey() []byte {
 		return x.Key
 	}
 	return nil
+}
+
+func (x *DeleteRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *DeleteRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
 }
 
 type DeleteResponse struct {
@@ -320,33 +432,188 @@ func (x *DeleteResponse) GetVersion() uint64 {
 	return 0
 }
 
+type CompareAndSetRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Key             []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value           []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	ExpectedVersion uint64                 `protobuf:"varint,3,opt,name=expected_version,json=expectedVersion,proto3" json:"expected_version,omitempty"`
+	ClientId        string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RequestId       uint64                 `protobuf:"varint,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *CompareAndSetRequest) Reset() {
+	*x = CompareAndSetRequest{}
+	mi := &file_dkv_v1_kv_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompareAndSetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompareAndSetRequest) ProtoMessage() {}
+
+func (x *CompareAndSetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_kv_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompareAndSetRequest.ProtoReflect.Descriptor instead.
+func (*CompareAndSetRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_kv_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CompareAndSetRequest) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *CompareAndSetRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *CompareAndSetRequest) GetExpectedVersion() uint64 {
+	if x != nil {
+		return x.ExpectedVersion
+	}
+	return 0
+}
+
+func (x *CompareAndSetRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *CompareAndSetRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+type CompareAndSetResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Succeeded bool                   `protobuf:"varint,1,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
+	// version is the new version if the write happened, otherwise the key's
+	// current version (0 if it has no value).
+	Version       uint64 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompareAndSetResponse) Reset() {
+	*x = CompareAndSetResponse{}
+	mi := &file_dkv_v1_kv_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompareAndSetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompareAndSetResponse) ProtoMessage() {}
+
+func (x *CompareAndSetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_kv_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompareAndSetResponse.ProtoReflect.Descriptor instead.
+func (*CompareAndSetResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_kv_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *CompareAndSetResponse) GetSucceeded() bool {
+	if x != nil {
+		return x.Succeeded
+	}
+	return false
+}
+
+func (x *CompareAndSetResponse) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
 var File_dkv_v1_kv_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_kv_proto_rawDesc = "" +
 	"\n" +
-	"\x0fdkv/v1/kv.proto\x12\x06dkv.v1\"4\n" +
+	"\x0fdkv/v1/kv.proto\x12\x06dkv.v1\"p\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\"'\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1b\n" +
+	"\tclient_id\x18\x03 \x01(\tR\bclientId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\x04R\trequestId\"'\n" +
 	"\vPutResponse\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x04R\aversion\"\x1e\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\"v\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\fR\x03key\"S\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x125\n" +
+	"\vconsistency\x18\x02 \x01(\x0e2\x13.dkv.v1.ConsistencyR\vconsistency\x12\x1f\n" +
+	"\vmin_version\x18\x03 \x01(\x04R\n" +
+	"minVersion\"x\n" +
 	"\vGetResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x18\n" +
-	"\aversion\x18\x03 \x01(\x04R\aversion\"!\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\x12#\n" +
+	"\rapplied_index\x18\x04 \x01(\x04R\fappliedIndex\"]\n" +
 	"\rDeleteRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\fR\x03key\"@\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x03 \x01(\x04R\trequestId\"@\n" +
 	"\x0eDeleteResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\x04R\aversion2\xa4\x01\n" +
+	"\aversion\x18\x02 \x01(\x04R\aversion\"\xa5\x01\n" +
+	"\x14CompareAndSetRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12)\n" +
+	"\x10expected_version\x18\x03 \x01(\x04R\x0fexpectedVersion\x12\x1b\n" +
+	"\tclient_id\x18\x04 \x01(\tR\bclientId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\x04R\trequestId\"O\n" +
+	"\x15CompareAndSetResponse\x12\x1c\n" +
+	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x04R\aversion*_\n" +
+	"\vConsistency\x12\x1b\n" +
+	"\x17CONSISTENCY_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18CONSISTENCY_LINEARIZABLE\x10\x01\x12\x15\n" +
+	"\x11CONSISTENCY_STALE\x10\x022\xf2\x01\n" +
 	"\tKVService\x12.\n" +
 	"\x03Put\x12\x12.dkv.v1.PutRequest\x1a\x13.dkv.v1.PutResponse\x12.\n" +
 	"\x03Get\x12\x12.dkv.v1.GetRequest\x1a\x13.dkv.v1.GetResponse\x127\n" +
-	"\x06Delete\x12\x15.dkv.v1.DeleteRequest\x1a\x16.dkv.v1.DeleteResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
+	"\x06Delete\x12\x15.dkv.v1.DeleteRequest\x1a\x16.dkv.v1.DeleteResponse\x12L\n" +
+	"\rCompareAndSet\x12\x1c.dkv.v1.CompareAndSetRequest\x1a\x1d.dkv.v1.CompareAndSetResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
 
 var (
 	file_dkv_v1_kv_proto_rawDescOnce sync.Once
@@ -360,27 +627,34 @@ func file_dkv_v1_kv_proto_rawDescGZIP() []byte {
 	return file_dkv_v1_kv_proto_rawDescData
 }
 
-var file_dkv_v1_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_dkv_v1_kv_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_dkv_v1_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_dkv_v1_kv_proto_goTypes = []any{
-	(*PutRequest)(nil),     // 0: dkv.v1.PutRequest
-	(*PutResponse)(nil),    // 1: dkv.v1.PutResponse
-	(*GetRequest)(nil),     // 2: dkv.v1.GetRequest
-	(*GetResponse)(nil),    // 3: dkv.v1.GetResponse
-	(*DeleteRequest)(nil),  // 4: dkv.v1.DeleteRequest
-	(*DeleteResponse)(nil), // 5: dkv.v1.DeleteResponse
+	(Consistency)(0),              // 0: dkv.v1.Consistency
+	(*PutRequest)(nil),            // 1: dkv.v1.PutRequest
+	(*PutResponse)(nil),           // 2: dkv.v1.PutResponse
+	(*GetRequest)(nil),            // 3: dkv.v1.GetRequest
+	(*GetResponse)(nil),           // 4: dkv.v1.GetResponse
+	(*DeleteRequest)(nil),         // 5: dkv.v1.DeleteRequest
+	(*DeleteResponse)(nil),        // 6: dkv.v1.DeleteResponse
+	(*CompareAndSetRequest)(nil),  // 7: dkv.v1.CompareAndSetRequest
+	(*CompareAndSetResponse)(nil), // 8: dkv.v1.CompareAndSetResponse
 }
 var file_dkv_v1_kv_proto_depIdxs = []int32{
-	0, // 0: dkv.v1.KVService.Put:input_type -> dkv.v1.PutRequest
-	2, // 1: dkv.v1.KVService.Get:input_type -> dkv.v1.GetRequest
-	4, // 2: dkv.v1.KVService.Delete:input_type -> dkv.v1.DeleteRequest
-	1, // 3: dkv.v1.KVService.Put:output_type -> dkv.v1.PutResponse
-	3, // 4: dkv.v1.KVService.Get:output_type -> dkv.v1.GetResponse
-	5, // 5: dkv.v1.KVService.Delete:output_type -> dkv.v1.DeleteResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: dkv.v1.GetRequest.consistency:type_name -> dkv.v1.Consistency
+	1, // 1: dkv.v1.KVService.Put:input_type -> dkv.v1.PutRequest
+	3, // 2: dkv.v1.KVService.Get:input_type -> dkv.v1.GetRequest
+	5, // 3: dkv.v1.KVService.Delete:input_type -> dkv.v1.DeleteRequest
+	7, // 4: dkv.v1.KVService.CompareAndSet:input_type -> dkv.v1.CompareAndSetRequest
+	2, // 5: dkv.v1.KVService.Put:output_type -> dkv.v1.PutResponse
+	4, // 6: dkv.v1.KVService.Get:output_type -> dkv.v1.GetResponse
+	6, // 7: dkv.v1.KVService.Delete:output_type -> dkv.v1.DeleteResponse
+	8, // 8: dkv.v1.KVService.CompareAndSet:output_type -> dkv.v1.CompareAndSetResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_kv_proto_init() }
@@ -393,13 +667,14 @@ func file_dkv_v1_kv_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_kv_proto_rawDesc), len(file_dkv_v1_kv_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   6,
+			NumEnums:      1,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_dkv_v1_kv_proto_goTypes,
 		DependencyIndexes: file_dkv_v1_kv_proto_depIdxs,
+		EnumInfos:         file_dkv_v1_kv_proto_enumTypes,
 		MessageInfos:      file_dkv_v1_kv_proto_msgTypes,
 	}.Build()
 	File_dkv_v1_kv_proto = out.File

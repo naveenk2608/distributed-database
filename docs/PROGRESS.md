@@ -199,7 +199,8 @@ persistence and damaged-ID detection; `dkvctl status` output.
 
 ## Phase 5: Consistent hashing, sharding and data placement
 
-Status: **done.** All three gate items passed locally on 2026-11-16.
+Status: **done.** All three gate items passed locally on 2026-11-16; CI run 43936155645 on main
+at c7e1b66 (`check`, `crash`, `storage-gate`) is green.
 
 ### Gate
 
@@ -229,4 +230,114 @@ Other tests: a shard's keys fail within the deadline while its owner is down and
 - Placement members are configured addresses; changing the peer list changes placement without moving data (Phase 7).
 - With the default 64 shards, primaries can be quite uneven (the busiest node may serve about twice its share); Phase 7's leader balancing addresses it.
 - Not done: an independent second review of the Phase 5 diff against the plan.
+
+## Phase 6: Raft consensus and replication
+
+Status: **done.** All three gate items passed locally on 2026-11-16.
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| At least 10,000 seeded simulator schedules with zero violations of Election Safety, Log Matching, Leader Completeness and State Machine Safety; a failing seed replays identically | `internal/sim` via `make sim SEEDS=10000`: each schedule draws 3 or 5 nodes, drop rate 0–30%, duplicates 0–10%, delays up to 5 steps (so reordering), crashes that lose everything not fsynced (including commit-index updates written without fsync), restarts, and partitions, for 400 steps. Election Safety and Leader Completeness are checked whenever a leader is elected, State Machine Safety whenever an entry commits or applies, ReadIndex safety (a confirmed read index is never below an index committed before the read began) whenever a read is confirmed, and Log Matching across all live logs every 10 steps and at the end; then 300 calm steps must elect a leader and apply a new proposal on every node. Last run: 10,000 schedules in 81.5 s, zero violations; 23,843 leaders, 3,046,831 commit advances, 32,761 crashes, 22,421 partitions, 318,190 reads confirmed, 34,191,767 messages delivered and 3,748,186 dropped. `TestReplayIsIdentical` runs 50 seeds twice each and requires identical trace hashes (and different hashes for different seeds); a failing seed is rerun with `-first-seed`. `make check` runs 1,000 seeds under `-race`; CI runs 10,000 in its `sim` job. | Passed |
+| A three-node RF=3 cluster keeps serving after its leader is killed, with a new leader within about two election timeouts and no acknowledged write lost | `test/integration` `TestLeaderFailover`: 3 in-process nodes, 4 shards, 20 ms ticks (election timeout 200–400 ms). Four writers run through the survivors' public APIs; the leader of shard 0 is stopped; every shard it led must get a new leader within 2 election timeouts + 10 ticks (600 ms) of the stop; writes continue; then every acknowledged write is read back (linearizable) through a survivor, and after the stopped node restarts, through it and from its own replicas. 40 runs under `-race`: slowest new leader 203–394 ms per run (median 309 ms); 316 ms in a full parallel `go test -race ./...`. `test/e2e` `TestSIGKILLedLeaderIsReplaced`: three real `dkv-server` processes; the shard-0 leader gets SIGKILL after 40 acknowledged writes; a new leader is seen within the limit (2 timeouts + 25 ticks, as it polls each survivor over gRPC from another process); 40 more writes succeed; all 80 read back from the survivors and, after restart on the same data directory, from the killed node. 5 runs: 214–359 ms. | Passed |
+| A retried PUT is applied exactly once | `test/integration` `TestRetriedPutAppliedOnce`: (1) a client interceptor lets the first Put reach the cluster and be applied, then reports `Unavailable` as if the response were lost; the client retries with the same session and request ID and gets the version the first try was applied at, and a read returns that version; (2) a Put through a follower, then the shard's leader is stopped, then the identical request is sent again: it returns the original version and the value is the first write's, not the retry's; a request ID older than the session's latest is refused with `FAILED_PRECONDITION`. `internal/replica` `TestRetriedWriteAppliedOnce` and `TestStateSurvivesRestart` (the session table survives restarting every replica). | Passed |
+
+Mutation checks (each deliberate bug applied alone, then the named tests run; scripts kept
+outside the repository):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| Commit old-term entries by counting replicas (Raft paper figure 8) | `TestFigure8` |
+| Vote for anyone, any number of times | simulator: Election Safety |
+| Ignore the candidate's log freshness | simulator: Leader Completeness; `TestMustSync` |
+| Accept appends without the consistency check | `TestFigure8`, `TestSimultaneousPreCandidatesDoNotSplit` |
+| Commit without a quorum | `TestFigure8`, `TestConflictHintsConvergeQuickly`, simulator: Leader Completeness |
+| ReadIndex without a heartbeat round | `TestReadIndexNeedsAQuorum`, simulator: ReadIndex safety |
+| A leader ignores a higher term | simulator: liveness |
+| A vote not fsynced before replying | `TestMustSync` |
+| Followers ignore their lease for pre-votes | `TestPreVoteKeepsTermStableAcrossPartition`, `TestPreCandidateAsksAgainAfterLease` |
+| No CheckQuorum step-down | `TestCheckQuorumLeaderStepsDown` |
+| No pre-vote tie-break | `TestSimultaneousPreCandidatesDoNotSplit`, `TestPreCandidateAsksAgainAfterLease` |
+| Tie-break winner does not ask again | `TestPreCandidateAsksAgainAfterLease` |
+| Applied entries not treated as committed on restart | `TestRestartWithAppliedBeyondCommit` |
+| Retries applied again (no session check) | `TestRetriedWriteAppliedOnce`, `TestStateSurvivesRestart`, `TestRetriedPutAppliedOnce` |
+| Session record not written with the write | same three tests |
+| Client draws a new request ID for each retry | `TestRetriedPutAppliedOnce` |
+| Raft log not fsynced | `raftlog` `TestPowerLossKeepsSavedState` |
+
+An earlier version of `TestFigure8` passed with the figure-8 bug in place (the leader never
+learned that a majority held the old entry); it was reworked until it failed for that bug.
+
+### Implemented and tested
+
+- **`internal/raft`** (ADR 0003): deterministic core with `Tick`, `Step`, `Propose`,
+  `ReadIndex`, `Ready`/`Advance`; randomized election timeouts; PreVote; CheckQuorum with
+  follower leases; leader no-op and the current-term commit rule; conflict hints;
+  probe/replicate flow control with up to 8 appends in flight and stall detection;
+  batched ReadIndex; `Ready.MustSync` (no fsync for commit-only changes); restart with the
+  state machine's applied index; pre-vote tie-break with re-ask; heartbeats on a
+  free-running tick count so a node's groups heartbeat together.
+- **`internal/raft/raftlog`:** Raft log and HardState on the WAL format; suffix
+  replacement; optional fsync per save; power-loss and corruption tests.
+- **`internal/sim`:** seeded simulator and invariant checker described above.
+- **`internal/replica`:** one goroutine per replica running persist → send → apply →
+  release reads; engine at `shards/NNNN/kv`, Raft log at `shards/NNNN/raft`; apply at
+  sequence number = log index; client sessions in the engine with leader-stamped expiry
+  (ADR 0008); compare-and-set decided at apply (ADR 0009); linearizable reads by ReadIndex
+  and stale reads with `min_version` (ADR 0007); not-leader errors with a leader hint;
+  writes in flight when leadership is lost fail with `UNAVAILABLE` (safe to retry);
+  leadership changes logged.
+- **`internal/node`:** opens one replica per shard held, one node-wide Raft ticker, and a
+  Raft transport that batches all replicas' messages per destination node into one
+  `InternalService.Raft` call (bounded queues; plain heartbeats wait up to 2 ms for
+  company); shard map with leader, term, role, commit and applied index. `nodetest`
+  clusters default to 8 shards and 20 ms ticks, and log to stderr with `NODETEST_LOG=1`.
+- **`internal/router`** (ADR 0024, revised): leader cache, local replica first, NotLeader
+  hints followed at once, rotation through the replica set while no leader is known,
+  stale reads served locally, up to 12 attempts.
+- **`internal/config`:** `raft.tick_interval` (50 ms), `raft.election_ticks` (10),
+  `raft.heartbeat_ticks` (2), `raft.session_ttl` (1 h), with validation.
+- **Protocol:** `raft.proto` (`Command`, `RaftMessage`, `RaftRequest`), `CompareAndSet`,
+  `Consistency` and `min_version` on reads, `client_id`/`request_id` on writes, applied
+  index in read responses, Raft fields in `ShardInfo`.
+- **`pkg/client`:** several node addresses, retries on `UNAVAILABLE` with jittered
+  backoff, a pool of sessions so concurrent writes each have one, `CompareAndSet`,
+  `GetStale`, `Options` with dial options.
+- **`dkvctl`:** `cas`, `--stale`, `--min-version`, comma-separated `--addr`; `shards` shows
+  role, leader, term, commit and applied index.
+- **CI:** new `sim` job (`make sim SEEDS=10000`).
+- **Docs:** ADRs 0003, 0007, 0008, 0009, 0010; 0022 and 0024 revised.
+
+Other tests: a minority of nodes down keeps every shard writable
+(`TestMinorityDownKeepsEveryShardWorking`); a majority down fails within the client's
+deadline (`TestMajorityDownFailsWithinDeadline`); the Phase 5 any-node test now also checks
+every replica applied every write, through stale reads served by each replica's own node;
+router tests run real replica groups over an in-process transport (leader routing via any
+node, hint following, NotOwner answers, local stale reads, leader errors not retried, dead
+replica sets failing within the deadline); replica tests (replicated operations, CAS,
+restart, writes after the leader stops); config validation for the new keys; `dkvctl cas`
+and stale reads.
+
+### Known limitations
+
+- The Raft log is never truncated and there are no snapshots; a replica far behind
+  catches up from the full log. Phase 7.
+- Replica sets are fixed by the static placement; no membership changes, learners or
+  leader transfer (Phase 7). Raft member IDs are advertise addresses.
+- Leaders are not balanced across nodes.
+- Idle Raft groups cost CPU: about 0.06 of a core per node for an idle three-node
+  cluster with 64 shards and 50 ms ticks (release build). Under the race detector a
+  test cluster with 64 shards and 20 ms ticks used about 1.2 cores, which slowed a
+  timing test in the Phase 4 suite; test clusters now default to 8 shards.
+- Each write fsyncs the Raft log and, with `storage.sync = always`, the engine WAL (ADR
+  0010; single-log path in Phase 10).
+- No test yet combines a running replica with a simulated power loss; the reasoning is in
+  ADR 0010 and Phase 8's fault injection covers it.
+- Session records are never deleted, only overwritten; a standalone node does not
+  deduplicate retries. No lease reads.
+- Failover times were measured on a WSL2 machine under the race detector, in process and
+  with three local processes; not on separate machines.
+- The Docker Compose gate is still blocked (see "Needs from you").
+- Not done: an independent second review of the Phase 6 diff against the plan.
 

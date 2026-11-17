@@ -61,3 +61,18 @@ jobs:
 
       - name: storage gate
         run: make storage-gate
+
+  sim:
+    # Phase 6 gate: 10,000 seeded Raft schedules with invariant and liveness
+    # checks, without the race detector.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: simulation
+        run: make sim SEEDS=10000

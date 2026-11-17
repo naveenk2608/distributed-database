@@ -35,6 +35,7 @@ type Config struct {
 	Server    Server    `yaml:"server"`
 	Cluster   Cluster   `yaml:"cluster"`
 	Transport Transport `yaml:"transport"`
+	Raft      Raft      `yaml:"raft"`
 	Storage   Storage   `yaml:"storage"`
 	Limits    Limits    `yaml:"limits"`
 	Log       Log       `yaml:"log"`
@@ -94,6 +95,21 @@ type Transport struct {
 	KeepaliveTimeout time.Duration `yaml:"keepalive_timeout"`
 }
 
+// Raft configures the Raft group of every shard replica on a cluster node.
+// Timeouts are counted in ticks of one node-wide ticker.
+type Raft struct {
+	// TickInterval is the period of the node's Raft ticker.
+	TickInterval time.Duration `yaml:"tick_interval"`
+	// ElectionTicks is the minimum election timeout; each replica draws
+	// its timeout at random from [ElectionTicks, 2*ElectionTicks).
+	ElectionTicks int `yaml:"election_ticks"`
+	// HeartbeatTicks is the leader's heartbeat period.
+	HeartbeatTicks int `yaml:"heartbeat_ticks"`
+	// SessionTTL is how long a client's deduplication session lives
+	// without a write. A retry arriving later than this may apply twice.
+	SessionTTL time.Duration `yaml:"session_ttl"`
+}
+
 // Storage configures the node's storage engine.
 type Storage struct {
 	// Dir is the data directory. Required; created if missing.
@@ -139,6 +155,7 @@ func Default() Config {
 		Cluster: Cluster{Name: "dkv", PingInterval: time.Second, PingTimeout: 500 * time.Millisecond, DownAfter: 5 * time.Second,
 			Shards: 64, ReplicationFactor: 3},
 		Transport: Transport{DialTimeout: 2 * time.Second, KeepaliveTime: 10 * time.Second, KeepaliveTimeout: 3 * time.Second},
+		Raft:      Raft{TickInterval: 50 * time.Millisecond, ElectionTicks: 10, HeartbeatTicks: 2, SessionTTL: time.Hour},
 		Storage: Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20,
 			BlockCacheBytes: 64 << 20, CompactionConcurrency: 2},
 		Limits: Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
@@ -291,6 +308,14 @@ var settings = []setting{
 		func(c *Config) *time.Duration { return &c.Transport.KeepaliveTime }),
 	durationSetting("transport.keepalive_timeout", "wait for a keepalive answer before closing the connection",
 		func(c *Config) *time.Duration { return &c.Transport.KeepaliveTimeout }),
+	durationSetting("raft.tick_interval", "period of the node's Raft ticker",
+		func(c *Config) *time.Duration { return &c.Raft.TickInterval }),
+	intSetting("raft.election_ticks", "minimum election timeout, in ticks (randomized up to twice this)",
+		func(c *Config) *int { return &c.Raft.ElectionTicks }),
+	intSetting("raft.heartbeat_ticks", "leader heartbeat period, in ticks",
+		func(c *Config) *int { return &c.Raft.HeartbeatTicks }),
+	durationSetting("raft.session_ttl", "how long a client deduplication session lives without a write",
+		func(c *Config) *time.Duration { return &c.Raft.SessionTTL }),
 	stringSetting("storage.dir", "data directory (required)",
 		func(c *Config) *string { return &c.Storage.Dir }),
 	stringSetting("storage.sync", "WAL sync policy: always, interval or never",
@@ -513,6 +538,21 @@ func (c *Config) validateCluster() []error {
 	}
 	if t.KeepaliveTimeout <= 0 {
 		bad("transport.keepalive_timeout", "must be positive, got %v", t.KeepaliveTimeout)
+	}
+	r := c.Raft
+	if r.TickInterval < time.Millisecond {
+		bad("raft.tick_interval", "must be at least 1ms, got %v", r.TickInterval)
+	}
+	if r.HeartbeatTicks < 1 {
+		bad("raft.heartbeat_ticks", "must be at least 1, got %d", r.HeartbeatTicks)
+	}
+	// Followers must hear several heartbeats per election timeout, or
+	// one lost heartbeat starts an election.
+	if r.ElectionTicks < 3*r.HeartbeatTicks {
+		bad("raft.election_ticks", "must be at least 3 * raft.heartbeat_ticks (%d), got %d", 3*r.HeartbeatTicks, r.ElectionTicks)
+	}
+	if r.SessionTTL < time.Minute {
+		bad("raft.session_ttl", "must be at least 1m, got %v", r.SessionTTL)
 	}
 	return errs
 }

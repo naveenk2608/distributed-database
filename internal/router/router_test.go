@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -14,15 +15,17 @@ import (
 	"google.golang.org/grpc/status"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
-	"github.com/naveenk2608/distributed-database/internal/kvstore"
 	"github.com/naveenk2608/distributed-database/internal/placement"
+	"github.com/naveenk2608/distributed-database/internal/raft"
+	"github.com/naveenk2608/distributed-database/internal/replica"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
+	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-const shards = 8
+const shards = 2
 
 var tcfg = transport.Config{DialTimeout: time.Second, KeepaliveTime: 10 * time.Second, KeepaliveTimeout: time.Second}
 
@@ -35,50 +38,145 @@ func (a internalAPI) Forward(ctx context.Context, req *dkvv1.ForwardRequest) (*d
 	return a.r.Forward(ctx, req)
 }
 
-// testNode is a router with its own internal server and in-memory stores
-// for every shard (so a misrouted request would be visible as data in the
-// wrong place).
+// loopback carries Raft messages between the replicas of a test cluster
+// in process. Forwarded client requests still go over real gRPC.
+type loopback struct {
+	mu   sync.Mutex
+	reps map[string]map[int]*replica.Replica // node address -> shard -> replica
+}
+
+func (l *loopback) Send(shard int, msgs []raft.Message) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, m := range msgs {
+		if r := l.reps[m.To][shard]; r != nil {
+			r.Step(m)
+		}
+	}
+}
+
 type testNode struct {
 	addr   string
 	router *Router
-	stores map[int]*kvstore.Store
+	reps   map[int]*replica.Replica // nil for a node without replicas
 }
 
-// startNodes starts len(views) routers; views[i] gives node i's idea of
-// who owns each shard, as an index into the returned nodes.
-func startNodes(t *testing.T, views []func(shard int) int) []*testNode {
+type testCluster struct {
+	t     *testing.T
+	nodes []*testNode
+	// order is the replica set every router sees, in placement order;
+	// tests may reorder it before sending requests.
+	mu    sync.Mutex
+	order []string
+}
+
+func (c *testCluster) replicas(int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.order)
+}
+
+// startCluster starts n routers; the first holders of them hold a replica
+// of every shard, in one Raft group per shard.
+func startCluster(t *testing.T, n, holders int) *testCluster {
 	t.Helper()
-	nodes := make([]*testNode, len(views))
-	lis := make([]net.Listener, len(views))
-	for i := range views {
+	c := &testCluster{t: t}
+	lis := make([]net.Listener, n)
+	for i := range n {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
 		lis[i] = l
-		nodes[i] = &testNode{addr: l.Addr().String(), stores: map[int]*kvstore.Store{}}
+		c.nodes = append(c.nodes, &testNode{addr: l.Addr().String()})
+		if i < holders {
+			c.order = append(c.order, l.Addr().String())
+		}
 	}
-	for i, view := range views {
-		n := nodes[i]
+	lb := &loopback{reps: map[string]map[int]*replica.Replica{}}
+	fs := vfs.NewMemFS()
+	for i, nd := range c.nodes[:holders] {
+		nd.reps = map[int]*replica.Replica{}
 		for s := range shards {
-			db := lsm.OpenInMemory()
-			t.Cleanup(func() { _ = db.Close() })
-			n.stores[s] = kvstore.New(db)
+			rp, err := replica.Open(replica.Config{Shard: s, ID: nd.addr, Peers: c.order,
+				Dir: fmt.Sprintf("/n%d/s%d", i, s), FS: fs, Engine: lsm.Options{Sync: lsm.SyncNever},
+				ElectionTick: 10, HeartbeatTick: 2, SessionTTL: time.Hour, Sender: lb,
+				Log: slog.New(slog.DiscardHandler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rp.Close() })
+			nd.reps[s] = rp
+		}
+		lb.mu.Lock()
+		lb.reps[nd.addr] = nd.reps
+		lb.mu.Unlock()
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { // one ticker for every replica
+		defer wg.Done()
+		tk := time.NewTicker(2 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				for _, nd := range c.nodes {
+					for _, rp := range nd.reps {
+						rp.Tick()
+					}
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stop); wg.Wait() }) // runs before the replicas close
+	for i, nd := range c.nodes {
+		local := map[int]Replica{}
+		for s, rp := range nd.reps {
+			local[s] = rp
 		}
 		pool := transport.NewPool(tcfg)
 		t.Cleanup(func() { _ = pool.Close() })
-		n.router = New(Config{
-			Self: n.addr, Shards: shards, Local: n.stores, Pool: pool, Log: slog.New(slog.DiscardHandler),
-			Primary: func(s int) string { return nodes[view(s)].addr },
-		})
+		nd.router = New(Config{Self: nd.addr, Shards: shards, Replicas: c.replicas, Local: local,
+			Pool: pool, Log: slog.New(slog.DiscardHandler)})
 		srv := transport.NewServer(tcfg)
-		dkvv1.RegisterInternalServiceServer(srv, internalAPI{r: n.router})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = srv.Serve(lis[i]) }()
-		t.Cleanup(func() { srv.Stop(); wg.Wait() })
+		dkvv1.RegisterInternalServiceServer(srv, internalAPI{r: nd.router})
+		var swg sync.WaitGroup
+		swg.Add(1)
+		go func() { defer swg.Done(); _ = srv.Serve(lis[i]) }()
+		t.Cleanup(func() { srv.Stop(); swg.Wait() })
 	}
-	return nodes
+	return c
+}
+
+// leader waits until every replica of shard knows the same leader and
+// returns that leader's node.
+func (c *testCluster) leader(shard int) *testNode {
+	c.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var lead *testNode
+		agreed := true
+		for _, nd := range c.nodes {
+			rp := nd.reps[shard]
+			if rp == nil {
+				continue
+			}
+			if rp.Status().Role == raft.StateLeader {
+				lead = nd
+			}
+			agreed = agreed && rp.Leader() != "" && rp.Leader() == c.nodes[0].reps[shard].Leader()
+		}
+		if lead != nil && agreed && lead.addr == c.nodes[0].reps[shard].Leader() {
+			return lead
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.t.Fatalf("shard %d: replicas did not agree on a leader", shard)
+	return nil
 }
 
 func ctx(t *testing.T) context.Context {
@@ -89,102 +187,182 @@ func ctx(t *testing.T) context.Context {
 
 func keyIn(shard int) []byte {
 	for i := 0; ; i++ {
-		k := []byte(fmt.Sprintf("key-%d", i))
+		k := fmt.Appendf(nil, "key-%d", i)
 		if placement.ShardOf(k, shards) == shard {
 			return k
 		}
 	}
 }
 
-func holds(n *testNode, shard int, key []byte) bool {
-	_, _, found, _ := n.stores[shard].Get(context.Background(), key)
-	return found
+func put(t *testing.T, r *Router, key, value string, reqID uint64) uint64 {
+	t.Helper()
+	resp, err := r.Put(ctx(t), &dkvv1.PutRequest{Key: []byte(key), Value: []byte(value), ClientId: "c", RequestId: reqID})
+	if err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+	return resp.GetVersion()
 }
 
-func TestRequestsReachTheOwner(t *testing.T) {
-	owner := func(s int) int { return s % 2 } // even shards on node 0, odd on node 1
-	nodes := startNodes(t, []func(int) int{owner, owner})
+// TestRequestsReachTheLeader: every operation sent to any node, holding a
+// replica or not, runs on the shard's leader and is replicated to every
+// replica.
+func TestRequestsReachTheLeader(t *testing.T) {
+	c := startCluster(t, 4, 3) // node 3 holds no replica
+	var reqID uint64
 	for s := range shards {
 		key := keyIn(s)
-		for via := range nodes {
-			ver, err := nodes[via].router.Put(ctx(t), key, []byte(fmt.Sprint("v", via)))
+		for via, nd := range c.nodes {
+			reqID++
+			resp, err := nd.router.Put(ctx(t), &dkvv1.PutRequest{Key: key, Value: fmt.Append(nil, "v", via), ClientId: "c", RequestId: reqID})
 			if err != nil {
 				t.Fatalf("put shard %d via node %d: %v", s, via, err)
 			}
-			v, gotVer, found, err := nodes[1-via].router.Get(ctx(t), key)
-			if err != nil || !found || string(v) != fmt.Sprint("v", via) || gotVer != ver {
-				t.Fatalf("get shard %d via node %d: %q@%d found=%v %v", s, 1-via, v, gotVer, found, err)
+			other := c.nodes[(via+1)%len(c.nodes)]
+			got, err := other.router.Get(ctx(t), &dkvv1.GetRequest{Key: key})
+			if err != nil || !got.GetFound() || string(got.GetValue()) != fmt.Sprint("v", via) || got.GetVersion() != resp.GetVersion() {
+				t.Fatalf("get shard %d after put via node %d: %v %v", s, via, got, err)
 			}
 		}
-		if !holds(nodes[owner(s)], s, key) || holds(nodes[1-owner(s)], s, key) {
-			t.Fatalf("shard %d: data is not (only) on its owner", s)
+		reqID++
+		cas, err := c.nodes[3].router.CompareAndSet(ctx(t), &dkvv1.CompareAndSetRequest{Key: key, Value: []byte("cas"),
+			ExpectedVersion: 1, ClientId: "c", RequestId: reqID})
+		if err != nil || cas.GetSucceeded() || cas.GetVersion() == 0 {
+			t.Fatalf("CAS with a wrong version: %v %v", cas, err)
 		}
-		found, _, err := nodes[1-owner(s)].router.Delete(ctx(t), key)
-		if err != nil || !found {
-			t.Fatalf("delete via non-owner: found=%v %v", found, err)
+		reqID++
+		del, err := c.nodes[3].router.Delete(ctx(t), &dkvv1.DeleteRequest{Key: key, ClientId: "c", RequestId: reqID})
+		if err != nil || !del.GetFound() {
+			t.Fatalf("delete via the node without replicas: %v %v", del, err)
+		}
+		// Every replica applies the delete.
+		for i, nd := range c.nodes[:3] {
+			got, err := nd.router.Get(ctx(t), &dkvv1.GetRequest{Key: key,
+				Consistency: dkvv1.Consistency_CONSISTENCY_STALE, MinVersion: del.GetVersion()})
+			if err != nil || got.GetFound() || got.GetAppliedIndex() < del.GetVersion() {
+				t.Fatalf("replica on node %d after delete: %v %v", i, got, err)
+			}
 		}
 	}
-	if st := nodes[0].router.Stats(); st.Forwarded == 0 || st.NotOwner != 0 {
-		t.Errorf("stats %+v", st)
+	if st := c.nodes[3].router.Stats(); st.Forwarded == 0 {
+		t.Errorf("node without replicas forwarded nothing: %+v", st)
 	}
 }
 
-// TestNotOwnerHintIsFollowed: node 0 believes node 1 owns shard 3; node 1
-// knows node 2 does and answers NotOwner with that hint; node 0 retries
-// there.
-func TestNotOwnerHintIsFollowed(t *testing.T) {
-	nodes := startNodes(t, []func(int) int{
-		func(int) int { return 1 },
-		func(int) int { return 2 },
-		func(int) int { return 2 },
+// TestNotLeaderHintIsFollowed: a router that sends to a follower gets the
+// leader's address back and retries there at once; afterwards it goes to
+// the leader directly.
+func TestNotLeaderHintIsFollowed(t *testing.T) {
+	c := startCluster(t, 4, 3)
+	l := c.leader(0)
+	c.mu.Lock()
+	slices.SortFunc(c.order, func(a, b string) int { // the leader last
+		switch {
+		case a == l.addr:
+			return 1
+		case b == l.addr:
+			return -1
+		}
+		return 0
 	})
-	key := keyIn(3)
-	if _, err := nodes[0].router.Put(ctx(t), key, []byte("v")); err != nil {
-		t.Fatal(err)
+	c.mu.Unlock()
+	r := c.nodes[3].router
+	put(t, r, string(keyIn(0)), "v", 1)
+	if st := r.Stats(); st.NotLeader != 1 || st.Forwarded != 2 || st.Retries != 1 {
+		t.Errorf("first request: %+v; want one NotLeader answer, two forwards, one retry", st)
 	}
-	if !holds(nodes[2], 3, key) || holds(nodes[1], 3, key) || holds(nodes[0], 3, key) {
-		t.Fatal("the write did not land on the hinted owner only")
-	}
-	if st := nodes[0].router.Stats(); st.NotOwner != 1 || st.Forwarded != 2 {
-		t.Errorf("stats %+v; want one NotOwner and two forwards", st)
+	put(t, r, string(keyIn(0)), "v", 2)
+	if st := r.Stats(); st.NotLeader != 1 || st.Forwarded != 3 {
+		t.Errorf("second request: %+v; want it sent straight to the cached leader", st)
 	}
 }
 
-func TestForwardRefusesShardsItDoesNotOwn(t *testing.T) {
-	owner := func(int) int { return 0 }
-	nodes := startNodes(t, []func(int) int{owner, owner})
-	resp, err := nodes[1].router.Forward(ctx(t), &dkvv1.ForwardRequest{Shard: 2,
-		Op: &dkvv1.ForwardRequest_Put{Put: &dkvv1.PutRequest{Key: keyIn(2)}}})
-	if err != nil || resp.GetNotOwner().GetOwnerHint() != nodes[0].addr {
-		t.Fatalf("Forward to a non-owner = %v, %v; want NotOwner pointing at node 0", resp, err)
+func TestForwardAnswersNotOwner(t *testing.T) {
+	c := startCluster(t, 4, 3)
+	l := c.leader(1)
+	follower := c.nodes[0]
+	if follower == l {
+		follower = c.nodes[1]
 	}
-	if holds(nodes[1], 2, keyIn(2)) {
-		t.Error("non-owner applied a forwarded write")
+	req := &dkvv1.ForwardRequest{Shard: 1, Op: &dkvv1.ForwardRequest_Put{Put: &dkvv1.PutRequest{Key: keyIn(1)}}}
+	resp, err := follower.router.Forward(ctx(t), req)
+	if err != nil || resp.GetNotOwner().GetOwnerHint() != l.addr {
+		t.Fatalf("Forward to a follower = %v, %v; want NotOwner pointing at the leader %s", resp, err, l.addr)
 	}
-	if _, err := nodes[1].router.Forward(ctx(t), &dkvv1.ForwardRequest{Shard: shards}); status.Code(err) != codes.InvalidArgument {
+	resp, err = c.nodes[3].router.Forward(ctx(t), req)
+	if err != nil || resp.GetNotOwner().GetOwnerHint() != c.replicas(1)[0] {
+		t.Fatalf("Forward to a node without a replica = %v, %v; want NotOwner pointing at the first replica", resp, err)
+	}
+	if _, err := l.router.Forward(ctx(t), &dkvv1.ForwardRequest{Shard: shards}); status.Code(err) != codes.InvalidArgument {
 		t.Errorf("out-of-range shard: %v", err)
 	}
+	if _, err := l.router.Forward(ctx(t), &dkvv1.ForwardRequest{Shard: 1}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("no operation: %v", err)
+	}
 }
 
-// TestDeadOwnerFailsWithinDeadline: requests for a shard whose owner is down
-// are retried with backoff but return when the caller's deadline expires.
-func TestDeadOwnerFailsWithinDeadline(t *testing.T) {
+// TestStaleReadIsServedLocally: a node holding a follower replica answers
+// a stale read itself, while a linearizable read goes to the leader.
+func TestStaleReadIsServedLocally(t *testing.T) {
+	c := startCluster(t, 3, 3)
+	l := c.leader(0)
+	ver := put(t, l.router, string(keyIn(0)), "v", 1)
+	var f *testNode
+	for _, nd := range c.nodes {
+		if nd != l {
+			f = nd
+		}
+	}
+	before := f.router.Stats().Forwarded
+	got, err := f.router.Get(ctx(t), &dkvv1.GetRequest{Key: keyIn(0), Consistency: dkvv1.Consistency_CONSISTENCY_STALE, MinVersion: ver})
+	if err != nil || string(got.GetValue()) != "v" {
+		t.Fatalf("stale read: %v %v", got, err)
+	}
+	if n := f.router.Stats().Forwarded - before; n != 0 {
+		t.Errorf("stale read was forwarded %d times", n)
+	}
+	if _, err := f.router.Get(ctx(t), &dkvv1.GetRequest{Key: keyIn(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if f.router.Stats().Forwarded == before {
+		t.Error("linearizable read on a follower node was not sent to the leader")
+	}
+}
+
+// TestLeaderErrorsAreNotRetried: an answer from the leader that is not
+// about routing goes straight back to the client.
+func TestLeaderErrorsAreNotRetried(t *testing.T) {
+	c := startCluster(t, 3, 3)
+	c.leader(0)
+	r := c.nodes[0].router
+	put(t, r, string(keyIn(0)), "v", 5) // also teaches r the leader
+	before := r.Stats().Retries
+	_, err := r.Put(ctx(t), &dkvv1.PutRequest{Key: keyIn(0), Value: []byte("old"), ClientId: "c", RequestId: 4})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("request older than the session's latest: %v", err)
+	}
+	if n := r.Stats().Retries - before; n != 0 {
+		t.Errorf("retried %d times", n)
+	}
+}
+
+// TestDeadReplicasFailWithinDeadline: requests for a shard none of whose
+// replicas answer are retried with backoff but return when the caller's
+// deadline expires, or after the attempt limit without one.
+func TestDeadReplicasFailWithinDeadline(t *testing.T) {
 	lis, _ := net.Listen("tcp", "127.0.0.1:0")
 	dead := lis.Addr().String()
 	_ = lis.Close()
-	db := lsm.OpenInMemory()
-	defer func() { _ = db.Close() }()
 	pool := transport.NewPool(tcfg)
 	defer func() { _ = pool.Close() }()
 	r := New(Config{Self: "127.0.0.1:1", Shards: shards, Pool: pool, Log: slog.New(slog.DiscardHandler),
-		Primary: func(int) string { return dead }, Local: map[int]*kvstore.Store{}})
+		Replicas: func(int) []string { return []string{dead} }, Local: map[int]Replica{}})
 	c, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := r.Put(c, []byte("k"), []byte("v"))
+	_, err := r.Put(c, &dkvv1.PutRequest{Key: []byte("k"), Value: []byte("v")})
 	elapsed := time.Since(start)
 	if code := status.Code(err); code != codes.DeadlineExceeded && code != codes.Unavailable {
-		t.Fatalf("dead owner: %v", err)
+		t.Fatalf("dead replicas: %v", err)
 	}
 	if elapsed > time.Second {
 		t.Errorf("took %v with a 400ms deadline", elapsed)
@@ -192,9 +370,8 @@ func TestDeadOwnerFailsWithinDeadline(t *testing.T) {
 	if r.Stats().Retries == 0 {
 		t.Error("no retries before giving up")
 	}
-	// Without a deadline, the attempt limit still ends the request.
 	start = time.Now()
-	if _, err := r.Put(context.Background(), []byte("k"), []byte("v")); status.Code(err) != codes.Unavailable {
+	if _, err := r.Put(context.Background(), &dkvv1.PutRequest{Key: []byte("k"), Value: []byte("v")}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("no deadline: %v", err)
 	}
 	t.Logf("gave up after %d attempts in %v", maxAttempts, time.Since(start).Round(time.Millisecond))

@@ -45,6 +45,12 @@ func TestPutGetDelete(t *testing.T) {
 		{[]string{a, "delete", "greeting"}, exitOK, "deleted (version 3)\n", ""},
 		{[]string{a, "get", "greeting"}, exitNotFound, "", "not found"},
 		{[]string{a, "delete", "greeting"}, exitOK, "key did not exist (version 4)\n", ""},
+		{[]string{a, "cas", "greeting", "0", "new"}, exitOK, "OK (version 5)\n", ""},
+		{[]string{a, "cas", "greeting", "0", "again"}, exitNotFound, "", `not set: key "greeting" is at version 5`},
+		{[]string{a, "cas", "other", "3", "x"}, exitNotFound, "", `not set: key "other" does not exist`},
+		{[]string{a, "cas", "greeting", "5", "newer"}, exitOK, "OK (version 6)\n", ""},
+		{[]string{a, "cas", "greeting", "five", "x"}, exitError, "", `expected-version "five" is not a version number`},
+		{[]string{a, "--stale", "--min-version=6", "get", "greeting"}, exitOK, "newer\n", ""},
 	}
 	for _, s := range steps {
 		r := ctl(t, nil, s.args...)

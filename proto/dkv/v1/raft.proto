@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
+
+// Command is one replicated client operation: the data of a Raft log entry.
+// Applying it must be deterministic, so it carries everything apply needs,
+// including the leader's clock reading for session expiry.
+message Command {
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    OP_PUT = 1;
+    OP_DELETE = 2;
+    OP_CAS = 3;
+  }
+  Op op = 1;
+  bytes key = 2;
+  bytes value = 3;
+  uint64 expected_version = 4;
+  string client_id = 5;
+  uint64 request_id = 6;
+  // stamp_unix_nano is the proposing leader's clock; sessions expire by
+  // these stamps, never by a replica's own clock.
+  int64 stamp_unix_nano = 7;
+}
+
+message RaftEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  uint32 type = 3;
+  bytes data = 4;
+}
+
+// RaftMessage mirrors raft.Message, tagged with its shard.
+message RaftMessage {
+  uint32 shard = 1;
+  uint32 type = 2;
+  string from = 3;
+  string to = 4;
+  uint64 term = 5;
+  uint64 log_term = 6;
+  uint64 index = 7;
+  repeated RaftEntry entries = 8;
+  uint64 commit = 9;
+  bool reject = 10;
+  uint64 reject_hint = 11;
+  uint64 hint_term = 12;
+  uint64 context = 13;
+}
+
+// RaftRequest is a batch: every pending message from one node to another,
+// for all shards, in one call.
+message RaftRequest {
+  repeated RaftMessage messages = 1;
+}
+
+message RaftResponse {}

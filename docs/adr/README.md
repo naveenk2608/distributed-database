@@ -10,9 +10,14 @@ come up during implementation take the next free number from 0016.
 | [0000](0000-scope.md) | Scope: single-key operations with CAS | Accepted |
 | [0001](0001-replication-model.md) | One Raft group per shard | Accepted |
 | [0002](0002-partitioning.md) | Fixed hash shards placed by consistent hashing | Accepted |
+| [0003](0003-raft-structure.md) | Raft as a deterministic core driven by a runner; pre-vote tie-break; per-node message batching | Accepted |
 | [0004](0004-engine-per-shard.md) | One storage engine per shard replica, sharing a node-wide block cache and compaction pool | Accepted |
 | [0005](0005-compaction.md) | Size-tiered compaction over time-ordered runs of adjacent tables | Accepted |
 | [0006](0006-manifest-format.md) | Manifest rewritten in full with an atomic rename | Accepted |
+| [0007](0007-read-consistency.md) | ReadIndex reads by default, stale reads opt-in, lease reads later | Accepted |
+| [0008](0008-idempotency.md) | Client sessions in replicated state; a pool of sessions per client | Accepted |
+| [0009](0009-conflict-resolution.md) | Log order plus compare-and-set; version = log index | Accepted |
+| [0010](0010-durability-path.md) | Raft log plus engine WAL in Phase 6; commit index not fsynced | Accepted (revisit in Phase 10) |
 | [0016](0016-configuration-sources.md) | Configuration sources and precedence | Accepted |
 | [0017](0017-memtable-concurrency.md) | Memtable: insert-only skiplist, single writer, lock-free readers | Accepted |
 | [0018](0018-batch-sequence-numbers.md) | One sequence number per batch; last write wins inside a batch; one log record per batch in group commit | Accepted (revised in Phase 2) |
@@ -21,4 +26,4 @@ come up during implementation take the next free number from 0016.
 | [0021](0021-node-identity-and-bootstrap-membership.md) | Persistent random node IDs and a static bootstrap peer list with ping-based failure detection | Accepted |
 | [0022](0022-internal-transport.md) | Internal gRPC transport: separate port, one connection per peer, fail fast, keepalives | Accepted |
 | [0023](0023-placement.md) | Placement on a consistent hash ring keyed by member address; stated balance tolerance | Accepted |
-| [0024](0024-routing.md) | Routing with one-hop forwarding, NotOwner hints and jittered retries | Accepted |
+| [0024](0024-routing.md) | Routing with one-hop forwarding, NotOwner hints and jittered retries | Accepted (revised in Phase 6) |

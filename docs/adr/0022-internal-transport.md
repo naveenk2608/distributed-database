@@ -50,3 +50,5 @@ connection pooling, deadlines and keepalives.
 - gRPC raises client keepalive intervals below 10s to 10s, so a peer that
   disappears silently with no calls in flight is noticed by keepalive only
   after ~13s; membership pings notice it within `cluster.down_after`.
+- Phase 6 adds `InternalService.Raft`: each node batches the Raft messages
+  of all its replicas per destination node into one unary call (ADR 0003).

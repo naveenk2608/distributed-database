@@ -7,7 +7,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short test-integration crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
+.PHONY: all build check fmt fmt-check vet lint test test-short test-integration sim crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
 
 all: check build
 
@@ -39,6 +39,11 @@ test:
 ## test-short: skip slow tests (the e2e binary test)
 test-short:
 	go test -race -count=1 -short ./...
+
+## sim: deterministic Raft simulation (Phase 6 gate: SEEDS=10000)
+SEEDS ?= 1000
+sim:
+	go test -count=1 -v -run '^(TestSimulation|TestReplayIsIdentical)$$' ./internal/sim -seeds=$(SEEDS)
 
 ## test-integration: in-process multi-node clusters
 test-integration:

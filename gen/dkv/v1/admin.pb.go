@@ -367,13 +367,19 @@ func (x *ShardMapResponse) GetShards() []*ShardInfo {
 type ShardInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Shard uint32                 `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
-	// replicas are internal addresses; the first is the primary, the only
-	// replica that serves requests until replication arrives.
+	// replicas are internal addresses, in placement order.
 	Replicas []string `protobuf:"bytes,2,rep,name=replicas,proto3" json:"replicas,omitempty"`
 	// local is true if the answering node holds a replica of the shard.
 	Local bool `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
-	// last_seq is the local replica's last applied sequence number.
-	LastSeq       uint64 `protobuf:"varint,4,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	// last_seq is the local replica's last applied sequence number (its
+	// applied Raft index).
+	LastSeq uint64 `protobuf:"varint,4,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	// For a local replica: the leader it knows of, its term, its role and
+	// its commit index.
+	Leader        string `protobuf:"bytes,5,opt,name=leader,proto3" json:"leader,omitempty"`
+	Term          uint64 `protobuf:"varint,6,opt,name=term,proto3" json:"term,omitempty"`
+	Role          string `protobuf:"bytes,7,opt,name=role,proto3" json:"role,omitempty"`
+	CommitIndex   uint64 `protobuf:"varint,8,opt,name=commit_index,json=commitIndex,proto3" json:"commit_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -436,6 +442,34 @@ func (x *ShardInfo) GetLastSeq() uint64 {
 	return 0
 }
 
+func (x *ShardInfo) GetLeader() string {
+	if x != nil {
+		return x.Leader
+	}
+	return ""
+}
+
+func (x *ShardInfo) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *ShardInfo) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ShardInfo) GetCommitIndex() uint64 {
+	if x != nil {
+		return x.CommitIndex
+	}
+	return 0
+}
+
 var File_dkv_v1_admin_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_admin_proto_rawDesc = "" +
@@ -460,12 +494,16 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\vshard_count\x18\x01 \x01(\rR\n" +
 	"shardCount\x12-\n" +
 	"\x12replication_factor\x18\x02 \x01(\rR\x11replicationFactor\x12)\n" +
-	"\x06shards\x18\x03 \x03(\v2\x11.dkv.v1.ShardInfoR\x06shards\"n\n" +
+	"\x06shards\x18\x03 \x03(\v2\x11.dkv.v1.ShardInfoR\x06shards\"\xd1\x01\n" +
 	"\tShardInfo\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x1a\n" +
 	"\breplicas\x18\x02 \x03(\tR\breplicas\x12\x14\n" +
 	"\x05local\x18\x03 \x01(\bR\x05local\x12\x19\n" +
-	"\blast_seq\x18\x04 \x01(\x04R\alastSeq*q\n" +
+	"\blast_seq\x18\x04 \x01(\x04R\alastSeq\x12\x16\n" +
+	"\x06leader\x18\x05 \x01(\tR\x06leader\x12\x12\n" +
+	"\x04term\x18\x06 \x01(\x04R\x04term\x12\x12\n" +
+	"\x04role\x18\a \x01(\tR\x04role\x12!\n" +
+	"\fcommit_index\x18\b \x01(\x04R\vcommitIndex*q\n" +
 	"\vMemberState\x12\x1c\n" +
 	"\x18MEMBER_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MEMBER_STATE_UNKNOWN\x10\x01\x12\x13\n" +

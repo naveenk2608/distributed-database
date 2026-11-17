@@ -22,14 +22,24 @@ transport:
   keepalive_time: 10s
   keepalive_timeout: 3s
 
+# Raft settings for every shard replica on a cluster node. One ticker per
+# node drives all replicas.
+raft:
+  tick_interval: 50ms
+  election_ticks: 10                   # timeout drawn from [10, 20) ticks
+  heartbeat_ticks: 2
+  session_ttl: 1h                      # client deduplication window
+
 storage:
-  # Required. Data directory; created if missing. One engine per node until
-  # Phase 5 adds one per shard.
+  # Required. Data directory; created if missing. A cluster node keeps one
+  # engine and one Raft log per shard replica under shards/NNNN/.
   dir: "/var/lib/dkv"
-  # WAL sync policy. always: fsync before acknowledging (group commit shares
-  # one fsync between concurrent writes). interval: fsync every sync_interval;
-  # a power loss can lose that interval's acknowledged writes. never: for
-  # measuring fsync cost only.
+  # Engine WAL sync policy. always: fsync before acknowledging (group commit
+  # shares one fsync between concurrent writes). interval: fsync every
+  # sync_interval; a power loss can lose that interval's acknowledged writes
+  # in standalone mode. never: for measuring fsync cost only. In a cluster
+  # the Raft log is always fsynced before an entry is acknowledged, so the
+  # engine can replay what it lost from the Raft log.
   sync: always
   sync_interval: 10ms
   # Memtable size at which a new memtable and WAL segment start.

@@ -1,0 +1,258 @@
+package replica
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+
+	"go.uber.org/goleak"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/naveenk2608/distributed-database/internal/raft"
+	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
+	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
+)
+
+func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
+
+// loopback delivers messages straight to the destination replica.
+type loopback struct {
+	mu   sync.Mutex
+	reps map[string]*Replica
+	down map[string]bool
+}
+
+func (l *loopback) Send(_ int, msgs []raft.Message) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, m := range msgs {
+		if r := l.reps[m.To]; r != nil && !l.down[m.To] && !l.down[m.From] {
+			r.Step(m)
+		}
+	}
+}
+
+type group struct {
+	t    *testing.T
+	fs   *vfs.MemFS
+	ids  []string
+	net  *loopback
+	stop chan struct{}
+	wg   sync.WaitGroup
+}
+
+func newGroup(t *testing.T, n int) *group {
+	t.Helper()
+	g := &group{t: t, fs: vfs.NewMemFS(), net: &loopback{reps: map[string]*Replica{}, down: map[string]bool{}}, stop: make(chan struct{})}
+	for i := range n {
+		g.ids = append(g.ids, fmt.Sprintf("n%d", i+1))
+	}
+	for _, id := range g.ids {
+		g.open(id)
+	}
+	g.wg.Add(1)
+	go func() { // one ticker drives every replica
+		defer g.wg.Done()
+		tk := time.NewTicker(2 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-g.stop:
+				return
+			case <-tk.C:
+				g.net.mu.Lock()
+				for _, r := range g.net.reps {
+					r.Tick()
+				}
+				g.net.mu.Unlock()
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(g.stop)
+		g.wg.Wait()
+		for _, id := range g.ids {
+			g.close(id)
+		}
+	})
+	return g
+}
+
+func (g *group) open(id string) {
+	r, err := Open(Config{Shard: 7, ID: id, Peers: g.ids, Dir: "/data/" + id, FS: g.fs,
+		Engine: lsm.Options{Sync: lsm.SyncNever}, ElectionTick: 10, HeartbeatTick: 2,
+		SessionTTL: time.Hour, Sender: g.net, Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	g.net.mu.Lock()
+	g.net.reps[id] = r
+	g.net.mu.Unlock()
+}
+
+func (g *group) close(id string) {
+	g.net.mu.Lock()
+	r := g.net.reps[id]
+	delete(g.net.reps, id)
+	g.net.mu.Unlock()
+	if r != nil {
+		if err := r.Close(); err != nil {
+			g.t.Errorf("close %s: %v", id, err)
+		}
+	}
+}
+
+func (g *group) rep(id string) *Replica {
+	g.net.mu.Lock()
+	defer g.net.mu.Unlock()
+	return g.net.reps[id]
+}
+
+func (g *group) leader() *Replica {
+	g.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, id := range g.ids {
+			if r := g.rep(id); r != nil && r.Status().Role == raft.StateLeader {
+				return r
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	g.t.Fatal("no leader elected")
+	return nil
+}
+
+func ctx(t *testing.T) context.Context {
+	c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return c
+}
+
+func TestReplicatedOperations(t *testing.T) {
+	g := newGroup(t, 3)
+	l := g.leader()
+	v1, err := l.Put(ctx(t), []byte("k"), []byte("a"), "c1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ver, found, _, err := l.Get(ctx(t), []byte("k"), false, 0)
+	if err != nil || !found || string(v) != "a" || ver != v1 {
+		t.Fatalf("linearizable get = %q@%d %v %v", v, ver, found, err)
+	}
+	// CAS with a stale expected version fails and reports the current one.
+	ok, cur, err := l.CompareAndSet(ctx(t), []byte("k"), []byte("b"), v1+100, "c1", 2)
+	if err != nil || ok || cur != v1 {
+		t.Fatalf("CAS with wrong version = %v %d %v", ok, cur, err)
+	}
+	ok, v2, err := l.CompareAndSet(ctx(t), []byte("k"), []byte("b"), v1, "c1", 3)
+	if err != nil || !ok || v2 <= v1 {
+		t.Fatalf("CAS with right version = %v %d %v", ok, v2, err)
+	}
+	ok, vNew, err := l.CompareAndSet(ctx(t), []byte("new"), []byte("x"), 0, "c1", 4)
+	if err != nil || !ok {
+		t.Fatalf("CAS creating a key = %v %v", ok, err)
+	}
+	found, _, err = l.Delete(ctx(t), []byte("k"), "c1", 5)
+	if err != nil || !found {
+		t.Fatalf("delete = %v %v", found, err)
+	}
+	// A follower serves stale reads once it has applied the write.
+	for _, id := range g.ids {
+		r := g.rep(id)
+		if r == l {
+			if _, _, _, _, err := r.Get(ctx(t), []byte("new"), false, 0); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		v, _, found, applied, err := r.Get(ctx(t), []byte("new"), true, vNew)
+		if err != nil || !found || string(v) != "x" || applied < vNew {
+			t.Fatalf("stale read on %s = %q %v applied %d %v", id, v, found, applied, err)
+		}
+		var nl *NotLeaderError
+		if _, _, _, _, err := r.Get(ctx(t), []byte("new"), false, 0); !errors.As(err, &nl) || nl.LeaderHint() == "" {
+			t.Fatalf("linearizable read on follower %s: %v", id, err)
+		}
+	}
+}
+
+// TestRetriedWriteAppliedOnce: the same (client, request) twice gives the
+// same result and changes nothing the second time.
+func TestRetriedWriteAppliedOnce(t *testing.T) {
+	g := newGroup(t, 3)
+	l := g.leader()
+	v1, err := l.Put(ctx(t), []byte("k"), []byte("first"), "c1", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := l.Put(ctx(t), []byte("k"), []byte("second"), "c1", 7) // a retry, even with other bytes
+	if err != nil || v2 != v1 {
+		t.Fatalf("retry returned %d, %v; want the original version %d", v2, err, v1)
+	}
+	if v, ver, _, _, _ := l.Get(ctx(t), []byte("k"), false, 0); string(v) != "first" || ver != v1 {
+		t.Fatalf("after the retry k = %q@%d; the retry must not apply", v, ver)
+	}
+	if _, err := l.Put(ctx(t), []byte("k"), []byte("old"), "c1", 6); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("an older request id: %v", err)
+	}
+	// Another client is unaffected.
+	if v3, err := l.Put(ctx(t), []byte("k"), []byte("other"), "c2", 7); err != nil || v3 <= v1 {
+		t.Fatalf("other client: %d %v", v3, err)
+	}
+}
+
+func TestStateSurvivesRestart(t *testing.T) {
+	g := newGroup(t, 3)
+	l := g.leader()
+	var last uint64
+	for i := range 20 {
+		var err error
+		if last, err = l.Put(ctx(t), []byte(fmt.Sprint("k", i)), []byte("v"), "c1", uint64(i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range g.ids { // restart every replica
+		g.close(id)
+	}
+	for _, id := range g.ids {
+		g.open(id)
+	}
+	l = g.leader()
+	if v, ver, found, _, err := l.Get(ctx(t), []byte("k19"), false, 0); err != nil || !found || string(v) != "v" || ver != last {
+		t.Fatalf("after restart: %q@%d %v %v", v, ver, found, err)
+	}
+	// The session table survived too: replaying request 20 is a duplicate.
+	if v, err := l.Put(ctx(t), []byte("k19"), []byte("again"), "c1", 20); err != nil || v != last {
+		t.Fatalf("duplicate after restart: %d %v", v, err)
+	}
+}
+
+func TestWritesContinueAfterLeaderStops(t *testing.T) {
+	g := newGroup(t, 3)
+	l := g.leader()
+	if _, err := l.Put(ctx(t), []byte("before"), []byte("v"), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	var old string
+	for _, id := range g.ids {
+		if g.rep(id) == l {
+			old = id
+		}
+	}
+	g.close(old)
+	start := time.Now()
+	nl := g.leader()
+	t.Logf("new leader after %v", time.Since(start).Round(time.Millisecond))
+	if _, err := nl.Put(ctx(t), []byte("after"), []byte("v"), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, found, _, err := nl.Get(ctx(t), []byte("before"), false, 0); err != nil || !found || string(v) != "v" {
+		t.Fatalf("write from the old leader's term: %q %v %v", v, found, err)
+	}
+}

@@ -114,43 +114,63 @@ func (k *kvService) checkKey(key []byte) error {
 	return nil
 }
 
+func (k *kvService) checkValue(v []byte) error {
+	if n := len(v); n > k.limits.MaxValueBytes {
+		return status.Errorf(codes.InvalidArgument, "value is %d bytes; the limit is %d", n, k.limits.MaxValueBytes)
+	}
+	return nil
+}
+
 func (k *kvService) Put(ctx context.Context, req *dkvv1.PutRequest) (*dkvv1.PutResponse, error) {
-	if err := k.checkKey(req.GetKey()); err != nil {
-		return nil, err
+	if err := errors.Join(k.checkKey(req.GetKey()), k.checkValue(req.GetValue())); err != nil {
+		return nil, firstStatus(err)
 	}
-	if n := len(req.GetValue()); n > k.limits.MaxValueBytes {
-		return nil, status.Errorf(codes.InvalidArgument, "value is %d bytes; the limit is %d", n, k.limits.MaxValueBytes)
-	}
-	ver, err := k.backend.Put(ctx, req.GetKey(), req.GetValue())
+	resp, err := k.backend.Put(ctx, req)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &dkvv1.PutResponse{Version: ver}, nil
+	return resp, nil
 }
 
 func (k *kvService) Get(ctx context.Context, req *dkvv1.GetRequest) (*dkvv1.GetResponse, error) {
 	if err := k.checkKey(req.GetKey()); err != nil {
 		return nil, err
 	}
-	v, ver, found, err := k.backend.Get(ctx, req.GetKey())
+	resp, err := k.backend.Get(ctx, req)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	if !found {
-		return &dkvv1.GetResponse{Found: false}, nil
-	}
-	return &dkvv1.GetResponse{Found: true, Value: v, Version: ver}, nil
+	return resp, nil
 }
 
 func (k *kvService) Delete(ctx context.Context, req *dkvv1.DeleteRequest) (*dkvv1.DeleteResponse, error) {
 	if err := k.checkKey(req.GetKey()); err != nil {
 		return nil, err
 	}
-	found, ver, err := k.backend.Delete(ctx, req.GetKey())
+	resp, err := k.backend.Delete(ctx, req)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &dkvv1.DeleteResponse{Found: found, Version: ver}, nil
+	return resp, nil
+}
+
+func (k *kvService) CompareAndSet(ctx context.Context, req *dkvv1.CompareAndSetRequest) (*dkvv1.CompareAndSetResponse, error) {
+	if err := errors.Join(k.checkKey(req.GetKey()), k.checkValue(req.GetValue())); err != nil {
+		return nil, firstStatus(err)
+	}
+	resp, err := k.backend.CompareAndSet(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+
+// firstStatus returns the first status error in a joined error.
+func firstStatus(err error) error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		return j.Unwrap()[0]
+	}
+	return err
 }
 
 // toStatus maps backend errors to gRPC status errors.

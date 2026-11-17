@@ -25,6 +25,7 @@ func shardCluster(t *testing.T, n, shards, rf int) *nodetest.Cluster {
 		cfg.Storage.MemtableBytes = 256 << 10
 	})
 	nodetest.WaitFor(t, 10*time.Second, "cluster to form", func() bool { return allUp(c) })
+	nodetest.WaitFor(t, 10*time.Second, "every shard to elect a leader", c.Settled)
 	return c
 }
 
@@ -56,11 +57,11 @@ func lastSeqs(t *testing.T, c *nodetest.Cluster, shards int) [][]int64 {
 }
 
 // TestAnyNodeAcceptsAnyKey is the Phase 5 gate check that any node accepts
-// any key and the request reaches the owner. Four nodes, 16 shards, RF 2:
-// every key is written through a different node in turn and then read back
-// through every node. Afterwards, each shard's primary has applied exactly
-// the writes to that shard's keys and every other replica none, which
-// shows that each request was served by the owner and only the owner.
+// any key and the request reaches the shard's replicas, updated for Raft.
+// Four nodes, 16 shards, RF 2: every key is written through a different
+// node in turn and then read back through every node. Afterwards every
+// replica of each shard, and no other node, has applied every write to
+// that shard: a stale read served by each replica's own node sees it.
 func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 	const n, shards, rf, keys = 4, 16, 2, 400
 	c := shardCluster(t, n, shards, rf)
@@ -92,40 +93,41 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 	for i := range kv {
 		kv[i] = c.KV(i)
 	}
-	writes := make([]int64, shards)
+	versions := make([]uint64, keys)
+	writes := make([]int, shards)
 	for k := range keys {
 		key := []byte(fmt.Sprintf("user/%05d", k))
-		if _, err := kv[k%n].Put(reqCtx(t, 5*time.Second), &dkvv1.PutRequest{Key: key, Value: []byte(fmt.Sprint(k))}); err != nil {
+		resp, err := kv[k%n].Put(reqCtx(t, 5*time.Second), &dkvv1.PutRequest{Key: key, Value: []byte(fmt.Sprint(k))})
+		if err != nil {
 			t.Fatalf("put %s via node %d: %v", key, k%n, err)
 		}
+		versions[k] = resp.GetVersion()
 		writes[placement.ShardOf(key, shards)]++
 	}
 	for k := range keys {
 		key := []byte(fmt.Sprintf("user/%05d", k))
+		s := placement.ShardOf(key, shards)
 		for i := range n {
 			resp, err := kv[i].Get(reqCtx(t, 5*time.Second), &dkvv1.GetRequest{Key: key})
-			if err != nil || !resp.GetFound() || string(resp.GetValue()) != fmt.Sprint(k) {
+			if err != nil || !resp.GetFound() || string(resp.GetValue()) != fmt.Sprint(k) || resp.GetVersion() != versions[k] {
 				t.Fatalf("get %s via node %d: %v, %v", key, i, resp, err)
+			}
+			if !slices.Contains(want.ReplicaSet(s), addrs[i]) {
+				continue
+			}
+			// A stale read is served by the node's own replica.
+			resp, err = kv[i].Get(reqCtx(t, 5*time.Second), &dkvv1.GetRequest{Key: key,
+				Consistency: dkvv1.Consistency_CONSISTENCY_STALE, MinVersion: versions[k]})
+			if err != nil || string(resp.GetValue()) != fmt.Sprint(k) || resp.GetAppliedIndex() < versions[k] {
+				t.Fatalf("stale get %s from node %d's replica of shard %d: %v, %v", key, i, s, resp, err)
 			}
 		}
 	}
 	seqs := lastSeqs(t, c, shards)
 	for s := range shards {
 		for i, addr := range addrs {
-			got := seqs[i][s]
-			switch {
-			case !slices.Contains(want.ReplicaSet(s), addr):
-				if got != -1 {
-					t.Errorf("shard %d: node %d holds a replica it should not", s, i)
-				}
-			case want.Primary(s) == addr:
-				if got != writes[s] {
-					t.Errorf("shard %d: primary node %d applied %d writes, want %d", s, i, got, writes[s])
-				}
-			default:
-				if got != 0 {
-					t.Errorf("shard %d: secondary node %d applied %d writes; only the primary serves in Phase 5", s, i, got)
-				}
+			if !slices.Contains(want.ReplicaSet(s), addr) && seqs[i][s] != -1 {
+				t.Errorf("shard %d: node %d holds a replica it should not", s, i)
 			}
 		}
 	}
@@ -135,37 +137,50 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 			busy++
 		}
 	}
-	t.Logf("%d keys over %d shards (%d with writes), written through 4 nodes and read through each", keys, shards, busy)
+	t.Logf("%d keys over %d shards (%d with writes), written through 4 nodes, read through each and from every replica", keys, shards, busy)
 }
 
-// TestOwnerDownAffectsOnlyItsShards: with one node stopped, keys of shards
-// it owns fail within the client's deadline, and every other key keeps
-// working through the survivors.
-func TestOwnerDownAffectsOnlyItsShards(t *testing.T) {
+// TestMinorityDownKeepsEveryShardWorking: with one of three nodes stopped,
+// every shard still has a majority, so every key keeps working through the
+// survivors once the stopped node's shards have elected new leaders.
+func TestMinorityDownKeepsEveryShardWorking(t *testing.T) {
 	const n, shards = 3, 12
 	c := shardCluster(t, n, shards, 3)
-	pm, _ := placement.Compute(c.Members[0].Config.Cluster.Peers, shards, 3)
 	c.Stop(2)
-	dead := c.Members[2].InternalAddr
 	kv := c.KV(0)
 	for s := range shards {
-		var key []byte
-		for k := 0; ; k++ {
-			if key = []byte(fmt.Sprintf("k%d", k)); placement.ShardOf(key, shards) == s {
-				break
-			}
+		key := keyInShard(s, shards)
+		if _, err := kv.Put(reqCtx(t, 5*time.Second), &dkvv1.PutRequest{Key: key, Value: []byte("v")}); err != nil {
+			t.Errorf("shard %d with one replica down: %v", s, err)
 		}
+	}
+}
+
+// TestMajorityDownFailsWithinDeadline: with two of three nodes stopped no
+// shard has a majority. Writes fail within the client's deadline instead
+// of hanging, and nothing is acknowledged.
+func TestMajorityDownFailsWithinDeadline(t *testing.T) {
+	const n, shards = 3, 4
+	c := shardCluster(t, n, shards, 3)
+	c.Stop(1)
+	c.Stop(2)
+	kv := c.KV(0)
+	for s := range shards {
 		start := time.Now()
-		_, err := kv.Put(reqCtx(t, 500*time.Millisecond), &dkvv1.PutRequest{Key: key, Value: []byte("v")})
-		if pm.Primary(s) == dead {
-			if code := status.Code(err); code != codes.Unavailable && code != codes.DeadlineExceeded {
-				t.Errorf("shard %d (owner down): %v", s, err)
-			}
-			if time.Since(start) > 2*time.Second {
-				t.Errorf("shard %d: failed only after %v with a 500ms deadline", s, time.Since(start))
-			}
-		} else if err != nil {
-			t.Errorf("shard %d (owner up): %v", s, err)
+		_, err := kv.Put(reqCtx(t, 500*time.Millisecond), &dkvv1.PutRequest{Key: keyInShard(s, shards), Value: []byte("v")})
+		if code := status.Code(err); code != codes.Unavailable && code != codes.DeadlineExceeded {
+			t.Errorf("shard %d without a majority: %v", s, err)
+		}
+		if took := time.Since(start); took > 2*time.Second {
+			t.Errorf("shard %d: failed only after %v with a 500ms deadline", s, took)
+		}
+	}
+}
+
+func keyInShard(s, shards int) []byte {
+	for k := 0; ; k++ {
+		if key := []byte(fmt.Sprintf("k%d", k)); placement.ShardOf(key, shards) == s {
+			return key
 		}
 	}
 }

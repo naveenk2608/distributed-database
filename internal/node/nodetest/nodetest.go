@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,16 @@ import (
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/node"
 )
+
+// testLogger discards node logs unless NODETEST_LOG is set, in which case
+// they go to stderr as text (the variable avoids the DKV_ prefix, which
+// the server's configuration reserves).
+func testLogger() *slog.Logger {
+	if os.Getenv("NODETEST_LOG") == "" {
+		return slog.New(slog.DiscardHandler)
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
 
 // Cluster is a set of in-process nodes that list each other as peers.
 type Cluster struct {
@@ -41,7 +52,10 @@ type Member struct {
 }
 
 // Start runs n nodes. Every node gets fast membership timings (ping every
-// 100ms, down after 1s) that configure may change.
+// 100ms, down after 1s), a fast Raft clock (20ms ticks, so election
+// timeouts of 200 to 400ms) and 8 shards rather than the default 64, to
+// keep the background load of idle Raft groups low; configure may change
+// any of them.
 func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluster {
 	t.Helper()
 	publics, internals := listenN(t, n), listenN(t, n)
@@ -59,6 +73,8 @@ func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluste
 		cfg.Cluster.PingInterval = 100 * time.Millisecond
 		cfg.Cluster.PingTimeout = 100 * time.Millisecond
 		cfg.Cluster.DownAfter = time.Second
+		cfg.Raft.TickInterval = 20 * time.Millisecond
+		cfg.Cluster.Shards = 8
 		cfg.Storage.Dir = t.TempDir()
 		if configure != nil {
 			configure(i, &cfg)
@@ -111,7 +127,7 @@ func listenAgain(t testing.TB, addr string) net.Listener {
 func (m *Member) start(t testing.TB, public, internal net.Listener) {
 	t.Helper()
 	cfg := m.Config
-	n, err := node.Open(&cfg, slog.New(slog.DiscardHandler))
+	n, err := node.Open(&cfg, testLogger().With("node", m.Index))
 	if err != nil {
 		_ = public.Close()
 		_ = internal.Close()
@@ -228,4 +244,60 @@ func (c *Cluster) KV(i int) dkvv1.KVServiceClient {
 	}
 	c.t.Cleanup(func() { _ = conn.Close() })
 	return dkvv1.NewKVServiceClient(conn)
+}
+
+// Leader returns the index of the member that leads shard according to
+// the running members, and its term; -1 if no running member is leader.
+// With several claimants (an old leader that has not yet noticed), the
+// highest term wins.
+func (c *Cluster) Leader(shard int) (int, uint64) {
+	best, term := -1, uint64(0)
+	for i, m := range c.Members {
+		if !m.Running() {
+			continue
+		}
+		sm, err := c.ShardMap(i)
+		if err != nil {
+			continue
+		}
+		for _, info := range sm.GetShards() {
+			if int(info.GetShard()) == shard && info.GetLocal() && info.GetRole() == "leader" && info.GetTerm() > term {
+				best, term = i, info.GetTerm()
+			}
+		}
+	}
+	return best, term
+}
+
+// Settled reports whether every shard has a running leader that every
+// running replica of the shard knows of.
+func (c *Cluster) Settled() bool {
+	running := map[string]bool{}
+	for _, m := range c.Members {
+		running[m.InternalAddr] = m.Running()
+	}
+	leaders := map[uint32]string{}
+	for i, m := range c.Members {
+		if !m.Running() {
+			continue
+		}
+		sm, err := c.ShardMap(i)
+		if err != nil {
+			return false
+		}
+		for _, info := range sm.GetShards() {
+			if !info.GetLocal() {
+				continue
+			}
+			l := info.GetLeader()
+			if !running[l] {
+				return false
+			}
+			if prev, ok := leaders[info.GetShard()]; ok && prev != l {
+				return false
+			}
+			leaders[info.GetShard()] = l
+		}
+	}
+	return true
 }

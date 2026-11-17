@@ -3,6 +3,7 @@ syntax = "proto3";
 package dkv.v1;
 
 import "dkv/v1/kv.proto";
+import "dkv/v1/raft.proto";
 
 option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
 
@@ -20,6 +21,10 @@ service InternalService {
   // otherwise it answers not_owner with the owner it knows of, and never
   // forwards further, so a request makes at most one internal hop per try.
   rpc Forward(ForwardRequest) returns (ForwardResponse);
+
+  // Raft delivers a batch of Raft messages for any number of shards.
+  // Delivery is best effort: Raft tolerates lost messages.
+  rpc Raft(RaftRequest) returns (RaftResponse);
 }
 
 // NodeInfo identifies a node.
@@ -50,6 +55,7 @@ message ForwardRequest {
     PutRequest put = 2;
     GetRequest get = 3;
     DeleteRequest delete = 4;
+    CompareAndSetRequest cas = 5;
   }
 }
 
@@ -59,13 +65,15 @@ message ForwardResponse {
     GetResponse get = 2;
     DeleteResponse delete = 3;
     NotOwner not_owner = 4;
+    CompareAndSetResponse cas = 5;
   }
 }
 
-// NotOwner says the receiving node does not serve the shard.
+// NotOwner says the receiving node does not serve the shard: it holds no
+// replica, or its replica is not the shard's Raft leader.
 message NotOwner {
   uint32 shard = 1;
   // owner_hint is the internal address of the node the receiver believes
-  // owns the shard, or empty.
+  // leads the shard, or empty if it knows of no leader.
   string owner_hint = 2;
 }

@@ -84,6 +84,7 @@ log:
 		Server:    Server{GRPCAddr: "flag:3", ShutdownTimeout: 3 * time.Second}, // flag > env > file
 		Cluster:   Default().Cluster,
 		Transport: Default().Transport,
+		Raft:      Default().Raft,
 		Storage: Storage{Dir: "/flag/dir", Sync: "interval", SyncInterval: 25 * time.Millisecond, // flag > env > file
 			MemtableBytes: 4 << 20, BlockCacheBytes: 64 << 20, CompactionConcurrency: 2}, // defaults
 		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200}, // env > file; file > default
@@ -149,6 +150,10 @@ func TestRejectsMistakes(t *testing.T) {
 		{name: "down window not above interval", args: []string{"--cluster.down-after=1s"}, want: "cluster.down_after: must be longer"},
 		{name: "short keepalive", args: []string{"--transport.keepalive-time=10ms"}, want: "transport.keepalive_time"},
 		{name: "empty cluster name", args: []string{"--cluster.name="}, want: "cluster.name"},
+		{name: "zero raft tick", args: []string{"--raft.tick-interval=0s"}, want: "raft.tick_interval"},
+		{name: "zero heartbeat ticks", args: []string{"--raft.heartbeat-ticks=0"}, want: "raft.heartbeat_ticks"},
+		{name: "election timeout too close to heartbeat", args: []string{"--raft.heartbeat-ticks=4", "--raft.election-ticks=8"}, want: "raft.election_ticks: must be at least 3 * raft.heartbeat_ticks (12), got 8"},
+		{name: "short session ttl", args: []string{"--raft.session-ttl=1s"}, want: "raft.session_ttl"},
 		{name: "bad sync policy", args: []string{"--storage.sync=sometimes"}, want: `storage.sync: must be always, interval or never, got "sometimes"`},
 		{name: "interval without period", args: []string{"--storage.sync=interval", "--storage.sync-interval=0s"}, want: "storage.sync_interval: must be positive"},
 		{name: "tiny memtable", args: []string{"--storage.memtable-bytes=1024"}, want: "storage.memtable_bytes"},

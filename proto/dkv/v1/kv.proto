@@ -19,24 +19,48 @@ option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv
 service KVService {
   // Put stores value under key and returns the new version.
   rpc Put(PutRequest) returns (PutResponse);
-  // Get returns the current value of key, if any.
+  // Get returns the value of key, if any. By default the read is
+  // linearizable; consistency STALE reads a replica's applied state.
   rpc Get(GetRequest) returns (GetResponse);
   // Delete removes key. Deleting a missing key succeeds with found=false,
   // so retries are harmless.
   rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // CompareAndSet stores value under key only if the key's current version
+  // is expected_version (0 means the key must have no value).
+  rpc CompareAndSet(CompareAndSetRequest) returns (CompareAndSetResponse);
 }
+
+// Writes carry an optional client session: client_id identifies a client
+// and request_id increases with each of its writes. A retried write with
+// the same pair is applied at most once and returns the original result.
 
 message PutRequest {
   bytes key = 1;
   bytes value = 2;
+  string client_id = 3;
+  uint64 request_id = 4;
 }
 
 message PutResponse {
   uint64 version = 1;
 }
 
+enum Consistency {
+  // The default: linearizable.
+  CONSISTENCY_UNSPECIFIED = 0;
+  // Linearizable: the read reflects every write acknowledged before it.
+  CONSISTENCY_LINEARIZABLE = 1;
+  // Stale: any replica answers from its applied state at once; the
+  // response's applied_index says how far that state goes.
+  CONSISTENCY_STALE = 2;
+}
+
 message GetRequest {
   bytes key = 1;
+  Consistency consistency = 2;
+  // min_version, for a stale read, makes the replica wait until it has
+  // applied at least this version of the key's shard (read-your-writes).
+  uint64 min_version = 3;
 }
 
 message GetResponse {
@@ -44,15 +68,34 @@ message GetResponse {
   bool found = 1;
   bytes value = 2;
   uint64 version = 3;
+  // applied_index is the shard's applied index at the replica that answered.
+  uint64 applied_index = 4;
 }
 
 message DeleteRequest {
   bytes key = 1;
+  string client_id = 2;
+  uint64 request_id = 3;
 }
 
 message DeleteResponse {
   // found reports whether the key had a value before the delete.
   bool found = 1;
   // version is the version of the delete itself.
+  uint64 version = 2;
+}
+
+message CompareAndSetRequest {
+  bytes key = 1;
+  bytes value = 2;
+  uint64 expected_version = 3;
+  string client_id = 4;
+  uint64 request_id = 5;
+}
+
+message CompareAndSetResponse {
+  bool succeeded = 1;
+  // version is the new version if the write happened, otherwise the key's
+  // current version (0 if it has no value).
   uint64 version = 2;
 }

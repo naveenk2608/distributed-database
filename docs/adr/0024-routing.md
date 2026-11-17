@@ -1,6 +1,6 @@
 # ADR 0024: Routing with one-hop forwarding and NotOwner hints
 
-Status: Accepted (Phase 5)
+Status: Accepted (Phase 5); revised in Phase 6 for Raft leaders
 
 ## Context
 
@@ -27,6 +27,27 @@ stale routing. Phase 5 has no replication: a shard's primary serves it.
   standalone backend and the router alike, so imports point downward
   (server → router → kvstore → lsm).
 
+## Revision in Phase 6
+
+With Raft, a shard is served by its current leader, which changes.
+
+- The router caches the last known leader per shard. It sends a request to
+  the cached leader, else to its own replica if the node holds one, else to
+  the first replica in placement order.
+- A replica that is not the leader answers `NotOwner` with the leader it
+  knows of (its Raft leader ID, which is the leader's address). The router
+  follows a fresh hint at once (up to twice per request), and moves to the
+  next replica in the set when the answer has no hint or the target is
+  unreachable, since an election may be running.
+- Stale reads (ADR 0007) are answered by the node's own replica when it has
+  one, and never update the leader cache.
+- The attempt limit is 12 so a request can ride out an election; the same
+  `client_id` and `request_id` travel with every attempt, so a forwarded
+  write that was applied before its response was lost is answered from the
+  session table (ADR 0008).
+- `internal/kvstore` is now only the standalone backend; the router talks
+  to `internal/replica`.
+
 ## Alternatives considered
 
 - **Multi-hop forwarding.** A node with a stale view could bounce requests
@@ -40,10 +61,8 @@ stale routing. Phase 5 has no replication: a shard's primary serves it.
 
 ## Consequences
 
-- A retried write is not idempotent in Phase 5: if a forward fails after the
-  owner applied it (a connection that breaks mid-call), the retry applies it
-  again with a new version. Phase 6 adds client sessions (ADR 0008) that make
-  retries exactly-once.
-- While a shard's primary is down, its keys fail with `Unavailable` or
-  `DeadlineExceeded` until the primary returns; other shards are unaffected.
-  Phase 6's Raft groups fail over to another replica.
+- Phase 5 only: a retried write was not idempotent, and a shard whose
+  primary was down failed until it returned. Phase 6's sessions and Raft
+  failover remove both: with a minority of a shard's replicas down every
+  key keeps working once a new leader is elected, and with a majority down
+  requests fail within the client's deadline.

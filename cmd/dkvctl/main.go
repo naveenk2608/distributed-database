@@ -3,11 +3,12 @@
 //	dkvctl [flags] put <key> <value>
 //	dkvctl [flags] get <key>
 //	dkvctl [flags] delete <key>
+//	dkvctl [flags] cas <key> <expected-version> <value>
 //	dkvctl [flags] status
 //	dkvctl [flags] shards
 //
 // Flags go before the command. Exit status follows grep: 0 on success,
-// 1 when get finds no value, 2 on any error.
+// 1 when get finds no value or cas finds another version, 2 on any error.
 package main
 
 import (
@@ -18,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -83,8 +85,10 @@ func runCommand(ctx context.Context, args []string, getenv func(string) string, 
 	stderr := out.stderr
 	fs := flag.NewFlagSet("dkvctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	addr := fs.String("addr", getenv(addrEnv), "server address host:port (env "+addrEnv+")")
-	timeout := fs.Duration("timeout", 5*time.Second, "deadline for the request")
+	addr := fs.String("addr", getenv(addrEnv), "node addresses host:port, comma-separated; requests move to the next when one is unreachable (env "+addrEnv+")")
+	timeout := fs.Duration("timeout", 5*time.Second, "deadline for the request, including retries")
+	stale := fs.Bool("stale", false, "get: read from any replica without confirming it is up to date")
+	minVersion := fs.Uint64("min-version", 0, "get with --stale: wait until the replica has applied this version")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: dkvctl [flags] <command> [args]
 
@@ -92,6 +96,9 @@ Commands:
   put <key> <value>   store value under key; prints the new version
   get <key>           print the value of key (exit status 1 if not found)
   delete <key>        delete key; prints the version of the delete
+  cas <key> <expected-version> <value>
+                      store value only if key is at expected-version (0: key
+                      must not exist); exit status 1 if it is not
   status              show the node's view of the cluster
   shards              show where each shard is placed and the node's local replicas
 
@@ -115,7 +122,7 @@ Flags:
 	if len(cmd) == 0 {
 		return usage("missing command")
 	}
-	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "status": 0, "shards": 0}
+	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "cas": 3, "status": 0, "shards": 0}
 	n, ok := wantArgs[cmd[0]]
 	if !ok {
 		return usage(fmt.Sprintf("unknown command %q", cmd[0]))
@@ -127,7 +134,7 @@ Flags:
 		return usage("no server address: pass --addr or set " + addrEnv)
 	}
 
-	c, err := client.New(*addr)
+	c, err := client.New(strings.Split(*addr, ",")...)
 	if err != nil {
 		out.errorf("%v", err)
 		return exitError
@@ -164,7 +171,13 @@ Flags:
 		}
 		out.result("OK (version %d)\n", ver)
 	case "get":
-		val, _, err := c.Get(ctx, key)
+		var val []byte
+		var err error
+		if *stale {
+			val, _, err = c.GetStale(ctx, key, *minVersion)
+		} else {
+			val, _, err = c.Get(ctx, key)
+		}
 		if errors.Is(err, client.ErrNotFound) {
 			out.errorf("key %q not found", cmd[1])
 			return exitNotFound
@@ -185,6 +198,25 @@ Flags:
 		} else {
 			out.result("key did not exist (version %d)\n", ver)
 		}
+	case "cas":
+		expected, err := strconv.ParseUint(cmd[2], 10, 64)
+		if err != nil {
+			return usage(fmt.Sprintf("expected-version %q is not a version number", cmd[2]))
+		}
+		ok, ver, err := c.CompareAndSet(ctx, key, []byte(cmd[3]), expected)
+		if err != nil {
+			out.errorf("%v", err)
+			return exitError
+		}
+		if !ok {
+			if ver == 0 {
+				out.errorf("not set: key %q does not exist", cmd[1])
+			} else {
+				out.errorf("not set: key %q is at version %d", cmd[1], ver)
+			}
+			return exitNotFound
+		}
+		out.result("OK (version %d)\n", ver)
 	}
 	return exitOK
 }
@@ -217,23 +249,29 @@ func printStatus(out *output, resp *dkvv1.ClusterStatusResponse, now time.Time) 
 	out.result("%s", b.String())
 }
 
-// printShards writes one line per shard: its primary, all replicas, and
-// whether the node holds a replica (with that replica's last sequence
-// number).
+// printShards writes one line per shard: its replicas, and for a replica
+// the node holds, its Raft role, the leader it knows of, its term, commit
+// index and applied index.
 func printShards(out *output, resp *dkvv1.ShardMapResponse) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d shards, replication factor %d\n", resp.GetShardCount(), resp.GetReplicationFactor())
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "SHARD\tPRIMARY\tREPLICAS\tLOCAL\tLAST SEQ")
+	_, _ = fmt.Fprintln(tw, "SHARD\tREPLICAS\tLOCAL\tROLE\tLEADER\tTERM\tCOMMIT\tAPPLIED")
+	dash := func(v string) string {
+		if v == "" || v == "0" {
+			return "-"
+		}
+		return v
+	}
 	for _, s := range resp.GetShards() {
-		primary, local, seq := "-", "no", "-"
-		if r := s.GetReplicas(); len(r) > 0 {
-			primary = r[0]
-		}
+		local, role, leader, term, commit, applied := "no", "-", "-", "-", "-", "-"
 		if s.GetLocal() {
-			local, seq = "yes", fmt.Sprint(s.GetLastSeq())
+			local, applied = "yes", fmt.Sprint(s.GetLastSeq())
+			role, leader = dash(s.GetRole()), dash(s.GetLeader())
+			term, commit = dash(fmt.Sprint(s.GetTerm())), dash(fmt.Sprint(s.GetCommitIndex()))
 		}
-		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", s.GetShard(), primary, strings.Join(s.GetReplicas(), ","), local, seq)
+		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.GetShard(), strings.Join(s.GetReplicas(), ","),
+			local, role, leader, term, commit, applied)
 	}
 	_ = tw.Flush() // writes to a strings.Builder cannot fail
 	out.result("%s", b.String())
