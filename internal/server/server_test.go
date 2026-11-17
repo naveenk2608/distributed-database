@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
@@ -265,5 +268,64 @@ func TestRunReturnsServeError(t *testing.T) {
 	srv := server.New(&cfg, server.NewStandaloneBackend(db), server.StaticStatus{}, slog.New(slog.DiscardHandler))
 	if err := srv.Run(context.Background(), lis); err == nil {
 		t.Fatal("Run on a closed listener returned nil")
+	}
+}
+
+// TestStandaloneAdminAPI: a standalone node counts its requests by
+// operation and outcome and reports its engine as shard 0, over gRPC and
+// HTTP alike; it has no events, and nothing to drain or transfer.
+func TestStandaloneAdminAPI(t *testing.T) {
+	node := servertest.Start(t, func(c *config.Config) { c.Server.AdminAddr = "127.0.0.1:0" })
+	kv := dial(t, node.Addr)
+	c := ctx(t)
+	for i := range 3 {
+		if _, err := kv.Put(c, &dkvv1.PutRequest{Key: fmt.Appendf(nil, "k%d", i), Value: []byte("v")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := kv.Get(c, &dkvv1.GetRequest{Key: []byte("absent")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kv.Put(c, &dkvv1.PutRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty key: %v", err)
+	}
+	conn, err := grpc.NewClient(node.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	admin := dkvv1.NewAdminServiceClient(conn)
+	st, err := admin.Stats(c, &dkvv1.StatsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string][2]uint64{}
+	for _, o := range st.GetOps() {
+		counts[o.GetOp()] = [2]uint64{o.GetOk(), o.GetErrors()}
+	}
+	if counts["put"] != [2]uint64{3, 1} || counts["get"] != [2]uint64{1, 0} || counts["cas"] != [2]uint64{} {
+		t.Fatalf("request counts %v; want 3 good puts and 1 bad, 1 get", counts)
+	}
+	if r := st.GetReplicas(); len(r) != 1 || r[0].GetRaft().GetShard() != 0 || r[0].GetEngine().GetLastSeq() != 3 {
+		t.Fatalf("replicas %v; want the engine as shard 0 at sequence 3", r)
+	}
+	if ev, err := admin.Events(c, &dkvv1.EventsRequest{}); err != nil || len(ev.GetEvents()) != 0 {
+		t.Fatalf("events %v, %v", ev, err)
+	}
+	if _, err := admin.Drain(c, &dkvv1.DrainRequest{NodeId: "test-node", Drain: true}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("drain: %v", err)
+	}
+	if _, err := admin.TransferLeader(c, &dkvv1.AdminServiceTransferLeaderRequest{NodeId: "x"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("transfer-leader: %v", err)
+	}
+	resp, err := http.Get("http://" + node.AdminAddr + "/v1/stats") //nolint:noctx // a test against a local server
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	var hst dkvv1.StatsResponse
+	if err != nil || protojson.Unmarshal(b, &hst) != nil || len(hst.GetOps()) != 4 || hst.GetOps()[0].GetOk() != 3 {
+		t.Fatalf("GET /v1/stats: %s, %v", b, err)
 	}
 }

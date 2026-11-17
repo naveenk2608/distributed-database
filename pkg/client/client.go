@@ -274,6 +274,40 @@ func (c *Client) ShardMap(ctx context.Context) (*dkvv1.ShardMapResponse, error) 
 	return resp, nil
 }
 
+// ShardMaps asks every node the client was given for its shard map. A
+// node reports leaders only for the shards it holds, so merging the maps
+// of all nodes gives every shard's leader. The slices are in address
+// order; errs[i] is set where nodes[i] is nil.
+func (c *Client) ShardMaps(ctx context.Context) (maps []*dkvv1.ShardMapResponse, errs []error) {
+	for _, conn := range c.conns {
+		resp, err := dkvv1.NewAdminServiceClient(conn).ShardMap(ctx, &dkvv1.ShardMapRequest{})
+		if err != nil {
+			err = fmt.Errorf("dkv: shard map from %s: %w", conn.Target(), err)
+		}
+		maps, errs = append(maps, resp), append(errs, err)
+	}
+	return maps, errs
+}
+
+// Drain asks the cluster to move every leadership off the node with the
+// given ID and give it none (drain), or to let it lead again (!drain).
+func (c *Client) Drain(ctx context.Context, nodeID string, drain bool) error {
+	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).Drain(ctx, &dkvv1.DrainRequest{NodeId: nodeID, Drain: drain}); err != nil {
+		return fmt.Errorf("dkv: drain: %w", err)
+	}
+	return nil
+}
+
+// TransferLeader asks a shard's leader to hand leadership to the voter
+// with the given node ID, and returns once it has.
+func (c *Client) TransferLeader(ctx context.Context, shard int32, nodeID string) error {
+	req := &dkvv1.AdminServiceTransferLeaderRequest{Shard: shard, NodeId: nodeID}
+	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).TransferLeader(ctx, req); err != nil {
+		return fmt.Errorf("dkv: transfer leader: %w", err)
+	}
+	return nil
+}
+
 // Decommission asks the cluster to move every replica off the node with
 // the given ID; the node is then marked decommissioned.
 func (c *Client) Decommission(ctx context.Context, nodeID string) error {

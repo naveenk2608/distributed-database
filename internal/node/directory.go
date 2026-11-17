@@ -30,6 +30,9 @@ type directory struct {
 	addrs  map[string]string // node ID -> internal address
 	states map[string]dkvv1.NodeState
 	groups map[int]group // shard (meta.Shard for the meta group) -> members
+	// drained is refreshed from the meta group with states, for status
+	// display only, and not cached on disk.
+	drained map[string]bool
 }
 
 type group struct {
@@ -45,7 +48,7 @@ type directoryJSON struct {
 
 func newDirectory(dataDir string) *directory {
 	return &directory{path: filepath.Join(dataDir, directoryFile),
-		addrs: map[string]string{}, states: map[string]dkvv1.NodeState{}, groups: map[int]group{}}
+		addrs: map[string]string{}, states: map[string]dkvv1.NodeState{}, groups: map[int]group{}, drained: map[string]bool{}}
 }
 
 // load reads the cached directory; a missing file is not an error.
@@ -122,6 +125,7 @@ func (d *directory) Update(s meta.State) bool {
 		if d.states[id] != n.GetState() {
 			d.states[id], changed = n.GetState(), true
 		}
+		d.drained[id] = n.GetDrained()
 	}
 	for shard, desc := range s.Descs {
 		g := group{Voters: slices.Clone(desc.GetVoters()), Learners: slices.Clone(desc.GetLearners())}
@@ -161,6 +165,14 @@ func (d *directory) Nodes() []string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return slices.Sorted(maps.Keys(d.addrs))
+}
+
+// Drained reports whether a node was drained, as last read from the meta
+// group.
+func (d *directory) Drained(id string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.drained[id]
 }
 
 // State returns a node's state as last read from the meta group.

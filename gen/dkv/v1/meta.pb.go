@@ -89,8 +89,12 @@ type NodeRecord struct {
 	State                NodeState `protobuf:"varint,3,opt,name=state,proto3,enum=dkv.v1.NodeState" json:"state,omitempty"`
 	JoinedUnixNano       int64     `protobuf:"varint,4,opt,name=joined_unix_nano,json=joinedUnixNano,proto3" json:"joined_unix_nano,omitempty"`
 	StateChangedUnixNano int64     `protobuf:"varint,5,opt,name=state_changed_unix_nano,json=stateChangedUnixNano,proto3" json:"state_changed_unix_nano,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// drained: an operator asked for the node to lead no group (dkvctl
+	// drain); the rebalancer moves its leaderships away and never gives it
+	// new ones. It keeps its replicas.
+	Drained       bool `protobuf:"varint,6,opt,name=drained,proto3" json:"drained,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NodeRecord) Reset() {
@@ -156,6 +160,13 @@ func (x *NodeRecord) GetStateChangedUnixNano() int64 {
 		return x.StateChangedUnixNano
 	}
 	return 0
+}
+
+func (x *NodeRecord) GetDrained() bool {
+	if x != nil {
+		return x.Drained
+	}
+	return false
 }
 
 // ShardDescriptor caches a group's membership for routing. The group's own
@@ -294,14 +305,15 @@ var File_dkv_v1_meta_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_meta_proto_rawDesc = "" +
 	"\n" +
-	"\x11dkv/v1/meta.proto\x12\x06dkv.v1\"\xc3\x01\n" +
+	"\x11dkv/v1/meta.proto\x12\x06dkv.v1\"\xdd\x01\n" +
 	"\n" +
 	"NodeRecord\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04addr\x18\x02 \x01(\tR\x04addr\x12'\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x11.dkv.v1.NodeStateR\x05state\x12(\n" +
 	"\x10joined_unix_nano\x18\x04 \x01(\x03R\x0ejoinedUnixNano\x125\n" +
-	"\x17state_changed_unix_nano\x18\x05 \x01(\x03R\x14stateChangedUnixNano\"[\n" +
+	"\x17state_changed_unix_nano\x18\x05 \x01(\x03R\x14stateChangedUnixNano\x12\x18\n" +
+	"\adrained\x18\x06 \x01(\bR\adrained\"[\n" +
 	"\x0fShardDescriptor\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12\x16\n" +
 	"\x06voters\x18\x02 \x03(\tR\x06voters\x12\x1a\n" +

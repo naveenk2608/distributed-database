@@ -10,6 +10,7 @@
 package cluster
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
 
@@ -48,6 +50,9 @@ type Config struct {
 	// Placement is this node's placement fingerprint; peers that report a
 	// different one are flagged in status.
 	Placement string
+	// OnEvent, if set, is told when a peer goes up or down; it is called
+	// with the membership's lock held and must not block or call back.
+	OnEvent func(obs.Event)
 }
 
 // Membership pings the bootstrap peers and reports their state. It is
@@ -226,6 +231,11 @@ func (m *Membership) pingOnce(ctx context.Context, addr string) bool {
 		m.log.Info("peer state changed", "peer", addr, "node_id", p.node.GetNodeId(),
 			"from", p.lastState.String(), "to", st.String(), "error", p.lastErr)
 		p.lastState = st
+		kind := map[dkvv1.MemberState]string{dkvv1.MemberState_MEMBER_STATE_UP: obs.EventPeerUp,
+			dkvv1.MemberState_MEMBER_STATE_DOWN: obs.EventPeerDown}[st]
+		if kind != "" && m.cfg.OnEvent != nil {
+			m.cfg.OnEvent(obs.Event{Kind: kind, Shard: obs.NoShard, Node: cmp.Or(p.node.GetNodeId(), addr), Detail: p.lastErr})
+		}
 	}
 	return true
 }

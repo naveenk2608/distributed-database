@@ -1,0 +1,67 @@
+# Dashboard settings layered over docker-compose.yml: every node serves its
+# admin HTTP API, a fourth node gives a dead node's replicas somewhere to
+# go, and dkv-console watches them with its history in PostgreSQL. The
+# Phase 9 gate (deploy/compose/dashboard-gate.sh) runs against it.
+#
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/dashboard.yml up -d --build
+#   open http://localhost:8080
+#
+# The PostgreSQL password is for this local cluster only.
+services:
+  n1:
+    environment: &dashboard
+      DKV_SERVER_ADMIN_ADDR: "0.0.0.0:7200"
+      DKV_LIVENESS_DEAD_AFTER: "5s"
+  n2:
+    environment: *dashboard
+  n3:
+    environment: *dashboard
+  n4:
+    image: dkv:dev
+    restart: "no"
+    stop_grace_period: 15s
+    hostname: n4
+    environment:
+      DKV_SERVER_GRPC_ADDR: "0.0.0.0:7070"
+      DKV_SERVER_ADMIN_ADDR: "0.0.0.0:7200"
+      DKV_CLUSTER_NAME: "dkv-compose"
+      DKV_CLUSTER_INTERNAL_ADDR: "0.0.0.0:7100"
+      DKV_CLUSTER_ADVERTISE_ADDR: "n4:7100"
+      # Not a bootstrap peer: it joins the cluster the others formed.
+      DKV_CLUSTER_JOIN: "n1:7100,n2:7100,n3:7100"
+      DKV_CLUSTER_PING_INTERVAL: "500ms"
+      DKV_CLUSTER_PING_TIMEOUT: "500ms"
+      DKV_CLUSTER_DOWN_AFTER: "3s"
+      DKV_LIVENESS_DEAD_AFTER: "5s"
+      DKV_STORAGE_DIR: "/data"
+      DKV_LOG_FORMAT: "json"
+    ports: ["7074:7070"]
+    volumes: ["n4-data:/data"]
+    depends_on: [n1, n2, n3]
+  console:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/console.Dockerfile
+    image: dkv-console:dev
+    restart: "no"
+    environment:
+      DKV_CONSOLE_LISTEN_ADDR: "0.0.0.0:8080"
+      DKV_CONSOLE_NODES: "n1:7200,n2:7200,n3:7200,n4:7200"
+      DKV_CONSOLE_POLL_INTERVAL: "1s"
+      DKV_CONSOLE_POLL_TIMEOUT: "800ms"
+      DKV_CONSOLE_POSTGRES_DSN: "postgres://dkv:dkv-local@postgres:5432/dkv_console?sslmode=disable"
+      DKV_LOG_FORMAT: "json"
+    ports: ["8080:8080"]
+    depends_on: [postgres]
+  postgres:
+    image: postgres:16.4-bookworm
+    restart: "no"
+    environment:
+      POSTGRES_USER: "dkv"
+      POSTGRES_PASSWORD: "dkv-local"
+      POSTGRES_DB: "dkv_console"
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+
+volumes:
+  n4-data:
+  pg-data:

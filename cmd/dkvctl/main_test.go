@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
+	"github.com/naveenk2608/distributed-database/internal/node/nodetest"
 	"github.com/naveenk2608/distributed-database/internal/server/servertest"
 )
 
@@ -168,4 +173,125 @@ func TestShardsStandalone(t *testing.T) {
 	if len(lines) != 3 || !strings.Contains(lines[2], "yes") || !strings.HasSuffix(strings.TrimSpace(lines[2]), "1") {
 		t.Errorf("shards output:\n%s", r.stdout)
 	}
+}
+
+// TestJSONOutput: --json prints one JSON object per command, including for
+// a missing key and a failed compare-and-set, with the usual exit codes;
+// --consistency selects stale reads.
+func TestJSONOutput(t *testing.T) {
+	node := servertest.Start(t, nil)
+	a := "--addr=" + node.Addr
+	for _, s := range []struct {
+		args   []string
+		code   int
+		stdout string
+	}{
+		{[]string{a, "--json", "get", "k"}, exitNotFound, `{"found":false,"key":"k"}` + "\n"},
+		{[]string{a, "--json", "put", "k", "v1"}, exitOK, `{"ok":true,"version":1}` + "\n"},
+		{[]string{a, "--json", "get", "k"}, exitOK, `{"found":true,"key":"k","value":"v1","version":1}` + "\n"},
+		{[]string{a, "--json", "put", "bin", "\xff\x00"}, exitOK, `{"ok":true,"version":2}` + "\n"},
+		{[]string{a, "--json", "get", "bin"}, exitOK, `{"found":true,"key":"bin","value_base64":"/wA=","version":2}` + "\n"},
+		{[]string{a, "--json", "cas", "k", "7", "x"}, exitNotFound, `{"succeeded":false,"version":1}` + "\n"},
+		{[]string{a, "--json", "cas", "k", "1", "v2"}, exitOK, `{"succeeded":true,"version":3}` + "\n"},
+		{[]string{a, "--json", "delete", "k"}, exitOK, `{"found":true,"ok":true,"version":4}` + "\n"},
+		{[]string{a, "--consistency=stale", "--min-version=2", "get", "bin"}, exitOK, "\xff\x00\n"},
+	} {
+		if r := ctl(t, nil, s.args...); r.code != s.code || r.stdout != s.stdout {
+			t.Fatalf("dkvctl %q = exit %d, stdout %q, stderr %q; want exit %d, stdout %q", s.args[1:], r.code, r.stdout, r.stderr, s.code, s.stdout)
+		}
+	}
+	r := ctl(t, nil, a, "--json", "shards")
+	var sm dkvv1.ShardMapResponse
+	if r.code != exitOK || protojson.Unmarshal([]byte(r.stdout), &sm) != nil || sm.GetShardCount() != 1 {
+		t.Fatalf("shards --json: %+v", r)
+	}
+	for _, args := range [][]string{
+		{a, "--consistency=eventual", "get", "k"},
+		{a, "transfer-leader", "zero", "n1"},
+	} {
+		if r := ctl(t, nil, args...); r.code != exitError || !strings.Contains(r.stderr, "Usage") {
+			t.Fatalf("dkvctl %q = %+v; want a usage error", args[1:], r)
+		}
+	}
+	// A standalone node has no leadership to move.
+	for _, args := range [][]string{{a, "drain", "test-node"}, {a, "transfer-leader", "0", "test-node"}} {
+		if r := ctl(t, nil, args...); r.code != exitError || !strings.Contains(r.stderr, "FailedPrecondition") {
+			t.Fatalf("dkvctl %q = %+v; want a FailedPrecondition error", args[1:], r)
+		}
+	}
+}
+
+// TestClusterCommands: leaders merges every node's view; transfer-leader,
+// drain and undrain move leadership as asked.
+func TestClusterCommands(t *testing.T) {
+	c := nodetest.Start(t, 3, func(_ int, cfg *config.Config) { cfg.Cluster.Shards = 3 })
+	nodetest.WaitFor(t, 30*time.Second, "every group to elect a leader", c.Settled)
+	nodetest.WaitFor(t, 30*time.Second, "the meta group to record every node", func() bool { return metaKnowsAll(c) })
+	var addrs []string
+	for _, m := range c.Members {
+		addrs = append(addrs, m.PublicAddr)
+	}
+	a := "--addr=" + strings.Join(addrs, ",")
+	leaders := func() map[int32]string {
+		t.Helper()
+		r := ctl(t, nil, a, "--json", "leaders")
+		var ls []leaderInfo
+		if r.code != exitOK || json.Unmarshal([]byte(r.stdout), &ls) != nil {
+			t.Fatalf("leaders --json: %+v", r)
+		}
+		out := map[int32]string{}
+		for _, l := range ls {
+			out[l.Shard] = l.Leader
+		}
+		return out
+	}
+	ls := leaders()
+	if len(ls) != 3 || ls[0] == "" || ls[1] == "" || ls[2] == "" {
+		t.Fatalf("leaders %v; want one for each of 3 shards", ls)
+	}
+	if r := ctl(t, nil, a, "leaders"); r.code != exitOK || !strings.Contains(r.stdout, "SHARD") || strings.Contains(r.stdout, "unknown") {
+		t.Fatalf("leaders: %+v", r)
+	}
+	var to string
+	for _, m := range c.Members {
+		if id := m.NodeID(); id != ls[0] {
+			to = id
+		}
+	}
+	if r := ctl(t, nil, a, "transfer-leader", "0", to); r.code != exitOK || !strings.Contains(r.stdout, "now led by "+to) {
+		t.Fatalf("transfer-leader: %+v", r)
+	}
+	if got := leaders()[0]; got != to {
+		t.Fatalf("shard 0 led by %s after transfer-leader to %s", got, to)
+	}
+	if r := ctl(t, nil, a, "--json", "drain", to); r.code != exitOK || !strings.Contains(r.stdout, `"drained":true`) {
+		t.Fatalf("drain: %+v", r)
+	}
+	nodetest.WaitFor(t, 30*time.Second, "the drained node to lead no shard", func() bool {
+		for _, l := range leaders() {
+			if l == to {
+				return false
+			}
+		}
+		return true
+	})
+	if r := ctl(t, nil, a, "undrain", to); r.code != exitOK || !strings.Contains(r.stdout, "may lead again") {
+		t.Fatalf("undrain: %+v", r)
+	}
+}
+
+// metaKnowsAll reports whether node 0 has read every member's record from
+// the meta group; until then, commands naming a node (drain) find none.
+func metaKnowsAll(c *nodetest.Cluster) bool {
+	st, err := c.Status(0)
+	if err != nil {
+		return false
+	}
+	known := 0
+	for _, m := range st.GetMembers() {
+		if m.GetNodeState() == dkvv1.NodeState_NODE_STATE_ALIVE {
+			known++
+		}
+	}
+	return known == len(c.Members)
 }

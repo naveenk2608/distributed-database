@@ -21,6 +21,130 @@ service AdminService {
   // Decommission asks the cluster to move every replica off a node; the
   // node is then marked decommissioned and can be shut down.
   rpc Decommission(DecommissionRequest) returns (DecommissionResponse);
+
+  // Drain asks the cluster to move every leadership off a node and give it
+  // none until it is undrained (drain = false). Its replicas stay.
+  rpc Drain(DrainRequest) returns (DrainResponse);
+
+  // TransferLeader asks a shard's leader to hand leadership to one of the
+  // shard's voters. The rebalancer may later move it again to keep
+  // leadership balanced; Drain is the lasting way to keep a node from
+  // leading.
+  rpc TransferLeader(AdminServiceTransferLeaderRequest) returns (AdminServiceTransferLeaderResponse);
+
+  // Stats returns the answering node's request counters and latency
+  // histograms, and the Raft and storage state of each of its replicas.
+  rpc Stats(StatsRequest) returns (StatsResponse);
+
+  // Events returns the answering node's recent events (elections, failure
+  // detection, membership changes), oldest first.
+  rpc Events(EventsRequest) returns (EventsResponse);
+}
+
+message DrainRequest {
+  string node_id = 1;
+  // drain = false undrains the node.
+  bool drain = 2;
+}
+
+message DrainResponse {}
+
+message AdminServiceTransferLeaderRequest {
+  int32 shard = 1;
+  // node_id is the voter to hand leadership to.
+  string node_id = 2;
+}
+
+message AdminServiceTransferLeaderResponse {}
+
+message StatsRequest {}
+
+message StatsResponse {
+  string node_id = 1;
+  // When the node collected these numbers, and when it started.
+  int64 unix_nano = 2;
+  int64 started_unix_nano = 3;
+  // Upper bounds of the latency histogram buckets, in seconds, shared by
+  // every operation.
+  repeated double latency_bounds_seconds = 4;
+  repeated OpStats ops = 5;
+  repeated ReplicaStats replicas = 6;
+  // The block cache every engine on the node shares.
+  CacheStats block_cache = 7;
+}
+
+// OpStats counts one public API operation since the node started.
+message OpStats {
+  // op is put, get, delete or cas.
+  string op = 1;
+  uint64 ok = 2;
+  uint64 errors = 3;
+  double latency_sum_seconds = 4;
+  // latency_cumulative[i] counts requests that took at most
+  // latency_bounds_seconds[i].
+  repeated uint64 latency_cumulative = 5;
+}
+
+// ReplicaStats is one local replica: its Raft state and its engine.
+message ReplicaStats {
+  ReplicaStatus raft = 1;
+  EngineStats engine = 2;
+}
+
+message EngineStats {
+  uint64 last_seq = 1;
+  int32 memtables = 2;
+  int64 memtable_bytes = 3;
+  int32 tables = 4;
+  uint64 table_bytes = 5;
+  uint64 table_entries = 6;
+  int64 flushes = 7;
+  int64 flush_bytes = 8;
+  int64 compactions = 9;
+  int64 compaction_bytes_read = 10;
+  int64 compaction_bytes_written = 11;
+  int64 write_stalls = 12;
+  int64 write_slowdowns = 13;
+}
+
+message CacheStats {
+  int64 capacity_bytes = 1;
+  int64 used_bytes = 2;
+  int64 hits = 3;
+  int64 misses = 4;
+}
+
+message EventsRequest {
+  // after: return events with a higher sequence number.
+  uint64 after = 1;
+  // limit: at most this many; 0 means 1,000.
+  uint32 limit = 2;
+}
+
+message EventsResponse {
+  string node_id = 1;
+  repeated Event events = 2;
+  // oldest is the sequence number of the oldest event the node still
+  // keeps; a reader that saw up to n and gets oldest > n+1 missed events.
+  uint64 oldest = 3;
+}
+
+message Event {
+  uint64 seq = 1;
+  int64 unix_nano = 2;
+  // kind: leader_elected, leader_stepped_down, peer_down, peer_up,
+  // node_dead, node_alive, replica_added, replica_promoted,
+  // replica_removed, snapshot_installed, leader_transfer.
+  string kind = 3;
+  // shard: the Raft group (-1 the meta group); has_shard is false for
+  // events about no group.
+  int32 shard = 4;
+  bool has_shard = 5;
+  // node: the member the event concerns (a node ID or peer address).
+  string node = 6;
+  uint64 term = 7;
+  uint64 index = 8;
+  string detail = 9;
 }
 
 message DecommissionRequest {
@@ -63,6 +187,8 @@ message MemberStatus {
   // the meta leader has not heard its heartbeat for liveness.suspect_after.
   NodeState node_state = 9;
   bool suspect = 10;
+  // drained: an operator drained the node (dkvctl drain); it leads no group.
+  bool drained = 11;
 }
 
 message ShardMapRequest {}

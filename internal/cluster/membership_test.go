@@ -12,6 +12,7 @@ import (
 	"go.uber.org/goleak"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
 
@@ -182,5 +183,34 @@ func TestPlacementMismatchIsReported(t *testing.T) {
 	got := member(m.Status(), addr)
 	if got.GetState() != dkvv1.MemberState_MEMBER_STATE_UP || !strings.Contains(got.GetLastError(), "placement differs") {
 		t.Fatalf("peer with another placement: %v", got)
+	}
+}
+
+// TestPeerEvents: the failure detector reports a peer going up (named by
+// its node ID) and going down (named by its address when it never
+// answered), once per change.
+func TestPeerEvents(t *testing.T) {
+	_, live := node(t, "c", "peer-1")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := lis.Addr().String()
+	_ = lis.Close() // nothing answers there
+	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
+	pool := transport.NewPool(tcfg)
+	t.Cleanup(func() { _ = pool.Close() })
+	var events []obs.Event
+	m := New(Config{ClusterName: "c", NodeID: "observer", Advertise: "127.0.0.1:1", Peers: []string{live, dead},
+		PingInterval: 50 * time.Millisecond, PingTimeout: time.Second, DownAfter: 5 * time.Second,
+		OnEvent: func(e obs.Event) { events = append(events, e) }}, pool, clock, slog.New(slog.DiscardHandler))
+	ctx := context.Background()
+	m.pingOnce(ctx, live)
+	m.pingOnce(ctx, live) // still up: no second event
+	clock.Advance(5*time.Second + time.Nanosecond)
+	m.pingOnce(ctx, dead)
+	if len(events) != 2 || events[0].Kind != obs.EventPeerUp || events[0].Node != "peer-1" ||
+		events[1].Kind != obs.EventPeerDown || events[1].Node != dead || events[1].Shard != obs.NoShard {
+		t.Fatalf("events %+v; want peer-1 up, then %s down", events, dead)
 	}
 }

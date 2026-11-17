@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
@@ -51,6 +52,28 @@ type group struct {
 	net     *loopback
 	stop    chan struct{}
 	wg      sync.WaitGroup
+
+	evMu   sync.Mutex
+	events []seenEvent // every replica's OnEvent calls
+}
+
+// seenEvent is an event and the replica that reported it.
+type seenEvent struct {
+	rep string
+	obs.Event
+}
+
+// eventsOf returns the recorded events of one kind.
+func (g *group) eventsOf(kind string) []seenEvent {
+	g.evMu.Lock()
+	defer g.evMu.Unlock()
+	var out []seenEvent
+	for _, e := range g.events {
+		if e.Kind == kind {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func newGroup(t *testing.T, n int) *group { return newGroupCompacting(t, n, 0) }
@@ -121,6 +144,11 @@ func (g *group) tryOpen(id string) error {
 	r, err := Open(Config{Shard: 7, ID: id, Peers: peers, Dir: "/data/" + id, FS: g.fsOf(id),
 		Engine: lsm.Options{Sync: lsm.SyncNever}, ElectionTick: 10, HeartbeatTick: 2,
 		SessionTTL: time.Hour, CompactEntries: g.compact, Sender: g.net, Snapshots: g,
+		OnEvent: func(e obs.Event) {
+			g.evMu.Lock()
+			g.events = append(g.events, seenEvent{id, e})
+			g.evMu.Unlock()
+		},
 		Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		return err

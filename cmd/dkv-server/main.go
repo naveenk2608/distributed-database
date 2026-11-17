@@ -76,6 +76,19 @@ func run(ctx context.Context, args, environ []string, logOut io.Writer) int {
 			return 1
 		}
 	}
+	if cfg.Server.AdminAddr != "" {
+		admin, err := net.Listen("tcp", cfg.Server.AdminAddr)
+		if err != nil {
+			log.Error("listen failed", "addr", cfg.Server.AdminAddr, "error", err)
+			_ = public.Close()
+			if internal != nil {
+				_ = internal.Close()
+			}
+			closeDB()
+			return 1
+		}
+		n.ServeAdminOn(admin)
+	}
 	if err := n.Run(ctx, public, internal); err != nil {
 		log.Error("node failed", "error", err)
 		return 1

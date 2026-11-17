@@ -13,6 +13,7 @@ import (
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/meta"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 )
 
@@ -355,6 +356,11 @@ func (n *Node) decideLiveness(ctx context.Context, st meta.State, lv *meta.Liven
 		if err == nil && ok {
 			n.log.Info("node liveness decided", "target", c.id, "state", c.state.String())
 			st.Nodes[c.id] = next
+			kind := obs.EventNodeAlive
+			if c.state == dkvv1.NodeState_NODE_STATE_DEAD {
+				kind = obs.EventNodeDead
+			}
+			n.recordEvent(obs.Event{Kind: kind, Shard: obs.NoShard, Node: c.id})
 		}
 	}
 }

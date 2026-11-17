@@ -16,9 +16,10 @@ import (
 
 // Node is a running in-process server.
 type Node struct {
-	Addr string  // host:port the server listens on
-	DB   *lsm.DB // the server's engine
-	stop func()
+	Addr      string  // host:port the server listens on
+	AdminAddr string  // the admin HTTP API's, if server.admin_addr was set
+	DB        *lsm.DB // the server's engine
+	stop      func()
 }
 
 // Stop shuts the server down and waits for it. It is idempotent and also
@@ -54,6 +55,16 @@ func Start(t testing.TB, configure func(*config.Config)) *Node {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx, lis) }()
+	adminAddr, adminDone := "", make(chan error, 1)
+	if cfg.Server.AdminAddr == "" {
+		adminDone <- nil
+	} else if alis, err := net.Listen("tcp", cfg.Server.AdminAddr); err != nil {
+		adminDone <- nil
+		t.Errorf("servertest: listen for the admin API: %v", err)
+	} else {
+		adminAddr = alis.Addr().String()
+		go func() { adminDone <- srv.RunAdmin(ctx, alis) }()
+	}
 
 	stopped := false
 	stop := func() {
@@ -65,8 +76,11 @@ func Start(t testing.TB, configure func(*config.Config)) *Node {
 		if err := <-done; err != nil {
 			t.Errorf("servertest: server exited with error: %v", err)
 		}
+		if err := <-adminDone; err != nil {
+			t.Errorf("servertest: admin API exited with error: %v", err)
+		}
 		_ = db.Close() // may already be closed by the test
 	}
 	t.Cleanup(stop)
-	return &Node{Addr: lis.Addr().String(), DB: db, stop: stop}
+	return &Node{Addr: lis.Addr().String(), AdminAddr: adminAddr, DB: db, stop: stop}
 }

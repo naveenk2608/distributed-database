@@ -112,3 +112,45 @@ jobs:
 
       - name: fuzz targets
         run: make fuzz FUZZTIME=5m
+
+  compose:
+    # Phase 4 gate in Docker Compose: three nodes form a cluster from
+    # configuration and report a SIGKILLed one down within the window.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: compose gate
+        run: make compose-gate
+
+  dashboard:
+    # Phase 9 gate in Docker Compose with Chromium: a killed node on the
+    # dashboard within one poll interval, events in order, writes with the
+    # console stopped, history reloaded from PostgreSQL.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: dashboard dependencies and Chromium
+        run: cd web && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
+
+      - name: dashboard gate
+        run: make dashboard-gate
+
+      - name: keep the container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-gate
+          path: |
+            dashboard-gate.log
+            web/test-results/
+          if-no-files-found: ignore

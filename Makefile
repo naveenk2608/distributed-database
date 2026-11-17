@@ -7,14 +7,15 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short test-integration sim lin chaos crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
+.PHONY: web web-test dashboard-gate all build check fmt fmt-check vet lint test test-short test-integration sim lin chaos crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
 
 all: check build
 
-## build: compile dkv-server and dkvctl into bin/
+## build: compile dkv-server, dkvctl and dkv-console into bin/
 build:
 	go build -o bin/dkv-server ./cmd/dkv-server
 	go build -o bin/dkvctl ./cmd/dkvctl
+	go build -o bin/dkv-console ./cmd/dkv-console
 
 ## check: everything CI runs: formatting, vet, lint, race-enabled tests
 check: fmt-check vet lint test
@@ -98,6 +99,19 @@ compose-down:
 ## compose-gate: Phase 4 gate in Compose (needs Docker)
 compose-gate:
 	deploy/compose/gate.sh
+
+## web: install the dashboard's dependencies and build it into web/dist (needs Node 22)
+web:
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+## web-test: typecheck and unit-test the dashboard
+web-test:
+	cd web && npm run typecheck && npm test
+
+## dashboard-gate: Phase 9 gate in Compose with a browser (needs Docker, jq, and
+## cd web && npx playwright install chromium)
+dashboard-gate:
+	deploy/compose/dashboard-gate.sh
 
 ## proto: lint the protobuf API and regenerate gen/
 proto:

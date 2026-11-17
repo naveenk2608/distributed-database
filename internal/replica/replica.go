@@ -50,6 +50,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/raft/raftlog"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
@@ -102,7 +103,11 @@ type Config struct {
 	// acknowledged entries, breaking Raft's guarantees. Only for measuring
 	// what fsync costs (storage.sync = never).
 	UnsafeNoSync bool
-	Log          *slog.Logger
+	// OnEvent, if set, is told of elections, applied membership changes,
+	// snapshot installs and leadership transfers, from the replica's own
+	// goroutine; it must not block.
+	OnEvent func(obs.Event)
+	Log     *slog.Logger
 }
 
 // NotLeaderError is returned when this replica cannot serve a request
@@ -621,10 +626,17 @@ func (rp *Replica) handleReady() error {
 				delete(rp.inflight, id)
 			}
 		}
+		wasLeader := rp.role == raft.StateLeader // published state, written only by this goroutine
 		rp.r.Advance(rd)
 		rp.publish()
 		if rd.SoftState != nil {
 			rp.log.Info("raft role changed", "role", rd.SoftState.State.String(), "leader", rd.SoftState.Lead, "term", rp.r.Term())
+			switch isLeader := rd.SoftState.State == raft.StateLeader; {
+			case isLeader && !wasLeader:
+				rp.event(obs.Event{Kind: obs.EventLeaderElected, Node: rp.cfg.ID, Term: rp.r.Term()})
+			case !isLeader && wasLeader:
+				rp.event(obs.Event{Kind: obs.EventLeaderSteppedDown, Node: rd.SoftState.Lead, Term: rp.r.Term()})
+			}
 		}
 		rp.releaseReads()
 	}
@@ -685,6 +697,12 @@ func (rp *Replica) apply(e raft.Entry) error {
 		if cc, err := raft.DecodeConfChange(e.Data); err == nil {
 			rp.log.Info("membership change applied", "change", cc.Type.String(), "node", cc.Node,
 				"voters", cc.Conf.Voters, "learners", cc.Conf.Learners, "index", e.Index)
+			kind := map[raft.ConfChangeType]string{raft.ConfAddLearner: obs.EventReplicaAdded,
+				raft.ConfPromote: obs.EventReplicaPromoted, raft.ConfRemove: obs.EventReplicaRemoved}[cc.Type]
+			if kind != "" {
+				rp.event(obs.Event{Kind: kind, Node: cc.Node, Term: e.Term, Index: e.Index,
+					Detail: fmt.Sprintf("voters %v, learners %v", cc.Conf.Voters, cc.Conf.Learners)})
+			}
 		}
 	}
 	if _, err := rp.db.Apply(&b, e.Index); err != nil {
@@ -1046,7 +1064,23 @@ func (rp *Replica) install(s raft.SnapshotMeta, hs raft.HardState) error {
 	}
 	rp.noteApplied(s.Index)
 	rp.log.Info("snapshot installed", "index", s.Index, "voters", s.Conf.Voters, "learners", s.Conf.Learners)
+	rp.event(obs.Event{Kind: obs.EventSnapshotInstalled, Node: rp.cfg.ID, Term: s.Term, Index: s.Index})
 	return nil
+}
+
+// event reports e, about this replica's group, to OnEvent.
+func (rp *Replica) event(e obs.Event) {
+	if rp.cfg.OnEvent != nil {
+		e.Shard = rp.cfg.Shard
+		rp.cfg.OnEvent(e)
+	}
+}
+
+// EngineMetrics returns the metrics of the replica's storage engine.
+func (rp *Replica) EngineMetrics() lsm.Metrics {
+	rp.dbMu.RLock()
+	defer rp.dbMu.RUnlock()
+	return rp.db.Metrics()
 }
 
 func (rp *Replica) submit(ctx context.Context, cmd *dkvv1.Command) (result, error) {
@@ -1243,9 +1277,14 @@ func (rp *Replica) TransferLeader(ctx context.Context, to string) error {
 			errc <- ErrStopped
 			return
 		}
-		if err := rp.r.TransferLeader(to); errors.Is(err, raft.ErrNotLeader) {
+		err := rp.r.TransferLeader(to)
+		switch {
+		case errors.Is(err, raft.ErrNotLeader):
 			errc <- rp.notLeader()
-		} else {
+		case err == nil && to != rp.cfg.ID:
+			rp.event(obs.Event{Kind: obs.EventLeaderTransfer, Node: to, Term: rp.r.Term()})
+			errc <- nil
+		default:
 			errc <- err
 		}
 	}); err != nil {

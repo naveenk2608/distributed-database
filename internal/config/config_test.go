@@ -214,7 +214,13 @@ func TestHelp(t *testing.T) {
 
 // TestSettingsCoverConfig fails when a Config field has no entry in the
 // settings table, which would make it unreachable from flags and env.
-func TestSettingsCoverConfig(t *testing.T) {
+func TestSettingsCoverConfig(t *testing.T) { checkCovered(t, settings) }
+
+// TestConsoleSettingsCoverConfig does the same for ConsoleConfig.
+func TestConsoleSettingsCoverConfig(t *testing.T) { checkCovered(t, consoleSettings) }
+
+func checkCovered[T any](t *testing.T, table []setting[T]) {
+	t.Helper()
 	var yamlPaths []string
 	var walk func(t reflect.Type, prefix string)
 	walk = func(typ reflect.Type, prefix string) {
@@ -228,16 +234,16 @@ func TestSettingsCoverConfig(t *testing.T) {
 			yamlPaths = append(yamlPaths, prefix+name)
 		}
 	}
-	walk(reflect.TypeFor[Config](), "")
+	walk(reflect.TypeFor[T](), "")
 
 	var keys []string
-	for _, s := range settings {
+	for _, s := range table {
 		keys = append(keys, s.key)
 	}
 	slices.Sort(yamlPaths)
 	slices.Sort(keys)
 	if !slices.Equal(yamlPaths, keys) {
-		t.Errorf("Config YAML fields %v\ndo not match settings %v", yamlPaths, keys)
+		t.Errorf("%T YAML fields %v\ndo not match settings %v", *new(T), yamlPaths, keys)
 	}
 }
 
@@ -276,5 +282,83 @@ func TestClusterPeersFromEachSource(t *testing.T) {
 				t.Errorf("peers = %q, want %q", cfg.Cluster.Peers, tc.want)
 			}
 		})
+	}
+}
+
+func loadConsole(t *testing.T, args, env []string) (*ConsoleConfig, error) {
+	t.Helper()
+	var out strings.Builder
+	return LoadConsole("dkv-console", args, env, &out)
+}
+
+// TestConsolePrecedence: flags beat DKV_* variables, which beat the file,
+// which beats the defaults; console settings use the same mechanism as a
+// node's.
+func TestConsolePrecedence(t *testing.T) {
+	file := writeFile(t, "console:\n  listen_addr: 127.0.0.1:8080\n  nodes: [\"10.0.0.1:7200\", \"10.0.0.2:7200\"]\n  poll_interval: 2s\n")
+	cfg, err := loadConsole(t, []string{"--config", file, "--console.poll-timeout=500ms"},
+		[]string{"DKV_CONSOLE_POLL_INTERVAL=3s", "DKV_CONSOLE_POLL_TIMEOUT=900ms", "DKV_CONSOLE_NODES=10.0.0.9:7200"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg.Console
+	if c.ListenAddr != "127.0.0.1:8080" || c.PollInterval != 3*time.Second || c.PollTimeout != 500*time.Millisecond ||
+		!slices.Equal(c.Nodes, []string{"10.0.0.9:7200"}) || c.Retention != 24*time.Hour {
+		t.Fatalf("loaded %+v", c)
+	}
+}
+
+// TestConsoleRejectsMistakes: every problem is reported, and a node's
+// settings are not console settings.
+func TestConsoleRejectsMistakes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  []string
+		want string
+	}{
+		{"no listen address", []string{"--console.nodes=10.0.0.1:7200"}, nil, "console.listen_addr: required"},
+		{"no nodes", []string{"--console.listen-addr=:8080"}, nil, "console.nodes: required"},
+		{"duplicate node", []string{"--console.listen-addr=:8080", "--console.nodes=10.0.0.1:7200,10.0.0.1:7200"}, nil, "listed twice"},
+		{"bad node address", []string{"--console.listen-addr=:8080", "--console.nodes=10.0.0.1"}, nil, "console.nodes"},
+		{"timeout not below interval", []string{"--console.listen-addr=:8080", "--console.nodes=a:1", "--console.poll-timeout=1s"}, nil, "console.poll_timeout"},
+		{"node setting in the environment", []string{"--console.listen-addr=:8080", "--console.nodes=a:1"}, []string{"DKV_STORAGE_DIR=/x"}, "unknown environment variables"},
+		{"node flag", []string{"--storage.dir=/x"}, nil, "flag provided but not defined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConsole(t, tc.args, tc.env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v; want one mentioning %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestExampleConsoleConfigLoads keeps the shipped console example valid.
+func TestExampleConsoleConfigLoads(t *testing.T) {
+	cfg, err := loadConsole(t, []string{"--config", "../../deploy/config/dkv-console.example.yaml"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Console.ListenAddr == "" || len(cfg.Console.Nodes) == 0 {
+		t.Error("example console config sets no listen address or nodes")
+	}
+}
+
+// TestAdminAddrValidation: the admin HTTP address is optional, but when
+// set it must be a valid listen address distinct from the gRPC one.
+func TestAdminAddrValidation(t *testing.T) {
+	if _, err := load(t, append([]string{"--server.admin-addr=127.0.0.1:7200"}, required...), nil); err != nil {
+		t.Fatalf("valid admin address rejected: %v", err)
+	}
+	if _, err := load(t, []string{"--server.grpc-addr=127.0.0.1:7070", "--server.admin-addr=127.0.0.1:7070", "--storage.dir=/x"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "must differ") {
+		t.Errorf("admin address equal to the gRPC one: %v", err)
+	}
+	for _, addr := range []string{"127.0.0.1", "127.0.0.1:99999"} {
+		if _, err := load(t, append([]string{"--server.admin-addr=" + addr}, required...), nil); err == nil ||
+			!strings.Contains(err.Error(), "server.admin_addr") {
+			t.Errorf("admin address %q: error %v", addr, err)
+		}
 	}
 }

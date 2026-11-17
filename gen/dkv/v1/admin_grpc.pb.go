@@ -19,9 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_ClusterStatus_FullMethodName = "/dkv.v1.AdminService/ClusterStatus"
-	AdminService_ShardMap_FullMethodName      = "/dkv.v1.AdminService/ShardMap"
-	AdminService_Decommission_FullMethodName  = "/dkv.v1.AdminService/Decommission"
+	AdminService_ClusterStatus_FullMethodName  = "/dkv.v1.AdminService/ClusterStatus"
+	AdminService_ShardMap_FullMethodName       = "/dkv.v1.AdminService/ShardMap"
+	AdminService_Decommission_FullMethodName   = "/dkv.v1.AdminService/Decommission"
+	AdminService_Drain_FullMethodName          = "/dkv.v1.AdminService/Drain"
+	AdminService_TransferLeader_FullMethodName = "/dkv.v1.AdminService/TransferLeader"
+	AdminService_Stats_FullMethodName          = "/dkv.v1.AdminService/Stats"
+	AdminService_Events_FullMethodName         = "/dkv.v1.AdminService/Events"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -40,6 +44,20 @@ type AdminServiceClient interface {
 	// Decommission asks the cluster to move every replica off a node; the
 	// node is then marked decommissioned and can be shut down.
 	Decommission(ctx context.Context, in *DecommissionRequest, opts ...grpc.CallOption) (*DecommissionResponse, error)
+	// Drain asks the cluster to move every leadership off a node and give it
+	// none until it is undrained (drain = false). Its replicas stay.
+	Drain(ctx context.Context, in *DrainRequest, opts ...grpc.CallOption) (*DrainResponse, error)
+	// TransferLeader asks a shard's leader to hand leadership to one of the
+	// shard's voters. The rebalancer may later move it again to keep
+	// leadership balanced; Drain is the lasting way to keep a node from
+	// leading.
+	TransferLeader(ctx context.Context, in *AdminServiceTransferLeaderRequest, opts ...grpc.CallOption) (*AdminServiceTransferLeaderResponse, error)
+	// Stats returns the answering node's request counters and latency
+	// histograms, and the Raft and storage state of each of its replicas.
+	Stats(ctx context.Context, in *StatsRequest, opts ...grpc.CallOption) (*StatsResponse, error)
+	// Events returns the answering node's recent events (elections, failure
+	// detection, membership changes), oldest first.
+	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (*EventsResponse, error)
 }
 
 type adminServiceClient struct {
@@ -80,6 +98,46 @@ func (c *adminServiceClient) Decommission(ctx context.Context, in *DecommissionR
 	return out, nil
 }
 
+func (c *adminServiceClient) Drain(ctx context.Context, in *DrainRequest, opts ...grpc.CallOption) (*DrainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DrainResponse)
+	err := c.cc.Invoke(ctx, AdminService_Drain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) TransferLeader(ctx context.Context, in *AdminServiceTransferLeaderRequest, opts ...grpc.CallOption) (*AdminServiceTransferLeaderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminServiceTransferLeaderResponse)
+	err := c.cc.Invoke(ctx, AdminService_TransferLeader_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) Stats(ctx context.Context, in *StatsRequest, opts ...grpc.CallOption) (*StatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatsResponse)
+	err := c.cc.Invoke(ctx, AdminService_Stats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (*EventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EventsResponse)
+	err := c.cc.Invoke(ctx, AdminService_Events_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -96,6 +154,20 @@ type AdminServiceServer interface {
 	// Decommission asks the cluster to move every replica off a node; the
 	// node is then marked decommissioned and can be shut down.
 	Decommission(context.Context, *DecommissionRequest) (*DecommissionResponse, error)
+	// Drain asks the cluster to move every leadership off a node and give it
+	// none until it is undrained (drain = false). Its replicas stay.
+	Drain(context.Context, *DrainRequest) (*DrainResponse, error)
+	// TransferLeader asks a shard's leader to hand leadership to one of the
+	// shard's voters. The rebalancer may later move it again to keep
+	// leadership balanced; Drain is the lasting way to keep a node from
+	// leading.
+	TransferLeader(context.Context, *AdminServiceTransferLeaderRequest) (*AdminServiceTransferLeaderResponse, error)
+	// Stats returns the answering node's request counters and latency
+	// histograms, and the Raft and storage state of each of its replicas.
+	Stats(context.Context, *StatsRequest) (*StatsResponse, error)
+	// Events returns the answering node's recent events (elections, failure
+	// detection, membership changes), oldest first.
+	Events(context.Context, *EventsRequest) (*EventsResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -114,6 +186,18 @@ func (UnimplementedAdminServiceServer) ShardMap(context.Context, *ShardMapReques
 }
 func (UnimplementedAdminServiceServer) Decommission(context.Context, *DecommissionRequest) (*DecommissionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decommission not implemented")
+}
+func (UnimplementedAdminServiceServer) Drain(context.Context, *DrainRequest) (*DrainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Drain not implemented")
+}
+func (UnimplementedAdminServiceServer) TransferLeader(context.Context, *AdminServiceTransferLeaderRequest) (*AdminServiceTransferLeaderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransferLeader not implemented")
+}
+func (UnimplementedAdminServiceServer) Stats(context.Context, *StatsRequest) (*StatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Stats not implemented")
+}
+func (UnimplementedAdminServiceServer) Events(context.Context, *EventsRequest) (*EventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Events not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -190,6 +274,78 @@ func _AdminService_Decommission_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_Drain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DrainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).Drain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_Drain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).Drain(ctx, req.(*DrainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_TransferLeader_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminServiceTransferLeaderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).TransferLeader(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_TransferLeader_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).TransferLeader(ctx, req.(*AdminServiceTransferLeaderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_Stats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).Stats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_Stats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).Stats(ctx, req.(*StatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_Events_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).Events(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_Events_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).Events(ctx, req.(*EventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -208,6 +364,22 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Decommission",
 			Handler:    _AdminService_Decommission_Handler,
+		},
+		{
+			MethodName: "Drain",
+			Handler:    _AdminService_Drain_Handler,
+		},
+		{
+			MethodName: "TransferLeader",
+			Handler:    _AdminService_TransferLeader_Handler,
+		},
+		{
+			MethodName: "Stats",
+			Handler:    _AdminService_Stats_Handler,
+		},
+		{
+			MethodName: "Events",
+			Handler:    _AdminService_Events_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

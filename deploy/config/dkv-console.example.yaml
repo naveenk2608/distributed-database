@@ -1,0 +1,25 @@
+# Example configuration for dkv-console, the dashboard backend. Every key
+# can also be set with a DKV_* environment variable (for example
+# DKV_CONSOLE_NODES) or a flag (--console.nodes); flags win over the
+# environment, which wins over this file. Run dkv-console -h for the list.
+console:
+  # Where the dashboard and its API are served.
+  listen_addr: 127.0.0.1:8080
+  # The nodes' admin HTTP addresses (their server.admin_addr).
+  nodes:
+    - 127.0.0.1:7201
+    - 127.0.0.1:7202
+    - 127.0.0.1:7203
+  # A node that stops answering shows as down after at most one interval.
+  poll_interval: 1s
+  poll_timeout: 800ms
+  # History store. Empty keeps a bounded history in memory; the cluster
+  # never depends on it either way.
+  postgres_dsn: ""
+  retention: 24h
+  memory_samples: 600
+  # The built dashboard (cd web && npm run build). Empty serves the API only.
+  web_dir: web/dist
+log:
+  level: info
+  format: json

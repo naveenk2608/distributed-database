@@ -46,6 +46,41 @@ bin/dkvctl --addr=127.0.0.1:7071 shards               # where each shard lives
 With Docker: `make compose-up`, then
 `docker compose -f deploy/compose/docker-compose.yml exec n1 dkvctl --addr=localhost:7070 status`.
 
+### Operating a cluster with dkvctl
+
+```sh
+A=127.0.0.1:7071,127.0.0.1:7072,127.0.0.1:7073
+bin/dkvctl --addr=$A leaders                       # each shard's leader and term (ask every node)
+bin/dkvctl --addr=$A transfer-leader 0 <node-id>   # hand shard 0 to one of its voters
+bin/dkvctl --addr=$A drain <node-id>               # move every leadership off a node, keep its replicas
+bin/dkvctl --addr=$A undrain <node-id>
+bin/dkvctl --addr=$A decommission <node-id>        # move every replica off a node
+bin/dkvctl --addr=$A --consistency=stale get greeting   # read any replica's copy
+bin/dkvctl --addr=$A --json shards                 # every command can print JSON
+```
+
+### Dashboard
+
+Each node serves a read-only admin HTTP API when `server.admin_addr` is set:
+JSON status, shard map, statistics and events under `/v1/`, and Prometheus
+metrics at `/metrics`. `dkv-console` polls those, keeps the history in
+PostgreSQL (or in memory), and serves the dashboard:
+
+```sh
+make web    # build the dashboard into web/dist (Node 22)
+bin/dkv-console --config=deploy/config/dkv-console.example.yaml
+```
+
+In Docker, with four nodes, the console and PostgreSQL
+(open http://localhost:8080):
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/dashboard.yml up -d --build
+```
+
+The cluster never depends on the console: stopping it, or its database,
+changes nothing for clients (docs/adr/0014, docs/adr/0015).
+
 ## Development
 
 ```sh
@@ -56,6 +91,8 @@ make proto-check  # fail if gen/ is stale
 make crash        # kill -9 harness: CYCLES=150 writer crashes, every ack checked
 make test-integration # in-process multi-node clusters
 make compose-gate # Phase 4 gate in Docker Compose (needs Docker)
+make web-test     # dashboard: typecheck and unit tests (Node 22)
+make dashboard-gate # Phase 9 gate in Docker Compose with Chromium (needs Docker, jq, Playwright)
 make storage-gate # Phase 3 gate: 1M-op model test, crash at every flush/compaction step, bloom rate
 make bench        # storage microbenchmarks
 make fuzz         # fuzz the WAL, batch and SSTable decoders (FUZZTIME=30s each)

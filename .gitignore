@@ -3,3 +3,11 @@
 *.out
 /data/
 /lin-out/
+
+# Dashboard (web/): dependencies, build output, Playwright artifacts
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+*.tsbuildinfo
+dashboard-gate.log

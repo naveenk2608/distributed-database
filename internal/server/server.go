@@ -15,29 +15,33 @@ import (
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 )
 
 // grpcOverheadBytes is headroom above the largest key plus value for the
 // rest of a request message.
 const grpcOverheadBytes = 64 << 10
 
-// Server serves the KV API over gRPC.
+// Server serves the KV API over gRPC, and the operator API over gRPC and
+// (RunAdmin) HTTP.
 type Server struct {
-	cfg  config.Server
-	log  *slog.Logger
-	grpc *grpc.Server
+	cfg      config.Server
+	log      *slog.Logger
+	grpc     *grpc.Server
+	admin    Admin
+	requests *obs.Requests
 }
 
 // New returns a server for backend that answers the operator API from
 // admin. It does not listen until Run.
 func New(cfg *config.Config, backend Backend, admin Admin, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg.Server, log: log}
+	s := &Server{cfg: cfg.Server, log: log, admin: admin, requests: obs.NewRequests("put", "get", "delete", "cas")}
 	s.grpc = grpc.NewServer(
 		grpc.MaxRecvMsgSize(cfg.Limits.MaxKeyBytes+cfg.Limits.MaxValueBytes+grpcOverheadBytes),
 		grpc.ChainUnaryInterceptor(s.logRequests),
 	)
 	dkvv1.RegisterKVServiceServer(s.grpc, &kvService{backend: backend, limits: cfg.Limits})
-	dkvv1.RegisterAdminServiceServer(s.grpc, &adminService{admin: admin})
+	dkvv1.RegisterAdminServiceServer(s.grpc, &adminService{admin: admin, stats: s.Stats})
 	return s
 }
 
@@ -86,6 +90,11 @@ func (s *Server) logRequests(ctx context.Context, req any, info *grpc.UnaryServe
 	start := time.Now()
 	resp, err := handler(ctx, req)
 	code := status.Code(err)
+	if op, ok := ops[info.FullMethod]; ok {
+		// A key that is absent, or a compare-and-set that finds another
+		// version, is an answer, not an error.
+		s.requests.Observe(op, time.Since(start), err != nil && code != codes.NotFound)
+	}
 	level := slog.LevelDebug
 	if code == codes.Internal || code == codes.Unknown {
 		level = slog.LevelError

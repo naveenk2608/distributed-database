@@ -11,8 +11,9 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
   then: the Phase 4 Compose gate (`make compose-gate`, which runs
   `deploy/compose/gate.sh`). The Dockerfile and Compose file are written; the same check
   runs with three real `dkv-server` processes in `test/e2e`. The Phase 8 Docker chaos
-  scenarios (`make chaos`) cannot run here either; they run in the nightly workflow on
-  GitHub's runners, and passed there (Phase 8).
+  scenarios (`make chaos`) and the Phase 9 dashboard gate (`make dashboard-gate`) cannot run
+  here either; they run in the nightly workflow on GitHub's runners, which since Phase 9 also
+  runs the Phase 4 Compose gate (`compose` job).
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -795,3 +796,111 @@ Mutation checks of the new assertions (each change alone, then reverted):
 | The injector ignores blocks | `random-partitions`, `flapping-one-way`: "blocked no call" |
 | PreVote off in replicas | `flapping-one-way` term growth 21–34, above the bound of 18 |
 | PreVote off in the one-way partition unit test | `TestPreVoteKeepsTermStableUnderOneWayPartition`: "s1 is at term 9 after a one-way partition; want 2" |
+
+## Phase 9: CLI and developer dashboard
+
+Status: **gate passed in process; the Compose half of the gate runs on GitHub** (no Docker
+here; see "Gate" for its first run). All tests below pass locally (`make check`, `make
+web-test`, `go test -race ./test/dashboard -count=3`).
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| Killing a node in Compose appears on the dashboard within one poll interval, with election and re-replication events in the right order | In process, `test/dashboard` `TestDashboardGate`: 4 nodes (RF 3, 4 shards and the meta group), `dead_after` 2 s, a real `dkv-console` polling every 250 ms (timeout 200 ms), checked only through the console's API. The node leading shard 0 is stopped; the console's server-sent stream, which the dashboard follows, showed it down 220–232 ms later in 4 runs (1 plain, 3 under `-race`; the test allows interval + timeout + 250 ms = 700 ms), with no number left on it. The merged events then show, in time order, a new leader for one of its shards (191–226 ms after the stop), the meta leader's `node_dead` verdict (1.96–2.55 s) and the first `replica_added` (2.16–2.73 s). In Compose, `make dashboard-gate` (`deploy/compose/dashboard-gate.sh`, `web/e2e/dashboard.spec.ts`): 4 nodes, the console and PostgreSQL; Chromium on the real dashboard sees the SIGKILLed leader's card turn "down" within one poll interval (1 s) + timeout (800 ms) + 1 s, then the events page lists the same three events in order. Runs in the nightly workflow's `dashboard` job. | Passed in process; Compose pending its first run |
+| Every number on screen comes from a real node metric | The console derives every value from a node's own fields or from two snapshots of its counters (ADR 0015). `TestDashboardGate` ("numbers come from the nodes"): with the cluster idle and two direct reads of every node agreeing, the console's view of each node equals that node's `/v1/stats` field for field (each replica's shard, role, term, commit, applied, last index, tables, table and memtable bytes; the node's leaders, storage sums and cache capacity); a node that does not answer shows none. `internal/console` `TestDelta`, `TestPercentiles`, `TestShardViews` pin the derivations (rates per second from counter differences, percentiles interpolated in the histogram's buckets, lag from the leader's progress). The dashboard computes nothing but formatting, a cache hit rate and the sum of the nodes' samples per poll round: `web/src/pages.test.tsx` renders every page from JSON captured from a real console (`DKV_DASHBOARD_FIXTURE`) and checks each value shown against the fixture. | Passed |
+| Stopping the console has no effect on the database | Nodes never contact the console; it pulls from their read-only admin API (ADR 0014). `TestDashboardGate`: writes through every node continue with no failure while the console stops: 489 and 476 writes in the second before and after (161–184 and 181–199 under `-race`). In Compose the gate stops the console, writes 50 keys through a live node, restarts it, and requires the history saved in PostgreSQL before the stop to be shown again. | Passed in process; Compose pending its first run |
+
+Mutation checks (each change applied alone, then reverted):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| The console keeps showing a down node's last numbers | `TestDashboardGate` |
+| Events identified by reporter and sequence number only (a restarted node's events taken for old ones) | `TestEventMerge` |
+| Replicas do not report their elections | `TestReplicaEvents`, `TestAdminHTTPAPI` |
+| Requests not counted | `TestStandaloneAdminAPI`, `TestAdminHTTPAPI` |
+| The planner never moves leadership off drained nodes | `TestDrainMovesLeadershipAway` |
+| Leader balancing counts drained nodes as transfer targets | `TestDrainMovesLeadershipAway` ("no convergence"), `TestDrainKeepsALoneLeader` |
+
+### Implemented and tested
+
+- **Admin API** (`proto/dkv/v1/admin.proto`): `Stats` (request counters and latency
+  histograms per operation, each local replica's Raft status and engine metrics, the block
+  cache), `Events`, `Drain`, `TransferLeader`; `MemberStatus.drained`. Read-only admin HTTP
+  on every node (`server.admin_addr`): `/v1/status`, `/v1/shards`, `/v1/stats`,
+  `/v1/events?after=&limit=`, Prometheus `/metrics`, `/healthz`. Bound after storage
+  recovery, like the other ports. Tests: `node` `TestAdminHTTPAPI`, `server`
+  `TestStandaloneAdminAPI`, `e2e` `TestConsoleWatchesRealProcesses` (real processes).
+- **`internal/obs`**: an event log (a ring of 4,096 per node with gapless sequence numbers,
+  `After` reports the oldest kept) and request metrics (fixed latency buckets from 0.25 ms
+  to 4 s). Events: `leader_elected`, `leader_stepped_down`, `leader_transfer`,
+  `snapshot_installed`, `replica_added`/`promoted`/`removed` (replicas); `peer_up`/`down`
+  (the ping failure detector); `node_dead`/`alive` (the meta leader). Tests:
+  `TestEventLogKeepsTheLatest`, `TestRequestsHistogram`, `TestRequestsConcurrent`,
+  `replica` `TestReplicaEvents`, `cluster` `TestPeerEvents`.
+- **Drain**: `NodeRecord.drained` in the meta group; the planner moves each drained node's
+  leaderships to the least-loaded caught-up undrained voter and never makes it a transfer
+  target. Tests: `meta` `TestDrainMovesLeadershipAway`,
+  `TestDrainKeepsALoneLeader`; `node` `TestTransferLeaderAndDrain` (also NotFound for an
+  unknown node, FailedPrecondition for a non-voter, InvalidArgument for a bad shard).
+- **`dkvctl`**: `leaders` (merges every `--addr` node's view), `transfer-leader`, `drain`,
+  `undrain`, `--consistency=linearizable|stale` (`--stale` kept as shorthand), `--json` for
+  every command (values that are not UTF-8 as `value_base64`); `status` shows drained
+  nodes. Tests: `TestJSONOutput`, `TestClusterCommands`, and the earlier ones unchanged.
+- **Configuration**: the loader is generic over a settings table, so `dkv-console` loads
+  like a node (defaults < YAML < `DKV_*` < flags, unknown keys rejected); `server.admin_addr`;
+  `deploy/config/dkv-console.example.yaml`. Tests: `TestConsolePrecedence`,
+  `TestConsoleRejectsMistakes`, `TestConsoleSettingsCoverConfig`,
+  `TestExampleConsoleConfigLoads`, `TestAdminAddrValidation`.
+- **`dkv-console`** (`internal/console`, `cmd/dkv-console`): polls every node concurrently,
+  derives rates and percentiles, merges events (a membership change reported by every
+  member is kept once), keeps a bounded history per node, serves `/api/overview`,
+  `/api/history`, `/api/events`, `/api/health`, the server-sent `/api/stream` and the built
+  dashboard with its routes. History in PostgreSQL when `console.postgres_dsn` is set (pgx,
+  only in `cmd/dkv-console`), reloaded on restart; a failing database is reported and the
+  polling goes on. Tests: `internal/console` (above), `test/dashboard`, `e2e`
+  `TestConsoleWatchesRealProcesses`; `cmd/dkv-console` `TestPostgresStore` and
+  `TestConsoleReloadsHistory` against a real PostgreSQL in CI's `console-postgres` job (they
+  skip here, where there is no PostgreSQL).
+- **Dashboard** (`web/`, Vite, React 18, TypeScript, Tailwind, TanStack Query, Recharts;
+  exact versions in `package.json` and `package-lock.json`): Overview (nodes up, groups led,
+  cluster rates and latency, a card per node, throughput over time, recent events), Shards
+  (leader, term, commit, each member's lag and applied index), Nodes (storage, block cache,
+  replicas, memtable and SSTable bytes over time), Events (newest first, filter by kind).
+  REST on load, then the stream. Tests: `web/src/format.test.ts` and `web/src/pages.test.tsx`
+  (7 tests, 6 of them on fixtures from a real console); `make web-test`, and CI's `web` job
+  builds it.
+- **Compose**: `deploy/docker/console.Dockerfile` (dashboard and console on distroless),
+  `deploy/compose/dashboard.yml` (admin APIs, a fourth node, the console, PostgreSQL),
+  `deploy/compose/dashboard-gate.sh`. The nightly workflow now also runs the Phase 4 Compose
+  gate (`compose` job) and this one (`dashboard` job).
+- **Docs**: ADRs 0014 and 0015; README sections on operating with `dkvctl` and on the
+  dashboard.
+
+### Fixed along the way
+
+- `replica` `TestLearnerCatchesUpBySnapshot` (Phase 7) failed once in `make check`: the
+  learner's snapshot ended just before the entry that added it, which followed by append,
+  and the test checked its membership in between. It now waits until the learner has also
+  applied that entry; every assertion is unchanged.
+- The new drain tests at first sent `drain` before the meta group had recorded the nodes
+  (right after every group elected a leader) and got NotFound, which is the right answer;
+  they now wait for the records.
+
+### Known limitations
+
+- Drain is the rebalancer's doing, not Raft's: when a leader fails, a drained node can win
+  the election, and leads until the next rebalance round moves it away. `transfer-leader`
+  is a nudge: leader balancing may move leadership again if it leaves nodes unbalanced.
+- The admin HTTP API and the console have no authentication; both are read-only and belong
+  on an operator network.
+- A node keeps 4,096 events; ones it drops before the console reads them are lost (the
+  console logs it). Event order across nodes is their clocks' order.
+- A member reports a membership change only if it applies the entry; one that receives the
+  change inside a snapshot (a new learner, often) does not. The group's other members do,
+  and the console keeps one event per change.
+- Latency percentiles are interpolated within buckets from 0.25 ms to 4 s; slower requests
+  show as 4 s.
+- The dashboard's layout and charts are checked in jsdom and, in Compose, only through the
+  gate's checks in Chromium; there are no visual regression tests.
+- No Prometheus server or Grafana is shipped; `/metrics` is there for one.

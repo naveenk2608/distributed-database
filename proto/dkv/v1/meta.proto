@@ -29,6 +29,10 @@ message NodeRecord {
   NodeState state = 3;
   int64 joined_unix_nano = 4;
   int64 state_changed_unix_nano = 5;
+  // drained: an operator asked for the node to lead no group (dkvctl
+  // drain); the rebalancer moves its leaderships away and never gives it
+  // new ones. It keeps its replicas.
+  bool drained = 6;
 }
 
 // ShardDescriptor caches a group's membership for routing. The group's own

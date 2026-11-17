@@ -37,6 +37,7 @@ import (
 	"github.com/naveenk2608/distributed-database/internal/cluster"
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/meta"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/placement"
 	"github.com/naveenk2608/distributed-database/internal/replica"
 	"github.com/naveenk2608/distributed-database/internal/router"
@@ -109,7 +110,22 @@ type Node struct {
 	lv   *meta.Liveness // while this node's meta replica leads
 
 	ticksPaused atomic.Bool // fault injection: the node's Raft clock stops
+
+	events   *obs.EventLog
+	started  time.Time
+	adminLis net.Listener // see ServeAdminOn
 }
+
+// ServeAdminOn makes Run serve the admin HTTP API (status, statistics,
+// events, Prometheus metrics; see server.AdminHandler) on l. Call it
+// before Run, which closes l.
+func (n *Node) ServeAdminOn(l net.Listener) { n.adminLis = l }
+
+// eventCapacity is how many recent events a node keeps for the admin API.
+const eventCapacity = 4096
+
+// recordEvent keeps e in the node's event log.
+func (n *Node) recordEvent(e obs.Event) { n.events.Record(e) }
 
 // ShardDir returns the directory of a group replica under the data dir.
 func ShardDir(dataDir string, shard int) string {
@@ -157,7 +173,8 @@ func openCluster(cfg *config.Config, log *slog.Logger, o options) (_ *Node, err 
 	if err != nil {
 		return nil, fmt.Errorf("node: lock %s: %w", dir, err)
 	}
-	n := &Node{cfg: cfg, opts: o, fs: o.fs, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{}}
+	n := &Node{cfg: cfg, opts: o, fs: o.fs, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{},
+		events: obs.NewEventLog(eventCapacity, time.Now), started: time.Now()}
 	defer func() {
 		if err != nil {
 			_ = n.closeReplicas() // the open error is the one worth reporting
@@ -274,7 +291,7 @@ func (n *Node) openReplica(shard int, peers []string) (*replica.Replica, error) 
 		Engine:       storageOptions(n.cfg.Storage, shardLog, n.cache, n.compactions),
 		ElectionTick: n.cfg.Raft.ElectionTicks, HeartbeatTick: n.cfg.Raft.HeartbeatTicks,
 		SessionTTL: n.cfg.Raft.SessionTTL, CompactEntries: n.cfg.Raft.CompactEntries,
-		Sender: n.net, Snapshots: n.net, Log: shardLog,
+		Sender: n.net, Snapshots: n.net, OnEvent: n.recordEvent, Log: shardLog,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("node: shard %d: %w", shard, err)
@@ -377,13 +394,20 @@ func (n *Node) resolve(id string) string { return n.dir.Addr(id) }
 func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 	if !n.cfg.Cluster.Clustered() {
 		admin := server.StaticStatus{DB: n.db, Self: &dkvv1.NodeInfo{
-			NodeId: n.id, ClusterName: n.cfg.Cluster.Name, StartedAtUnixNano: time.Now().UnixNano(),
+			NodeId: n.id, ClusterName: n.cfg.Cluster.Name, StartedAtUnixNano: n.started.UnixNano(),
 		}}
-		runErr := server.New(n.cfg, server.NewStandaloneBackend(n.db), admin, n.log).Run(ctx, public)
-		// Close the engine only after the server has stopped.
-		return errors.Join(runErr, n.db.Close())
+		srv := server.New(n.cfg, server.NewStandaloneBackend(n.db), admin, n.log)
+		sctx, stop := context.WithCancel(ctx)
+		stopAdmin := n.runAdmin(sctx, srv)
+		runErr := srv.Run(sctx, public)
+		stop()
+		// Close the engine only after both servers have stopped.
+		return errors.Join(runErr, stopAdmin(), n.db.Close())
 	}
 	if internal == nil {
+		if n.adminLis != nil {
+			_ = n.adminLis.Close() // never served
+		}
 		return errors.Join(errors.New("node: a cluster node needs an internal listener"), n.Close())
 	}
 
@@ -398,6 +422,7 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 		PingTimeout:  n.cfg.Cluster.PingTimeout,
 		DownAfter:    n.cfg.Cluster.DownAfter,
 		Placement:    n.fingerprint,
+		OnEvent:      n.recordEvent,
 	}, n.pool, nil, n.log.With("component", "membership"))
 	if m := n.membersRecord().Members; len(m) > 0 {
 		n.mship.SetBootstrapMembers(m)
@@ -431,8 +456,11 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 	goRun(func() { n.tick(runCtx) })
 	goRun(func() { n.control(runCtx) })
 
-	runErr := server.New(n.cfg, n.rt, &clusterAdmin{n: n}, n.log).Run(runCtx, public)
+	srv := server.New(n.cfg, n.rt, &clusterAdmin{n: n}, n.log)
+	stopAdmin := n.runAdmin(runCtx, srv)
+	runErr := srv.Run(runCtx, public)
 	cancel()
+	adminErr := stopAdmin()
 	internalSrv.Stop() // in-flight forwards fail; the forwarding node retries
 	wg.Wait()
 	// Close the replicas only after both servers and every loop have
@@ -442,7 +470,19 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 	if err := n.pool.Close(); err != nil {
 		n.log.Warn("closing peer connections", "error", err)
 	}
-	return errors.Join(runErr, internalErr, repErr, n.lock.Close())
+	return errors.Join(runErr, adminErr, internalErr, repErr, n.lock.Close())
+}
+
+// runAdmin serves the admin HTTP API, if the node has a listener for it,
+// until ctx ends; the returned function waits for it and returns its
+// error.
+func (n *Node) runAdmin(ctx context.Context, srv *server.Server) func() error {
+	if n.adminLis == nil {
+		return func() error { return nil }
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.RunAdmin(ctx, n.adminLis) }()
+	return func() error { return <-done }
 }
 
 // tick drives every replica's Raft clock from one ticker.

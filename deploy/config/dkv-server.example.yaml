@@ -6,6 +6,9 @@ server:
   # Required. Port 0 picks a free port; the bound address is logged.
   grpc_addr: "127.0.0.1:7070"
   shutdown_timeout: 10s
+  # Admin HTTP API: status, shard map, statistics and events as JSON, and
+  # Prometheus metrics at /metrics; dkv-console polls it. Empty disables it.
+  admin_addr: "127.0.0.1:7200"
 
 cluster:
   # Leave internal_addr and peers unset to run a single standalone node.

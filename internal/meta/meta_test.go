@@ -305,3 +305,51 @@ func TestLiveness(t *testing.T) {
 		t.Fatal("a heartbeat restarts the clock")
 	}
 }
+
+// TestDrainMovesLeadershipAway: a drained node keeps its replicas but ends
+// up leading nothing, with leadership balanced over the others; undrained,
+// it gets its share back.
+func TestDrainMovesLeadershipAway(t *testing.T) {
+	m := newModel(t, newState(t, ids(4), 16, 3))
+	m.converge(40)
+	m.s.Nodes["node00"].Drained = true
+	m.converge(40)
+	m.checkPlacement() // replicas stay where they were
+	led := map[string]int{}
+	for _, g := range m.groups {
+		led[g.Leader]++
+	}
+	if led["node00"] != 0 {
+		t.Fatalf("drained node00 still leads %d groups: %v", led["node00"], led)
+	}
+	most, least := 0, 1<<30
+	for _, id := range []string{"node01", "node02", "node03"} {
+		most, least = max(most, led[id]), min(least, led[id])
+	}
+	if most-least > 1 {
+		t.Fatalf("leaders per undrained node %v", led)
+	}
+	m.s.Nodes["node00"].Drained = false
+	m.converge(40)
+	clear(led)
+	for _, g := range m.groups {
+		led[g.Leader]++
+	}
+	if led["node00"] == 0 {
+		t.Fatalf("undrained node00 leads nothing: %v", led)
+	}
+}
+
+// TestDrainKeepsALoneLeader: a group whose other voters are all drained or
+// behind keeps its drained leader rather than lose leadership.
+func TestDrainKeepsALoneLeader(t *testing.T) {
+	m := newModel(t, newState(t, ids(3), 1, 3))
+	for _, id := range ids(3) {
+		m.s.Nodes[id].Drained = true
+	}
+	for _, a := range Plan(m.s, m.groups) {
+		if a.Kind == TransferLeader {
+			t.Fatalf("planned %v with every voter drained", a)
+		}
+	}
+}

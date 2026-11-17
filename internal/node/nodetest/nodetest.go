@@ -54,6 +54,8 @@ type Options struct {
 	// WrapFS, if set, wraps member i's replica filesystem (for example in
 	// a slow disk).
 	WrapFS func(i int, fs vfs.FS) vfs.FS
+	// Admin serves every member's admin HTTP API (Member.AdminAddr).
+	Admin bool
 }
 
 // Member is one node of a Cluster.
@@ -62,6 +64,7 @@ type Member struct {
 	Config       config.Config
 	PublicAddr   string
 	InternalAddr string
+	AdminAddr    string // with Options.Admin
 
 	mu     sync.Mutex
 	nodeID string
@@ -104,6 +107,10 @@ func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluste
 func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *config.Config)) *Cluster {
 	t.Helper()
 	publics, internals := listenN(t, n), listenN(t, n)
+	admins := make([]net.Listener, n)
+	if opts.Admin {
+		admins = listenN(t, n)
+	}
 	var peers []string
 	for _, l := range internals {
 		peers = append(peers, l.Addr().String())
@@ -114,18 +121,22 @@ func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *confi
 		cfg.Server.GRPCAddr = publics[i].Addr().String()
 		cfg.Cluster.InternalAddr = internals[i].Addr().String()
 		cfg.Cluster.Peers = peers
+		if admins[i] != nil {
+			cfg.Server.AdminAddr = admins[i].Addr().String()
+		}
 		if configure != nil {
 			configure(i, &cfg)
 		}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("nodetest: node %d: %v", i, err)
 		}
-		m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr}
+		m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr,
+			AdminAddr: cfg.Server.AdminAddr}
 		if opts.MemFS {
 			m.fs = vfs.NewMemFS()
 		}
 		c.Members = append(c.Members, m)
-		m.start(t, publics[i], internals[i], opts)
+		m.start(t, publics[i], internals[i], admins[i], opts)
 	}
 	t.Cleanup(func() {
 		for i := range c.Members {
@@ -165,13 +176,14 @@ func listenAgain(t testing.TB, addr string) net.Listener {
 	}
 }
 
-func (m *Member) start(t testing.TB, public, internal net.Listener, opts Options) {
+func (m *Member) start(t testing.TB, public, internal, admin net.Listener, opts Options) {
 	t.Helper()
 	cfg := m.Config
 	var nopts []node.Option
 	if opts.Faults != nil {
 		nopts = append(nopts, node.WithFaults(opts.Faults))
 	}
+
 	m.mu.Lock()
 	var fs vfs.FS
 	if m.fs != nil {
@@ -191,7 +203,13 @@ func (m *Member) start(t testing.TB, public, internal net.Listener, opts Options
 	if err != nil {
 		_ = public.Close()
 		_ = internal.Close()
+		if admin != nil {
+			_ = admin.Close()
+		}
 		t.Fatalf("nodetest: open node %d: %v", m.Index, err)
+	}
+	if admin != nil {
+		n.ServeAdminOn(admin)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -216,8 +234,13 @@ func (m *Member) Node() *node.Node {
 func (c *Cluster) Add() int {
 	c.t.Helper()
 	pub, in := listenN(c.t, 1)[0], listenN(c.t, 1)[0]
+	var admin net.Listener
 	cfg := testConfig(c.t)
 	cfg.Server.GRPCAddr, cfg.Cluster.InternalAddr = pub.Addr().String(), in.Addr().String()
+	if c.opts.Admin {
+		admin = listenN(c.t, 1)[0]
+		cfg.Server.AdminAddr = admin.Addr().String()
+	}
 	for _, m := range c.Members {
 		cfg.Cluster.Join = append(cfg.Cluster.Join, m.InternalAddr)
 	}
@@ -229,12 +252,13 @@ func (c *Cluster) Add() int {
 	if err := cfg.Validate(); err != nil {
 		c.t.Fatalf("nodetest: node %d: %v", i, err)
 	}
-	m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr}
+	m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr,
+		AdminAddr: cfg.Server.AdminAddr}
 	if c.opts.MemFS {
 		m.fs = vfs.NewMemFS()
 	}
 	c.Members = append(c.Members, m)
-	m.start(c.t, pub, in, c.opts)
+	m.start(c.t, pub, in, admin, c.opts)
 	return i
 }
 
@@ -353,7 +377,11 @@ func (c *Cluster) Restart(i int) {
 	if m.Running() {
 		c.t.Fatalf("nodetest: node %d is running", i)
 	}
-	m.start(c.t, listenAgain(c.t, m.PublicAddr), listenAgain(c.t, m.InternalAddr), c.opts)
+	var admin net.Listener
+	if m.AdminAddr != "" {
+		admin = listenAgain(c.t, m.AdminAddr)
+	}
+	m.start(c.t, listenAgain(c.t, m.PublicAddr), listenAgain(c.t, m.InternalAddr), admin, c.opts)
 }
 
 // Status asks member i for its view of the cluster.

@@ -76,6 +76,887 @@ func (MemberState) EnumDescriptor() ([]byte, []int) {
 	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
 }
 
+type DrainRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// drain = false undrains the node.
+	Drain         bool `protobuf:"varint,2,opt,name=drain,proto3" json:"drain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DrainRequest) Reset() {
+	*x = DrainRequest{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DrainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DrainRequest) ProtoMessage() {}
+
+func (x *DrainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DrainRequest.ProtoReflect.Descriptor instead.
+func (*DrainRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *DrainRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *DrainRequest) GetDrain() bool {
+	if x != nil {
+		return x.Drain
+	}
+	return false
+}
+
+type DrainResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DrainResponse) Reset() {
+	*x = DrainResponse{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DrainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DrainResponse) ProtoMessage() {}
+
+func (x *DrainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DrainResponse.ProtoReflect.Descriptor instead.
+func (*DrainResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{1}
+}
+
+type AdminServiceTransferLeaderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Shard int32                  `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	// node_id is the voter to hand leadership to.
+	NodeId        string `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminServiceTransferLeaderRequest) Reset() {
+	*x = AdminServiceTransferLeaderRequest{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminServiceTransferLeaderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminServiceTransferLeaderRequest) ProtoMessage() {}
+
+func (x *AdminServiceTransferLeaderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminServiceTransferLeaderRequest.ProtoReflect.Descriptor instead.
+func (*AdminServiceTransferLeaderRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AdminServiceTransferLeaderRequest) GetShard() int32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *AdminServiceTransferLeaderRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type AdminServiceTransferLeaderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminServiceTransferLeaderResponse) Reset() {
+	*x = AdminServiceTransferLeaderResponse{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminServiceTransferLeaderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminServiceTransferLeaderResponse) ProtoMessage() {}
+
+func (x *AdminServiceTransferLeaderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminServiceTransferLeaderResponse.ProtoReflect.Descriptor instead.
+func (*AdminServiceTransferLeaderResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{3}
+}
+
+type StatsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StatsRequest) Reset() {
+	*x = StatsRequest{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StatsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StatsRequest) ProtoMessage() {}
+
+func (x *StatsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StatsRequest.ProtoReflect.Descriptor instead.
+func (*StatsRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{4}
+}
+
+type StatsResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// When the node collected these numbers, and when it started.
+	UnixNano        int64 `protobuf:"varint,2,opt,name=unix_nano,json=unixNano,proto3" json:"unix_nano,omitempty"`
+	StartedUnixNano int64 `protobuf:"varint,3,opt,name=started_unix_nano,json=startedUnixNano,proto3" json:"started_unix_nano,omitempty"`
+	// Upper bounds of the latency histogram buckets, in seconds, shared by
+	// every operation.
+	LatencyBoundsSeconds []float64       `protobuf:"fixed64,4,rep,packed,name=latency_bounds_seconds,json=latencyBoundsSeconds,proto3" json:"latency_bounds_seconds,omitempty"`
+	Ops                  []*OpStats      `protobuf:"bytes,5,rep,name=ops,proto3" json:"ops,omitempty"`
+	Replicas             []*ReplicaStats `protobuf:"bytes,6,rep,name=replicas,proto3" json:"replicas,omitempty"`
+	// The block cache every engine on the node shares.
+	BlockCache    *CacheStats `protobuf:"bytes,7,opt,name=block_cache,json=blockCache,proto3" json:"block_cache,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StatsResponse) Reset() {
+	*x = StatsResponse{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StatsResponse) ProtoMessage() {}
+
+func (x *StatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StatsResponse.ProtoReflect.Descriptor instead.
+func (*StatsResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *StatsResponse) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *StatsResponse) GetUnixNano() int64 {
+	if x != nil {
+		return x.UnixNano
+	}
+	return 0
+}
+
+func (x *StatsResponse) GetStartedUnixNano() int64 {
+	if x != nil {
+		return x.StartedUnixNano
+	}
+	return 0
+}
+
+func (x *StatsResponse) GetLatencyBoundsSeconds() []float64 {
+	if x != nil {
+		return x.LatencyBoundsSeconds
+	}
+	return nil
+}
+
+func (x *StatsResponse) GetOps() []*OpStats {
+	if x != nil {
+		return x.Ops
+	}
+	return nil
+}
+
+func (x *StatsResponse) GetReplicas() []*ReplicaStats {
+	if x != nil {
+		return x.Replicas
+	}
+	return nil
+}
+
+func (x *StatsResponse) GetBlockCache() *CacheStats {
+	if x != nil {
+		return x.BlockCache
+	}
+	return nil
+}
+
+// OpStats counts one public API operation since the node started.
+type OpStats struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// op is put, get, delete or cas.
+	Op                string  `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
+	Ok                uint64  `protobuf:"varint,2,opt,name=ok,proto3" json:"ok,omitempty"`
+	Errors            uint64  `protobuf:"varint,3,opt,name=errors,proto3" json:"errors,omitempty"`
+	LatencySumSeconds float64 `protobuf:"fixed64,4,opt,name=latency_sum_seconds,json=latencySumSeconds,proto3" json:"latency_sum_seconds,omitempty"`
+	// latency_cumulative[i] counts requests that took at most
+	// latency_bounds_seconds[i].
+	LatencyCumulative []uint64 `protobuf:"varint,5,rep,packed,name=latency_cumulative,json=latencyCumulative,proto3" json:"latency_cumulative,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *OpStats) Reset() {
+	*x = OpStats{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpStats) ProtoMessage() {}
+
+func (x *OpStats) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpStats.ProtoReflect.Descriptor instead.
+func (*OpStats) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *OpStats) GetOp() string {
+	if x != nil {
+		return x.Op
+	}
+	return ""
+}
+
+func (x *OpStats) GetOk() uint64 {
+	if x != nil {
+		return x.Ok
+	}
+	return 0
+}
+
+func (x *OpStats) GetErrors() uint64 {
+	if x != nil {
+		return x.Errors
+	}
+	return 0
+}
+
+func (x *OpStats) GetLatencySumSeconds() float64 {
+	if x != nil {
+		return x.LatencySumSeconds
+	}
+	return 0
+}
+
+func (x *OpStats) GetLatencyCumulative() []uint64 {
+	if x != nil {
+		return x.LatencyCumulative
+	}
+	return nil
+}
+
+// ReplicaStats is one local replica: its Raft state and its engine.
+type ReplicaStats struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Raft          *ReplicaStatus         `protobuf:"bytes,1,opt,name=raft,proto3" json:"raft,omitempty"`
+	Engine        *EngineStats           `protobuf:"bytes,2,opt,name=engine,proto3" json:"engine,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicaStats) Reset() {
+	*x = ReplicaStats{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicaStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicaStats) ProtoMessage() {}
+
+func (x *ReplicaStats) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicaStats.ProtoReflect.Descriptor instead.
+func (*ReplicaStats) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReplicaStats) GetRaft() *ReplicaStatus {
+	if x != nil {
+		return x.Raft
+	}
+	return nil
+}
+
+func (x *ReplicaStats) GetEngine() *EngineStats {
+	if x != nil {
+		return x.Engine
+	}
+	return nil
+}
+
+type EngineStats struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	LastSeq                uint64                 `protobuf:"varint,1,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	Memtables              int32                  `protobuf:"varint,2,opt,name=memtables,proto3" json:"memtables,omitempty"`
+	MemtableBytes          int64                  `protobuf:"varint,3,opt,name=memtable_bytes,json=memtableBytes,proto3" json:"memtable_bytes,omitempty"`
+	Tables                 int32                  `protobuf:"varint,4,opt,name=tables,proto3" json:"tables,omitempty"`
+	TableBytes             uint64                 `protobuf:"varint,5,opt,name=table_bytes,json=tableBytes,proto3" json:"table_bytes,omitempty"`
+	TableEntries           uint64                 `protobuf:"varint,6,opt,name=table_entries,json=tableEntries,proto3" json:"table_entries,omitempty"`
+	Flushes                int64                  `protobuf:"varint,7,opt,name=flushes,proto3" json:"flushes,omitempty"`
+	FlushBytes             int64                  `protobuf:"varint,8,opt,name=flush_bytes,json=flushBytes,proto3" json:"flush_bytes,omitempty"`
+	Compactions            int64                  `protobuf:"varint,9,opt,name=compactions,proto3" json:"compactions,omitempty"`
+	CompactionBytesRead    int64                  `protobuf:"varint,10,opt,name=compaction_bytes_read,json=compactionBytesRead,proto3" json:"compaction_bytes_read,omitempty"`
+	CompactionBytesWritten int64                  `protobuf:"varint,11,opt,name=compaction_bytes_written,json=compactionBytesWritten,proto3" json:"compaction_bytes_written,omitempty"`
+	WriteStalls            int64                  `protobuf:"varint,12,opt,name=write_stalls,json=writeStalls,proto3" json:"write_stalls,omitempty"`
+	WriteSlowdowns         int64                  `protobuf:"varint,13,opt,name=write_slowdowns,json=writeSlowdowns,proto3" json:"write_slowdowns,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *EngineStats) Reset() {
+	*x = EngineStats{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EngineStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EngineStats) ProtoMessage() {}
+
+func (x *EngineStats) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EngineStats.ProtoReflect.Descriptor instead.
+func (*EngineStats) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *EngineStats) GetLastSeq() uint64 {
+	if x != nil {
+		return x.LastSeq
+	}
+	return 0
+}
+
+func (x *EngineStats) GetMemtables() int32 {
+	if x != nil {
+		return x.Memtables
+	}
+	return 0
+}
+
+func (x *EngineStats) GetMemtableBytes() int64 {
+	if x != nil {
+		return x.MemtableBytes
+	}
+	return 0
+}
+
+func (x *EngineStats) GetTables() int32 {
+	if x != nil {
+		return x.Tables
+	}
+	return 0
+}
+
+func (x *EngineStats) GetTableBytes() uint64 {
+	if x != nil {
+		return x.TableBytes
+	}
+	return 0
+}
+
+func (x *EngineStats) GetTableEntries() uint64 {
+	if x != nil {
+		return x.TableEntries
+	}
+	return 0
+}
+
+func (x *EngineStats) GetFlushes() int64 {
+	if x != nil {
+		return x.Flushes
+	}
+	return 0
+}
+
+func (x *EngineStats) GetFlushBytes() int64 {
+	if x != nil {
+		return x.FlushBytes
+	}
+	return 0
+}
+
+func (x *EngineStats) GetCompactions() int64 {
+	if x != nil {
+		return x.Compactions
+	}
+	return 0
+}
+
+func (x *EngineStats) GetCompactionBytesRead() int64 {
+	if x != nil {
+		return x.CompactionBytesRead
+	}
+	return 0
+}
+
+func (x *EngineStats) GetCompactionBytesWritten() int64 {
+	if x != nil {
+		return x.CompactionBytesWritten
+	}
+	return 0
+}
+
+func (x *EngineStats) GetWriteStalls() int64 {
+	if x != nil {
+		return x.WriteStalls
+	}
+	return 0
+}
+
+func (x *EngineStats) GetWriteSlowdowns() int64 {
+	if x != nil {
+		return x.WriteSlowdowns
+	}
+	return 0
+}
+
+type CacheStats struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CapacityBytes int64                  `protobuf:"varint,1,opt,name=capacity_bytes,json=capacityBytes,proto3" json:"capacity_bytes,omitempty"`
+	UsedBytes     int64                  `protobuf:"varint,2,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	Hits          int64                  `protobuf:"varint,3,opt,name=hits,proto3" json:"hits,omitempty"`
+	Misses        int64                  `protobuf:"varint,4,opt,name=misses,proto3" json:"misses,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CacheStats) Reset() {
+	*x = CacheStats{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CacheStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheStats) ProtoMessage() {}
+
+func (x *CacheStats) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheStats.ProtoReflect.Descriptor instead.
+func (*CacheStats) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CacheStats) GetCapacityBytes() int64 {
+	if x != nil {
+		return x.CapacityBytes
+	}
+	return 0
+}
+
+func (x *CacheStats) GetUsedBytes() int64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
+}
+
+func (x *CacheStats) GetHits() int64 {
+	if x != nil {
+		return x.Hits
+	}
+	return 0
+}
+
+func (x *CacheStats) GetMisses() int64 {
+	if x != nil {
+		return x.Misses
+	}
+	return 0
+}
+
+type EventsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// after: return events with a higher sequence number.
+	After uint64 `protobuf:"varint,1,opt,name=after,proto3" json:"after,omitempty"`
+	// limit: at most this many; 0 means 1,000.
+	Limit         uint32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventsRequest) Reset() {
+	*x = EventsRequest{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventsRequest) ProtoMessage() {}
+
+func (x *EventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventsRequest.ProtoReflect.Descriptor instead.
+func (*EventsRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *EventsRequest) GetAfter() uint64 {
+	if x != nil {
+		return x.After
+	}
+	return 0
+}
+
+func (x *EventsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type EventsResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Events []*Event               `protobuf:"bytes,2,rep,name=events,proto3" json:"events,omitempty"`
+	// oldest is the sequence number of the oldest event the node still
+	// keeps; a reader that saw up to n and gets oldest > n+1 missed events.
+	Oldest        uint64 `protobuf:"varint,3,opt,name=oldest,proto3" json:"oldest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventsResponse) Reset() {
+	*x = EventsResponse{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventsResponse) ProtoMessage() {}
+
+func (x *EventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventsResponse.ProtoReflect.Descriptor instead.
+func (*EventsResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *EventsResponse) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *EventsResponse) GetEvents() []*Event {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *EventsResponse) GetOldest() uint64 {
+	if x != nil {
+		return x.Oldest
+	}
+	return 0
+}
+
+type Event struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Seq      uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	UnixNano int64                  `protobuf:"varint,2,opt,name=unix_nano,json=unixNano,proto3" json:"unix_nano,omitempty"`
+	// kind: leader_elected, leader_stepped_down, peer_down, peer_up,
+	// node_dead, node_alive, replica_added, replica_promoted,
+	// replica_removed, snapshot_installed, leader_transfer.
+	Kind string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	// shard: the Raft group (-1 the meta group); has_shard is false for
+	// events about no group.
+	Shard    int32 `protobuf:"varint,4,opt,name=shard,proto3" json:"shard,omitempty"`
+	HasShard bool  `protobuf:"varint,5,opt,name=has_shard,json=hasShard,proto3" json:"has_shard,omitempty"`
+	// node: the member the event concerns (a node ID or peer address).
+	Node          string `protobuf:"bytes,6,opt,name=node,proto3" json:"node,omitempty"`
+	Term          uint64 `protobuf:"varint,7,opt,name=term,proto3" json:"term,omitempty"`
+	Index         uint64 `protobuf:"varint,8,opt,name=index,proto3" json:"index,omitempty"`
+	Detail        string `protobuf:"bytes,9,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Event) Reset() {
+	*x = Event{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Event) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Event) ProtoMessage() {}
+
+func (x *Event) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Event.ProtoReflect.Descriptor instead.
+func (*Event) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Event) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *Event) GetUnixNano() int64 {
+	if x != nil {
+		return x.UnixNano
+	}
+	return 0
+}
+
+func (x *Event) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Event) GetShard() int32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *Event) GetHasShard() bool {
+	if x != nil {
+		return x.HasShard
+	}
+	return false
+}
+
+func (x *Event) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *Event) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *Event) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *Event) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
 type DecommissionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -85,7 +966,7 @@ type DecommissionRequest struct {
 
 func (x *DecommissionRequest) Reset() {
 	*x = DecommissionRequest{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	mi := &file_dkv_v1_admin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -97,7 +978,7 @@ func (x *DecommissionRequest) String() string {
 func (*DecommissionRequest) ProtoMessage() {}
 
 func (x *DecommissionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	mi := &file_dkv_v1_admin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -110,7 +991,7 @@ func (x *DecommissionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecommissionRequest.ProtoReflect.Descriptor instead.
 func (*DecommissionRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DecommissionRequest) GetNodeId() string {
@@ -128,7 +1009,7 @@ type DecommissionResponse struct {
 
 func (x *DecommissionResponse) Reset() {
 	*x = DecommissionResponse{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	mi := &file_dkv_v1_admin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +1021,7 @@ func (x *DecommissionResponse) String() string {
 func (*DecommissionResponse) ProtoMessage() {}
 
 func (x *DecommissionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	mi := &file_dkv_v1_admin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +1034,7 @@ func (x *DecommissionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecommissionResponse.ProtoReflect.Descriptor instead.
 func (*DecommissionResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{1}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{14}
 }
 
 type ClusterStatusRequest struct {
@@ -164,7 +1045,7 @@ type ClusterStatusRequest struct {
 
 func (x *ClusterStatusRequest) Reset() {
 	*x = ClusterStatusRequest{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	mi := &file_dkv_v1_admin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -176,7 +1057,7 @@ func (x *ClusterStatusRequest) String() string {
 func (*ClusterStatusRequest) ProtoMessage() {}
 
 func (x *ClusterStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	mi := &file_dkv_v1_admin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -189,7 +1070,7 @@ func (x *ClusterStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterStatusRequest.ProtoReflect.Descriptor instead.
 func (*ClusterStatusRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{2}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{15}
 }
 
 type ClusterStatusResponse struct {
@@ -202,7 +1083,7 @@ type ClusterStatusResponse struct {
 
 func (x *ClusterStatusResponse) Reset() {
 	*x = ClusterStatusResponse{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	mi := &file_dkv_v1_admin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -214,7 +1095,7 @@ func (x *ClusterStatusResponse) String() string {
 func (*ClusterStatusResponse) ProtoMessage() {}
 
 func (x *ClusterStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	mi := &file_dkv_v1_admin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -227,7 +1108,7 @@ func (x *ClusterStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterStatusResponse.ProtoReflect.Descriptor instead.
 func (*ClusterStatusResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{3}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ClusterStatusResponse) GetSelf() *NodeInfo {
@@ -260,15 +1141,17 @@ type MemberStatus struct {
 	LastError           string `protobuf:"bytes,8,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// node_state is the meta group's record of the node; suspect is set when
 	// the meta leader has not heard its heartbeat for liveness.suspect_after.
-	NodeState     NodeState `protobuf:"varint,9,opt,name=node_state,json=nodeState,proto3,enum=dkv.v1.NodeState" json:"node_state,omitempty"`
-	Suspect       bool      `protobuf:"varint,10,opt,name=suspect,proto3" json:"suspect,omitempty"`
+	NodeState NodeState `protobuf:"varint,9,opt,name=node_state,json=nodeState,proto3,enum=dkv.v1.NodeState" json:"node_state,omitempty"`
+	Suspect   bool      `protobuf:"varint,10,opt,name=suspect,proto3" json:"suspect,omitempty"`
+	// drained: an operator drained the node (dkvctl drain); it leads no group.
+	Drained       bool `protobuf:"varint,11,opt,name=drained,proto3" json:"drained,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MemberStatus) Reset() {
 	*x = MemberStatus{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	mi := &file_dkv_v1_admin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -280,7 +1163,7 @@ func (x *MemberStatus) String() string {
 func (*MemberStatus) ProtoMessage() {}
 
 func (x *MemberStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	mi := &file_dkv_v1_admin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -293,7 +1176,7 @@ func (x *MemberStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberStatus.ProtoReflect.Descriptor instead.
 func (*MemberStatus) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{4}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *MemberStatus) GetAddr() string {
@@ -366,6 +1249,13 @@ func (x *MemberStatus) GetSuspect() bool {
 	return false
 }
 
+func (x *MemberStatus) GetDrained() bool {
+	if x != nil {
+		return x.Drained
+	}
+	return false
+}
+
 type ShardMapRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -374,7 +1264,7 @@ type ShardMapRequest struct {
 
 func (x *ShardMapRequest) Reset() {
 	*x = ShardMapRequest{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	mi := &file_dkv_v1_admin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -386,7 +1276,7 @@ func (x *ShardMapRequest) String() string {
 func (*ShardMapRequest) ProtoMessage() {}
 
 func (x *ShardMapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	mi := &file_dkv_v1_admin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -399,7 +1289,7 @@ func (x *ShardMapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardMapRequest.ProtoReflect.Descriptor instead.
 func (*ShardMapRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{5}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{18}
 }
 
 type ShardMapResponse struct {
@@ -413,7 +1303,7 @@ type ShardMapResponse struct {
 
 func (x *ShardMapResponse) Reset() {
 	*x = ShardMapResponse{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[6]
+	mi := &file_dkv_v1_admin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -425,7 +1315,7 @@ func (x *ShardMapResponse) String() string {
 func (*ShardMapResponse) ProtoMessage() {}
 
 func (x *ShardMapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[6]
+	mi := &file_dkv_v1_admin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -438,7 +1328,7 @@ func (x *ShardMapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardMapResponse.ProtoReflect.Descriptor instead.
 func (*ShardMapResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{6}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ShardMapResponse) GetShardCount() uint32 {
@@ -488,7 +1378,7 @@ type ShardInfo struct {
 
 func (x *ShardInfo) Reset() {
 	*x = ShardInfo{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[7]
+	mi := &file_dkv_v1_admin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -500,7 +1390,7 @@ func (x *ShardInfo) String() string {
 func (*ShardInfo) ProtoMessage() {}
 
 func (x *ShardInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[7]
+	mi := &file_dkv_v1_admin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -513,7 +1403,7 @@ func (x *ShardInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardInfo.ProtoReflect.Descriptor instead.
 func (*ShardInfo) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{7}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ShardInfo) GetShard() uint32 {
@@ -590,14 +1480,82 @@ var File_dkv_v1_admin_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\n" +
-	"\x12dkv/v1/admin.proto\x12\x06dkv.v1\x1a\x14dkv/v1/cluster.proto\x1a\x11dkv/v1/meta.proto\".\n" +
+	"\x12dkv/v1/admin.proto\x12\x06dkv.v1\x1a\x14dkv/v1/cluster.proto\x1a\x11dkv/v1/meta.proto\"=\n" +
+	"\fDrainRequest\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x14\n" +
+	"\x05drain\x18\x02 \x01(\bR\x05drain\"\x0f\n" +
+	"\rDrainResponse\"R\n" +
+	"!AdminServiceTransferLeaderRequest\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"$\n" +
+	"\"AdminServiceTransferLeaderResponse\"\x0e\n" +
+	"\fStatsRequest\"\xb1\x02\n" +
+	"\rStatsResponse\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1b\n" +
+	"\tunix_nano\x18\x02 \x01(\x03R\bunixNano\x12*\n" +
+	"\x11started_unix_nano\x18\x03 \x01(\x03R\x0fstartedUnixNano\x124\n" +
+	"\x16latency_bounds_seconds\x18\x04 \x03(\x01R\x14latencyBoundsSeconds\x12!\n" +
+	"\x03ops\x18\x05 \x03(\v2\x0f.dkv.v1.OpStatsR\x03ops\x120\n" +
+	"\breplicas\x18\x06 \x03(\v2\x14.dkv.v1.ReplicaStatsR\breplicas\x123\n" +
+	"\vblock_cache\x18\a \x01(\v2\x12.dkv.v1.CacheStatsR\n" +
+	"blockCache\"\xa0\x01\n" +
+	"\aOpStats\x12\x0e\n" +
+	"\x02op\x18\x01 \x01(\tR\x02op\x12\x0e\n" +
+	"\x02ok\x18\x02 \x01(\x04R\x02ok\x12\x16\n" +
+	"\x06errors\x18\x03 \x01(\x04R\x06errors\x12.\n" +
+	"\x13latency_sum_seconds\x18\x04 \x01(\x01R\x11latencySumSeconds\x12-\n" +
+	"\x12latency_cumulative\x18\x05 \x03(\x04R\x11latencyCumulative\"f\n" +
+	"\fReplicaStats\x12)\n" +
+	"\x04raft\x18\x01 \x01(\v2\x15.dkv.v1.ReplicaStatusR\x04raft\x12+\n" +
+	"\x06engine\x18\x02 \x01(\v2\x13.dkv.v1.EngineStatsR\x06engine\"\xe2\x03\n" +
+	"\vEngineStats\x12\x19\n" +
+	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\x12\x1c\n" +
+	"\tmemtables\x18\x02 \x01(\x05R\tmemtables\x12%\n" +
+	"\x0ememtable_bytes\x18\x03 \x01(\x03R\rmemtableBytes\x12\x16\n" +
+	"\x06tables\x18\x04 \x01(\x05R\x06tables\x12\x1f\n" +
+	"\vtable_bytes\x18\x05 \x01(\x04R\n" +
+	"tableBytes\x12#\n" +
+	"\rtable_entries\x18\x06 \x01(\x04R\ftableEntries\x12\x18\n" +
+	"\aflushes\x18\a \x01(\x03R\aflushes\x12\x1f\n" +
+	"\vflush_bytes\x18\b \x01(\x03R\n" +
+	"flushBytes\x12 \n" +
+	"\vcompactions\x18\t \x01(\x03R\vcompactions\x122\n" +
+	"\x15compaction_bytes_read\x18\n" +
+	" \x01(\x03R\x13compactionBytesRead\x128\n" +
+	"\x18compaction_bytes_written\x18\v \x01(\x03R\x16compactionBytesWritten\x12!\n" +
+	"\fwrite_stalls\x18\f \x01(\x03R\vwriteStalls\x12'\n" +
+	"\x0fwrite_slowdowns\x18\r \x01(\x03R\x0ewriteSlowdowns\"~\n" +
+	"\n" +
+	"CacheStats\x12%\n" +
+	"\x0ecapacity_bytes\x18\x01 \x01(\x03R\rcapacityBytes\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\x02 \x01(\x03R\tusedBytes\x12\x12\n" +
+	"\x04hits\x18\x03 \x01(\x03R\x04hits\x12\x16\n" +
+	"\x06misses\x18\x04 \x01(\x03R\x06misses\";\n" +
+	"\rEventsRequest\x12\x14\n" +
+	"\x05after\x18\x01 \x01(\x04R\x05after\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\"h\n" +
+	"\x0eEventsResponse\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
+	"\x06events\x18\x02 \x03(\v2\r.dkv.v1.EventR\x06events\x12\x16\n" +
+	"\x06oldest\x18\x03 \x01(\x04R\x06oldest\"\xd3\x01\n" +
+	"\x05Event\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12\x1b\n" +
+	"\tunix_nano\x18\x02 \x01(\x03R\bunixNano\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05shard\x18\x04 \x01(\x05R\x05shard\x12\x1b\n" +
+	"\thas_shard\x18\x05 \x01(\bR\bhasShard\x12\x12\n" +
+	"\x04node\x18\x06 \x01(\tR\x04node\x12\x12\n" +
+	"\x04term\x18\a \x01(\x04R\x04term\x12\x14\n" +
+	"\x05index\x18\b \x01(\x04R\x05index\x12\x16\n" +
+	"\x06detail\x18\t \x01(\tR\x06detail\".\n" +
 	"\x13DecommissionRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"\x16\n" +
 	"\x14DecommissionResponse\"\x16\n" +
 	"\x14ClusterStatusRequest\"m\n" +
 	"\x15ClusterStatusResponse\x12$\n" +
 	"\x04self\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04self\x12.\n" +
-	"\amembers\x18\x02 \x03(\v2\x14.dkv.v1.MemberStatusR\amembers\"\xf1\x02\n" +
+	"\amembers\x18\x02 \x03(\v2\x14.dkv.v1.MemberStatusR\amembers\"\x8b\x03\n" +
 	"\fMemberStatus\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12$\n" +
 	"\x04node\x18\x02 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\x12)\n" +
@@ -611,7 +1569,8 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\n" +
 	"node_state\x18\t \x01(\x0e2\x11.dkv.v1.NodeStateR\tnodeState\x12\x18\n" +
 	"\asuspect\x18\n" +
-	" \x01(\bR\asuspect\"\x11\n" +
+	" \x01(\bR\asuspect\x12\x18\n" +
+	"\adrained\x18\v \x01(\bR\adrained\"\x11\n" +
 	"\x0fShardMapRequest\"\x8d\x01\n" +
 	"\x10ShardMapResponse\x12\x1f\n" +
 	"\vshard_count\x18\x01 \x01(\rR\n" +
@@ -635,11 +1594,15 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x18MEMBER_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MEMBER_STATE_UNKNOWN\x10\x01\x12\x13\n" +
 	"\x0fMEMBER_STATE_UP\x10\x02\x12\x15\n" +
-	"\x11MEMBER_STATE_DOWN\x10\x032\xe6\x01\n" +
+	"\x11MEMBER_STATE_DOWN\x10\x032\xf4\x03\n" +
 	"\fAdminService\x12L\n" +
 	"\rClusterStatus\x12\x1c.dkv.v1.ClusterStatusRequest\x1a\x1d.dkv.v1.ClusterStatusResponse\x12=\n" +
 	"\bShardMap\x12\x17.dkv.v1.ShardMapRequest\x1a\x18.dkv.v1.ShardMapResponse\x12I\n" +
-	"\fDecommission\x12\x1b.dkv.v1.DecommissionRequest\x1a\x1c.dkv.v1.DecommissionResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
+	"\fDecommission\x12\x1b.dkv.v1.DecommissionRequest\x1a\x1c.dkv.v1.DecommissionResponse\x124\n" +
+	"\x05Drain\x12\x14.dkv.v1.DrainRequest\x1a\x15.dkv.v1.DrainResponse\x12g\n" +
+	"\x0eTransferLeader\x12).dkv.v1.AdminServiceTransferLeaderRequest\x1a*.dkv.v1.AdminServiceTransferLeaderResponse\x124\n" +
+	"\x05Stats\x12\x14.dkv.v1.StatsRequest\x1a\x15.dkv.v1.StatsResponse\x127\n" +
+	"\x06Events\x12\x15.dkv.v1.EventsRequest\x1a\x16.dkv.v1.EventsResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
 
 var (
 	file_dkv_v1_admin_proto_rawDescOnce sync.Once
@@ -654,38 +1617,66 @@ func file_dkv_v1_admin_proto_rawDescGZIP() []byte {
 }
 
 var file_dkv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_dkv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_dkv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_dkv_v1_admin_proto_goTypes = []any{
-	(MemberState)(0),              // 0: dkv.v1.MemberState
-	(*DecommissionRequest)(nil),   // 1: dkv.v1.DecommissionRequest
-	(*DecommissionResponse)(nil),  // 2: dkv.v1.DecommissionResponse
-	(*ClusterStatusRequest)(nil),  // 3: dkv.v1.ClusterStatusRequest
-	(*ClusterStatusResponse)(nil), // 4: dkv.v1.ClusterStatusResponse
-	(*MemberStatus)(nil),          // 5: dkv.v1.MemberStatus
-	(*ShardMapRequest)(nil),       // 6: dkv.v1.ShardMapRequest
-	(*ShardMapResponse)(nil),      // 7: dkv.v1.ShardMapResponse
-	(*ShardInfo)(nil),             // 8: dkv.v1.ShardInfo
-	(*NodeInfo)(nil),              // 9: dkv.v1.NodeInfo
-	(NodeState)(0),                // 10: dkv.v1.NodeState
+	(MemberState)(0),                           // 0: dkv.v1.MemberState
+	(*DrainRequest)(nil),                       // 1: dkv.v1.DrainRequest
+	(*DrainResponse)(nil),                      // 2: dkv.v1.DrainResponse
+	(*AdminServiceTransferLeaderRequest)(nil),  // 3: dkv.v1.AdminServiceTransferLeaderRequest
+	(*AdminServiceTransferLeaderResponse)(nil), // 4: dkv.v1.AdminServiceTransferLeaderResponse
+	(*StatsRequest)(nil),                       // 5: dkv.v1.StatsRequest
+	(*StatsResponse)(nil),                      // 6: dkv.v1.StatsResponse
+	(*OpStats)(nil),                            // 7: dkv.v1.OpStats
+	(*ReplicaStats)(nil),                       // 8: dkv.v1.ReplicaStats
+	(*EngineStats)(nil),                        // 9: dkv.v1.EngineStats
+	(*CacheStats)(nil),                         // 10: dkv.v1.CacheStats
+	(*EventsRequest)(nil),                      // 11: dkv.v1.EventsRequest
+	(*EventsResponse)(nil),                     // 12: dkv.v1.EventsResponse
+	(*Event)(nil),                              // 13: dkv.v1.Event
+	(*DecommissionRequest)(nil),                // 14: dkv.v1.DecommissionRequest
+	(*DecommissionResponse)(nil),               // 15: dkv.v1.DecommissionResponse
+	(*ClusterStatusRequest)(nil),               // 16: dkv.v1.ClusterStatusRequest
+	(*ClusterStatusResponse)(nil),              // 17: dkv.v1.ClusterStatusResponse
+	(*MemberStatus)(nil),                       // 18: dkv.v1.MemberStatus
+	(*ShardMapRequest)(nil),                    // 19: dkv.v1.ShardMapRequest
+	(*ShardMapResponse)(nil),                   // 20: dkv.v1.ShardMapResponse
+	(*ShardInfo)(nil),                          // 21: dkv.v1.ShardInfo
+	(*ReplicaStatus)(nil),                      // 22: dkv.v1.ReplicaStatus
+	(*NodeInfo)(nil),                           // 23: dkv.v1.NodeInfo
+	(NodeState)(0),                             // 24: dkv.v1.NodeState
 }
 var file_dkv_v1_admin_proto_depIdxs = []int32{
-	9,  // 0: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
-	5,  // 1: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
-	9,  // 2: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
-	0,  // 3: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
-	10, // 4: dkv.v1.MemberStatus.node_state:type_name -> dkv.v1.NodeState
-	8,  // 5: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
-	3,  // 6: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
-	6,  // 7: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
-	1,  // 8: dkv.v1.AdminService.Decommission:input_type -> dkv.v1.DecommissionRequest
-	4,  // 9: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
-	7,  // 10: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
-	2,  // 11: dkv.v1.AdminService.Decommission:output_type -> dkv.v1.DecommissionResponse
-	9,  // [9:12] is the sub-list for method output_type
-	6,  // [6:9] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	7,  // 0: dkv.v1.StatsResponse.ops:type_name -> dkv.v1.OpStats
+	8,  // 1: dkv.v1.StatsResponse.replicas:type_name -> dkv.v1.ReplicaStats
+	10, // 2: dkv.v1.StatsResponse.block_cache:type_name -> dkv.v1.CacheStats
+	22, // 3: dkv.v1.ReplicaStats.raft:type_name -> dkv.v1.ReplicaStatus
+	9,  // 4: dkv.v1.ReplicaStats.engine:type_name -> dkv.v1.EngineStats
+	13, // 5: dkv.v1.EventsResponse.events:type_name -> dkv.v1.Event
+	23, // 6: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
+	18, // 7: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
+	23, // 8: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
+	0,  // 9: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
+	24, // 10: dkv.v1.MemberStatus.node_state:type_name -> dkv.v1.NodeState
+	21, // 11: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
+	16, // 12: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
+	19, // 13: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
+	14, // 14: dkv.v1.AdminService.Decommission:input_type -> dkv.v1.DecommissionRequest
+	1,  // 15: dkv.v1.AdminService.Drain:input_type -> dkv.v1.DrainRequest
+	3,  // 16: dkv.v1.AdminService.TransferLeader:input_type -> dkv.v1.AdminServiceTransferLeaderRequest
+	5,  // 17: dkv.v1.AdminService.Stats:input_type -> dkv.v1.StatsRequest
+	11, // 18: dkv.v1.AdminService.Events:input_type -> dkv.v1.EventsRequest
+	17, // 19: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
+	20, // 20: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
+	15, // 21: dkv.v1.AdminService.Decommission:output_type -> dkv.v1.DecommissionResponse
+	2,  // 22: dkv.v1.AdminService.Drain:output_type -> dkv.v1.DrainResponse
+	4,  // 23: dkv.v1.AdminService.TransferLeader:output_type -> dkv.v1.AdminServiceTransferLeaderResponse
+	6,  // 24: dkv.v1.AdminService.Stats:output_type -> dkv.v1.StatsResponse
+	12, // 25: dkv.v1.AdminService.Events:output_type -> dkv.v1.EventsResponse
+	19, // [19:26] is the sub-list for method output_type
+	12, // [12:19] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_admin_proto_init() }
@@ -701,7 +1692,7 @@ func file_dkv_v1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_admin_proto_rawDesc), len(file_dkv_v1_admin_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

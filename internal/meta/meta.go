@@ -259,6 +259,9 @@ func (s State) Eligible() []string {
 	return out
 }
 
+// drained reports whether an operator asked node id to lead no group.
+func (s State) drained(id string) bool { return s.Nodes[id].GetDrained() }
+
 // Desired returns the voters the ring wants for every group over the
 // eligible nodes.
 func (s State) Desired() Layout {
@@ -271,8 +274,9 @@ func (s State) Desired() Layout {
 
 // Plan returns at most one step for each group whose actual membership
 // (groups, keyed by shard) differs from the desired placement, plus
-// descriptor repairs, decommission completions and at most one leader
-// transfer for balance. Groups without a known leader are left alone.
+// descriptor repairs, decommission completions, a leader transfer off each
+// drained node's groups and at most one more for balance. Groups without a
+// known leader are left alone.
 //
 // Each group changes one server at a time: a learner is added, promoted
 // once it has caught up, and only then is a surplus voter removed (after
@@ -296,7 +300,7 @@ func Plan(s State, groups map[int]Group) []Action {
 		if !ok || g.Leader == "" || len(g.Voters) == 0 {
 			continue
 		}
-		if a, ok := planGroup(g, desired[shard], alive); ok {
+		if a, ok := planGroup(g, desired[shard], alive, s.drained); ok {
 			out = append(out, a)
 			busy[shard] = true
 			continue
@@ -319,13 +323,46 @@ func Plan(s State, groups map[int]Group) []Action {
 			out = append(out, Action{Kind: MarkDecommissioned, Node: id})
 		}
 	}
+	out = append(out, drainLeaders(s, groups, busy, alive)...)
 	if a, ok := balanceLeaders(s, groups, busy, alive); ok {
 		out = append(out, a)
 	}
 	return out
 }
 
-func planGroup(g Group, want []string, alive func(string) bool) (Action, bool) {
+// drainLeaders moves leadership off drained nodes: for each stable group a
+// drained node leads, a transfer to the caught-up, undrained voter that
+// leads the fewest groups. A group with no such voter keeps its leader.
+func drainLeaders(s State, groups map[int]Group, busy map[int]bool, alive func(string) bool) []Action {
+	led := map[string]int{}
+	for _, g := range groups {
+		led[g.Leader]++
+	}
+	var out []Action
+	for _, shard := range slices.Sorted(maps.Keys(groups)) {
+		g := groups[shard]
+		if busy[shard] || g.Leader == "" || !s.drained(g.Leader) || len(g.Learners) > 0 {
+			continue
+		}
+		to := ""
+		for _, v := range g.Voters {
+			if v == g.Leader || !alive(v) || s.drained(v) || g.Progress[v] < g.Commit {
+				continue
+			}
+			if to == "" || led[v] < led[to] {
+				to = v
+			}
+		}
+		if to != "" {
+			out = append(out, Action{Kind: TransferLeader, Shard: shard, Node: to})
+			busy[shard] = true
+			led[to]++
+		}
+	}
+	return out
+}
+
+func planGroup(g Group, want []string, alive, drained func(string) bool) (Action, bool) {
 	act := func(k ActionKind, node string) (Action, bool) {
 		return Action{Kind: k, Shard: g.Shard, Node: node}, true
 	}
@@ -358,10 +395,15 @@ func planGroup(g Group, want []string, alive func(string) bool) (Action, bool) {
 			if v != g.Leader {
 				return act(Remove, v)
 			}
+			// Hand leadership to a wanted voter, an undrained one if any.
+			to := ""
 			for _, w := range g.Voters {
-				if w != v && slices.Contains(want, w) && alive(w) {
-					return act(TransferLeader, w)
+				if w != v && slices.Contains(want, w) && alive(w) && (to == "" || drained(to) && !drained(w)) {
+					to = w
 				}
+			}
+			if to != "" {
+				return act(TransferLeader, to)
 			}
 		}
 		return Action{}, false
@@ -378,11 +420,14 @@ func planGroup(g Group, want []string, alive func(string) bool) (Action, bool) {
 
 // balanceLeaders moves one leadership off a node that leads at least two
 // more stable groups than one of the group's other voters, preferring the
-// busiest node and the least busy transferee.
+// busiest node and the least busy transferee. Drained nodes take no part:
+// drainLeaders empties them.
 func balanceLeaders(s State, groups map[int]Group, busy map[int]bool, alive func(string) bool) (Action, bool) {
 	count := map[string]int{}
 	for _, id := range s.Eligible() {
-		count[id] = 0
+		if !s.drained(id) {
+			count[id] = 0
+		}
 	}
 	for _, g := range groups {
 		if _, ok := count[g.Leader]; ok {

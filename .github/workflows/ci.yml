@@ -91,3 +91,55 @@ jobs:
 
       - name: fuzz targets
         run: make fuzz FUZZTIME=10s
+
+  web:
+    # The dashboard: typecheck, unit tests on fixtures captured from a real
+    # console, production build.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install
+        run: cd web && npm ci --no-audit --no-fund
+
+      - name: typecheck and test
+        run: make web-test
+
+      - name: build
+        run: cd web && npm run build
+
+  console-postgres:
+    # dkv-console's history store against a real PostgreSQL.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.4-bookworm
+        env:
+          POSTGRES_USER: dkv
+          POSTGRES_PASSWORD: dkv-ci
+          POSTGRES_DB: dkv_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dkv"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: store tests
+        env:
+          DKV_TEST_POSTGRES_DSN: postgres://dkv:dkv-ci@localhost:5432/dkv_test?sslmode=disable
+        run: go test -race -count=1 -v ./cmd/dkv-console

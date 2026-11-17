@@ -51,6 +51,10 @@ type Server struct {
 	// ShutdownTimeout bounds how long a graceful shutdown waits for
 	// in-flight requests before closing connections.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// AdminAddr is the host:port of the admin HTTP API: JSON status, shard
+	// map, statistics and events for dkv-console and operators, and
+	// Prometheus metrics. Empty disables it.
+	AdminAddr string `yaml:"admin_addr"`
 }
 
 // Cluster configures membership. With neither an internal address nor
@@ -207,10 +211,15 @@ func (c *Config) Validate() error {
 
 	if c.Server.GRPCAddr == "" {
 		bad("server.grpc_addr", "required (set it in the config file, DKV_SERVER_GRPC_ADDR or --server.grpc-addr)")
-	} else if _, port, err := net.SplitHostPort(c.Server.GRPCAddr); err != nil {
+	} else if err := checkListenAddr(c.Server.GRPCAddr); err != nil {
 		errs = append(errs, fmt.Errorf("server.grpc_addr: %w", err))
-	} else if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		errs = append(errs, fmt.Errorf("server.grpc_addr: invalid port %q: %w", port, err))
+	}
+	if c.Server.AdminAddr != "" {
+		if err := checkListenAddr(c.Server.AdminAddr); err != nil {
+			errs = append(errs, fmt.Errorf("server.admin_addr: %w", err))
+		} else if _, port, _ := net.SplitHostPort(c.Server.AdminAddr); c.Server.AdminAddr == c.Server.GRPCAddr && port != "0" {
+			bad("server.admin_addr", "must differ from server.grpc_addr")
+		}
 	}
 	if c.Server.ShutdownTimeout <= 0 {
 		bad("server.shutdown_timeout", "must be positive, got %v", c.Server.ShutdownTimeout)
@@ -256,28 +265,41 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// setting binds one configuration key to its parser.
-type setting struct {
-	key   string // dotted YAML path
-	usage string
-	set   func(c *Config, v string) error
+// checkListenAddr checks that addr is host:port with a valid port.
+func checkListenAddr(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("invalid port %q: %w", port, err)
+	}
+	return nil
 }
 
-func (s setting) envName() string {
+// setting binds one configuration key of a configuration T (Config, or
+// ConsoleConfig) to its parser.
+type setting[T any] struct {
+	key   string // dotted YAML path
+	usage string
+	set   func(c *T, v string) error
+}
+
+func (s setting[T]) envName() string {
 	return "DKV_" + strings.ToUpper(strings.ReplaceAll(s.key, ".", "_"))
 }
 
-func (s setting) flagName() string { return strings.ReplaceAll(s.key, "_", "-") }
+func (s setting[T]) flagName() string { return strings.ReplaceAll(s.key, "_", "-") }
 
-func stringSetting(key, usage string, field func(*Config) *string) setting {
-	return setting{key, usage, func(c *Config, v string) error {
+func stringSetting[T any](key, usage string, field func(*T) *string) setting[T] {
+	return setting[T]{key, usage, func(c *T, v string) error {
 		*field(c) = v
 		return nil
 	}}
 }
 
-func intSetting(key, usage string, field func(*Config) *int) setting {
-	return setting{key, usage, func(c *Config, v string) error {
+func intSetting[T any](key, usage string, field func(*T) *int) setting[T] {
+	return setting[T]{key, usage, func(c *T, v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			return fmt.Errorf("not an integer: %w", err)
@@ -288,8 +310,8 @@ func intSetting(key, usage string, field func(*Config) *int) setting {
 }
 
 // stringListSetting parses a comma-separated list; YAML uses a sequence.
-func stringListSetting(key, usage string, field func(*Config) *[]string) setting {
-	return setting{key, usage, func(c *Config, v string) error {
+func stringListSetting[T any](key, usage string, field func(*T) *[]string) setting[T] {
+	return setting[T]{key, usage, func(c *T, v string) error {
 		var out []string
 		for _, item := range strings.Split(v, ",") {
 			if item = strings.TrimSpace(item); item != "" {
@@ -301,8 +323,8 @@ func stringListSetting(key, usage string, field func(*Config) *[]string) setting
 	}}
 }
 
-func durationSetting(key, usage string, field func(*Config) *time.Duration) setting {
-	return setting{key, usage, func(c *Config, v string) error {
+func durationSetting[T any](key, usage string, field func(*T) *time.Duration) setting[T] {
+	return setting[T]{key, usage, func(c *T, v string) error {
 		d, err := time.ParseDuration(v)
 		if err != nil {
 			return fmt.Errorf("not a duration (e.g. 5s, 250ms): %w", err)
@@ -314,11 +336,13 @@ func durationSetting(key, usage string, field func(*Config) *time.Duration) sett
 
 // settings lists every configuration key. TestSettingsCoverConfig fails if
 // a field of Config is missing here.
-var settings = []setting{
+var settings = []setting[Config]{
 	stringSetting("server.grpc_addr", "host:port for the public gRPC API (required)",
 		func(c *Config) *string { return &c.Server.GRPCAddr }),
 	durationSetting("server.shutdown_timeout", "how long graceful shutdown waits for in-flight requests",
 		func(c *Config) *time.Duration { return &c.Server.ShutdownTimeout }),
+	stringSetting("server.admin_addr", "host:port for the admin HTTP API (status, metrics, events); empty disables it",
+		func(c *Config) *string { return &c.Server.AdminAddr }),
 	stringSetting("cluster.name", "cluster name; must match on every node",
 		func(c *Config) *string { return &c.Cluster.Name }),
 	stringSetting("cluster.internal_addr", "host:port for the node-to-node API (required with cluster.peers)",
@@ -391,20 +415,20 @@ const configEnv = "DKV_CONFIG"
 
 // flagRecorder captures flag values so they can be applied after the YAML
 // file and the environment, which must be read first.
-type flagRecorder struct {
-	s       *setting
-	pending *[]pendingFlag
+type flagRecorder[T any] struct {
+	s       *setting[T]
+	pending *[]pendingFlag[T]
 }
 
-type pendingFlag struct {
-	s     *setting
+type pendingFlag[T any] struct {
+	s     *setting[T]
 	value string
 }
 
-func (f flagRecorder) String() string { return "" }
+func (f flagRecorder[T]) String() string { return "" }
 
-func (f flagRecorder) Set(v string) error {
-	*f.pending = append(*f.pending, pendingFlag{f.s, v})
+func (f flagRecorder[T]) Set(v string) error {
+	*f.pending = append(*f.pending, pendingFlag[T]{f.s, v})
 	return nil
 }
 
@@ -413,13 +437,19 @@ func (f flagRecorder) Set(v string) error {
 // YAML file they name. Usage and flag errors are written to output. If args
 // ask for help, Load returns flag.ErrHelp.
 func Load(program string, args, environ []string, output io.Writer) (*Config, error) {
+	return loadConfig(program, args, environ, output, settings, Default(), (*Config).Validate)
+}
+
+// loadConfig is Load for any configuration type T, with its settings table,
+// defaults and validation.
+func loadConfig[T any](program string, args, environ []string, output io.Writer, settings []setting[T], cfg T, validate func(*T) error) (*T, error) {
 	fs := flag.NewFlagSet(program, flag.ContinueOnError)
 	fs.SetOutput(output)
 	configPath := fs.String("config", "", "path to a YAML config file (env "+configEnv+")")
-	var pending []pendingFlag
+	var pending []pendingFlag[T]
 	for i := range settings {
 		s := &settings[i]
-		fs.Var(flagRecorder{s, &pending}, s.flagName(), fmt.Sprintf("%s (env %s)", s.usage, s.envName()))
+		fs.Var(flagRecorder[T]{s, &pending}, s.flagName(), fmt.Sprintf("%s (env %s)", s.usage, s.envName()))
 	}
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(output, "Usage: %s [flags]\n\nPriority: flags > DKV_* environment > config file > defaults.\n\nFlags:\n", program)
@@ -432,12 +462,10 @@ func Load(program string, args, environ []string, output io.Writer) (*Config, er
 		return nil, fmt.Errorf("unexpected arguments: %q", fs.Args())
 	}
 
-	env, err := parseEnviron(environ)
+	env, err := parseEnviron(environ, settings)
 	if err != nil {
 		return nil, err
 	}
-
-	cfg := Default()
 
 	path := *configPath
 	if path == "" {
@@ -464,14 +492,15 @@ func Load(program string, args, environ []string, output io.Writer) (*Config, er
 		}
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid configuration:\n%w", err)
 	}
 	return &cfg, nil
 }
 
-// parseEnviron returns the DKV_* variables in environ, rejecting unknown ones.
-func parseEnviron(environ []string) (map[string]string, error) {
+// parseEnviron returns the DKV_* variables in environ, rejecting those
+// that are not in settings.
+func parseEnviron[T any](environ []string, settings []setting[T]) (map[string]string, error) {
 	known := map[string]bool{configEnv: true}
 	for _, s := range settings {
 		known[s.envName()] = true
@@ -495,7 +524,7 @@ func parseEnviron(environ []string) (map[string]string, error) {
 	return env, nil
 }
 
-func loadFile(cfg *Config, path string) error {
+func loadFile[T any](cfg *T, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config file: %w", err)

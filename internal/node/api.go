@@ -15,8 +15,10 @@ import (
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/cluster"
 	"github.com/naveenk2608/distributed-database/internal/meta"
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/replica"
+	"github.com/naveenk2608/distributed-database/internal/server"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
 )
 
@@ -280,6 +282,7 @@ func (a *clusterAdmin) Status() *dkvv1.ClusterStatusResponse {
 			seen[id] = true
 			m.NodeState = n.dir.State(id)
 			m.Suspect = n.suspect(id)
+			m.Drained = n.dir.Drained(id)
 		}
 	}
 	// Nodes that joined later are not pinged; list them from the meta
@@ -291,7 +294,7 @@ func (a *clusterAdmin) Status() *dkvv1.ClusterStatusResponse {
 		resp.Members = append(resp.Members, &dkvv1.MemberStatus{
 			Addr: n.dir.Addr(id), Node: &dkvv1.NodeInfo{NodeId: id, InternalAddr: n.dir.Addr(id)},
 			State: dkvv1.MemberState_MEMBER_STATE_UNKNOWN, NodeState: n.dir.State(id), Suspect: n.suspect(id),
-			Self: id == n.id,
+			Drained: n.dir.Drained(id), Self: id == n.id,
 		})
 	}
 	return resp
@@ -378,4 +381,103 @@ func (n *Node) metaTxn(ctx context.Context, txn *dkvv1.Txn) (bool, error) {
 		return false, fmt.Errorf("meta transaction: %w", err)
 	}
 	return resp.GetSucceeded(), nil
+}
+
+// Drain marks a node as drained (or not) in the meta group; the
+// rebalancer then moves its leaderships away and gives it none.
+func (a *clusterAdmin) Drain(ctx context.Context, nodeID string, drain bool) error {
+	n := a.n
+	for range 5 {
+		st, err := n.readMeta(ctx)
+		if err != nil {
+			return err
+		}
+		rec := st.Nodes[nodeID]
+		if rec == nil {
+			return status.Errorf(codes.NotFound, "no node %s", nodeID)
+		}
+		if rec.GetDrained() == drain {
+			return nil
+		}
+		next := proto.Clone(rec).(*dkvv1.NodeRecord)
+		next.Drained = drain
+		ok, err := n.metaTxn(ctx, meta.PutNodeTxn(next, st.NodeVersions[nodeID]))
+		if err != nil {
+			return err
+		}
+		if ok {
+			n.log.Info("node drain changed", "target", nodeID, "drained", drain)
+			return nil
+		}
+	}
+	return status.Error(codes.Aborted, "the node record kept changing; retry")
+}
+
+// TransferLeader finds shard's leader among its voters and asks it to hand
+// leadership to nodeID; it returns once the transfer has completed.
+func (a *clusterAdmin) TransferLeader(ctx context.Context, shard int, nodeID string) error {
+	n := a.n
+	if shard != meta.Shard && (shard < 0 || shard >= n.cfg.Cluster.Shards) {
+		return status.Errorf(codes.InvalidArgument, "no shard %d (shards are 0 to %d, and %d for the meta group)",
+			shard, n.cfg.Cluster.Shards-1, meta.Shard)
+	}
+	voters, _, _ := n.dir.Group(shard)
+	if !slices.Contains(voters, nodeID) {
+		return status.Errorf(codes.FailedPrecondition, "node %s is not a voter of shard %d (voters %v)", nodeID, shard, voters)
+	}
+	tctx, cancel := context.WithTimeout(ctx, 4*time.Duration(n.cfg.Raft.ElectionTicks)*n.cfg.Raft.TickInterval)
+	defer cancel()
+	req := &dkvv1.TransferLeaderRequest{Shard: int32(shard), To: nodeID}
+	try := slices.Clone(voters)
+	for len(try) > 0 {
+		id := try[0]
+		try = try[1:]
+		resp, err := n.callLeader(tctx, id, func(c dkvv1.InternalServiceClient) (proto.Message, error) {
+			return c.TransferLeader(tctx, req)
+		}, func(api *internalAPI) (proto.Message, error) { return api.TransferLeader(tctx, req) })
+		if err != nil {
+			if tctx.Err() != nil {
+				return err
+			}
+			continue // that voter is unreachable; another may lead
+		}
+		nl := resp.(*dkvv1.TransferLeaderResponse).GetNotLeader()
+		if nl == nil {
+			return nil
+		}
+		if h := nl.GetOwnerHint(); h != "" && h != id {
+			try = append([]string{h}, slices.DeleteFunc(try, func(s string) bool { return s == h })...)
+		}
+	}
+	return status.Errorf(codes.Unavailable, "no leader of shard %d answered", shard)
+}
+
+// Stats reports every local replica's Raft state and engine, and the
+// node's block cache.
+func (a *clusterAdmin) Stats() *dkvv1.StatsResponse {
+	n := a.n
+	resp := &dkvv1.StatsResponse{NodeId: n.id, StartedUnixNano: n.started.UnixNano(), BlockCache: server.CacheStats(n.cache.Stats())}
+	byShard := n.allReplicas()
+	for _, rs := range n.nodeStatus().GetReplicas() {
+		if rp := byShard[int(rs.GetShard())]; rp != nil {
+			resp.Replicas = append(resp.Replicas, &dkvv1.ReplicaStats{Raft: rs, Engine: server.EngineStats(rp.EngineMetrics())})
+		}
+	}
+	return resp
+}
+
+// Events returns the node's recent events.
+func (a *clusterAdmin) Events(after uint64, limit int) *dkvv1.EventsResponse {
+	evs, oldest := a.n.events.After(after, limit)
+	resp := &dkvv1.EventsResponse{NodeId: a.n.id, Oldest: oldest}
+	for _, e := range evs {
+		resp.Events = append(resp.Events, EventProto(e))
+	}
+	return resp
+}
+
+// EventProto converts an event for the admin API.
+func EventProto(e obs.Event) *dkvv1.Event {
+	return &dkvv1.Event{Seq: e.Seq, UnixNano: e.Time.UnixNano(), Kind: e.Kind, Shard: int32(max(e.Shard, meta.Shard)),
+		HasShard: e.Shard != obs.NoShard, Node: e.Node, Term: e.Term, Index: e.Index, Detail: e.Detail}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/naveenk2608/distributed-database/internal/obs"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
 )
@@ -76,8 +77,11 @@ func TestLearnerCatchesUpBySnapshot(t *testing.T) {
 		t.Fatalf("a new replica: %+v", st)
 	}
 	changeMembership(t, l, raft.ConfAddLearner, "n4")
+	// The snapshot may end before the entry that adds n4, which then
+	// follows by append: catching up means applying that entry too.
+	added := l.Status().Applied
 	n4 := g.rep("n4")
-	g.waitFor("the learner to catch up", func() bool { return n4.Status().Applied >= last })
+	g.waitFor("the learner to catch up", func() bool { return n4.Status().Applied >= max(last, added) })
 	if st := n4.Status(); st.SnapshotsInstalled == 0 || !st.Conf.IsLearner("n4") {
 		t.Fatalf("learner status: %+v", st)
 	}
@@ -179,4 +183,81 @@ func TestCrashDuringSnapshotInstall(t *testing.T) {
 			return
 		}
 	}
+}
+
+// TestReplicaEvents: a replica reports its elections and step-downs, the
+// membership changes it applies (every member reports each one at the
+// same index), the snapshots it installs and the transfers it starts.
+func TestReplicaEvents(t *testing.T) {
+	g := newGroupCompacting(t, 3, 50)
+	l := g.leader()
+	var leader string
+	for _, id := range g.peers {
+		if g.rep(id) == l {
+			leader = id
+		}
+	}
+	if ev := g.eventsOf(obs.EventLeaderElected); len(ev) == 0 || ev[len(ev)-1].rep != leader ||
+		ev[len(ev)-1].Node != leader || ev[len(ev)-1].Shard != 7 || ev[len(ev)-1].Term != l.Status().Term {
+		t.Fatalf("leader_elected events %+v; want the last from %s at term %d", ev, leader, l.Status().Term)
+	}
+
+	last := fill(t, l, 200, "k")
+	g.waitFor("the leader to compact", func() bool { return l.Status().FirstIndex > 2 })
+	g.open("n4")
+	changeMembership(t, l, raft.ConfAddLearner, "n4")
+	g.waitFor("the learner to catch up", func() bool { return g.rep("n4").Status().Applied >= last })
+	// Every member that applies the entry reports it. n4 applies it only if
+	// its snapshot ended before it; a snapshot that already holds it does
+	// not replay it. The console keeps one event per shard and index.
+	reported := func(kind string) func() bool {
+		return func() bool {
+			by := map[string]bool{}
+			for _, e := range g.eventsOf(kind) {
+				by[e.rep] = true
+			}
+			return by["n1"] && by["n2"] && by["n3"]
+		}
+	}
+	g.waitFor("every voter to report the learner", reported(obs.EventReplicaAdded))
+	added := g.eventsOf(obs.EventReplicaAdded)
+	for _, e := range added {
+		if e.Node != "n4" || e.Index != added[0].Index || e.Index == 0 {
+			t.Fatalf("replica_added events %+v; want n4 at one index", added)
+		}
+	}
+	if ev := g.eventsOf(obs.EventSnapshotInstalled); len(ev) == 0 || ev[0].rep != "n4" || ev[0].Index == 0 {
+		t.Fatalf("snapshot_installed events %+v; want n4's", ev)
+	}
+
+	changeMembership(t, l, raft.ConfPromote, "n4")
+	g.waitFor("every voter to report the promotion", reported(obs.EventReplicaPromoted))
+
+	c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := l.TransferLeader(c, "n4"); err != nil {
+		t.Fatal(err)
+	}
+	if ev := g.eventsOf(obs.EventLeaderTransfer); len(ev) != 1 || ev[0].rep != leader || ev[0].Node != "n4" {
+		t.Fatalf("leader_transfer events %+v", ev)
+	}
+	g.waitFor("n4 to report its election and the old leader its step-down", func() bool {
+		won, left := false, false
+		for _, e := range g.eventsOf(obs.EventLeaderElected) {
+			won = won || e.rep == "n4"
+		}
+		for _, e := range g.eventsOf(obs.EventLeaderSteppedDown) {
+			left = left || e.rep == leader
+		}
+		return won && left
+	})
+	changeMembership(t, g.rep("n4"), raft.ConfRemove, leader)
+	g.waitFor("the removal to be reported", func() bool {
+		for _, e := range g.eventsOf(obs.EventReplicaRemoved) {
+			if e.Node == leader {
+				return true
+			}
+		}
+		return false
+	})
 }
