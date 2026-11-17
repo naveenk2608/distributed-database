@@ -28,6 +28,9 @@ const (
 	Command_OP_PUT         Command_Op = 1
 	Command_OP_DELETE      Command_Op = 2
 	Command_OP_CAS         Command_Op = 3
+	// OP_TXN applies txn: its puts and deletes happen together, and only if
+	// every condition holds. The meta group uses it; clients cannot.
+	Command_OP_TXN Command_Op = 4
 )
 
 // Enum value maps for Command_Op.
@@ -37,12 +40,14 @@ var (
 		1: "OP_PUT",
 		2: "OP_DELETE",
 		3: "OP_CAS",
+		4: "OP_TXN",
 	}
 	Command_Op_value = map[string]int32{
 		"OP_UNSPECIFIED": 0,
 		"OP_PUT":         1,
 		"OP_DELETE":      2,
 		"OP_CAS":         3,
+		"OP_TXN":         4,
 	}
 )
 
@@ -87,6 +92,7 @@ type Command struct {
 	// stamp_unix_nano is the proposing leader's clock; sessions expire by
 	// these stamps, never by a replica's own clock.
 	StampUnixNano int64 `protobuf:"varint,7,opt,name=stamp_unix_nano,json=stampUnixNano,proto3" json:"stamp_unix_nano,omitempty"`
+	Txn           *Txn  `protobuf:"bytes,8,opt,name=txn,proto3" json:"txn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -170,6 +176,179 @@ func (x *Command) GetStampUnixNano() int64 {
 	return 0
 }
 
+func (x *Command) GetTxn() *Txn {
+	if x != nil {
+		return x.Txn
+	}
+	return nil
+}
+
+// Txn is an atomic conditional multi-key write within one group.
+type Txn struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Conditions    []*TxnCondition        `protobuf:"bytes,1,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	Writes        []*TxnWrite            `protobuf:"bytes,2,rep,name=writes,proto3" json:"writes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Txn) Reset() {
+	*x = Txn{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Txn) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Txn) ProtoMessage() {}
+
+func (x *Txn) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Txn.ProtoReflect.Descriptor instead.
+func (*Txn) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Txn) GetConditions() []*TxnCondition {
+	if x != nil {
+		return x.Conditions
+	}
+	return nil
+}
+
+func (x *Txn) GetWrites() []*TxnWrite {
+	if x != nil {
+		return x.Writes
+	}
+	return nil
+}
+
+// TxnCondition requires key to be at version (0: the key has no value).
+type TxnCondition struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Version       uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TxnCondition) Reset() {
+	*x = TxnCondition{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TxnCondition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TxnCondition) ProtoMessage() {}
+
+func (x *TxnCondition) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TxnCondition.ProtoReflect.Descriptor instead.
+func (*TxnCondition) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TxnCondition) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *TxnCondition) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type TxnWrite struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Delete        bool                   `protobuf:"varint,3,opt,name=delete,proto3" json:"delete,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TxnWrite) Reset() {
+	*x = TxnWrite{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TxnWrite) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TxnWrite) ProtoMessage() {}
+
+func (x *TxnWrite) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TxnWrite.ProtoReflect.Descriptor instead.
+func (*TxnWrite) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TxnWrite) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *TxnWrite) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *TxnWrite) GetDelete() bool {
+	if x != nil {
+		return x.Delete
+	}
+	return false
+}
+
 type RaftEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Index         uint64                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
@@ -182,7 +361,7 @@ type RaftEntry struct {
 
 func (x *RaftEntry) Reset() {
 	*x = RaftEntry{}
-	mi := &file_dkv_v1_raft_proto_msgTypes[1]
+	mi := &file_dkv_v1_raft_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -194,7 +373,7 @@ func (x *RaftEntry) String() string {
 func (*RaftEntry) ProtoMessage() {}
 
 func (x *RaftEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_raft_proto_msgTypes[1]
+	mi := &file_dkv_v1_raft_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -207,7 +386,7 @@ func (x *RaftEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftEntry.ProtoReflect.Descriptor instead.
 func (*RaftEntry) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{1}
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RaftEntry) GetIndex() uint64 {
@@ -240,27 +419,30 @@ func (x *RaftEntry) GetData() []byte {
 
 // RaftMessage mirrors raft.Message, tagged with its shard.
 type RaftMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Shard         uint32                 `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
-	Type          uint32                 `protobuf:"varint,2,opt,name=type,proto3" json:"type,omitempty"`
-	From          string                 `protobuf:"bytes,3,opt,name=from,proto3" json:"from,omitempty"`
-	To            string                 `protobuf:"bytes,4,opt,name=to,proto3" json:"to,omitempty"`
-	Term          uint64                 `protobuf:"varint,5,opt,name=term,proto3" json:"term,omitempty"`
-	LogTerm       uint64                 `protobuf:"varint,6,opt,name=log_term,json=logTerm,proto3" json:"log_term,omitempty"`
-	Index         uint64                 `protobuf:"varint,7,opt,name=index,proto3" json:"index,omitempty"`
-	Entries       []*RaftEntry           `protobuf:"bytes,8,rep,name=entries,proto3" json:"entries,omitempty"`
-	Commit        uint64                 `protobuf:"varint,9,opt,name=commit,proto3" json:"commit,omitempty"`
-	Reject        bool                   `protobuf:"varint,10,opt,name=reject,proto3" json:"reject,omitempty"`
-	RejectHint    uint64                 `protobuf:"varint,11,opt,name=reject_hint,json=rejectHint,proto3" json:"reject_hint,omitempty"`
-	HintTerm      uint64                 `protobuf:"varint,12,opt,name=hint_term,json=hintTerm,proto3" json:"hint_term,omitempty"`
-	Context       uint64                 `protobuf:"varint,13,opt,name=context,proto3" json:"context,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Shard      uint32                 `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	Type       uint32                 `protobuf:"varint,2,opt,name=type,proto3" json:"type,omitempty"`
+	From       string                 `protobuf:"bytes,3,opt,name=from,proto3" json:"from,omitempty"`
+	To         string                 `protobuf:"bytes,4,opt,name=to,proto3" json:"to,omitempty"`
+	Term       uint64                 `protobuf:"varint,5,opt,name=term,proto3" json:"term,omitempty"`
+	LogTerm    uint64                 `protobuf:"varint,6,opt,name=log_term,json=logTerm,proto3" json:"log_term,omitempty"`
+	Index      uint64                 `protobuf:"varint,7,opt,name=index,proto3" json:"index,omitempty"`
+	Entries    []*RaftEntry           `protobuf:"bytes,8,rep,name=entries,proto3" json:"entries,omitempty"`
+	Commit     uint64                 `protobuf:"varint,9,opt,name=commit,proto3" json:"commit,omitempty"`
+	Reject     bool                   `protobuf:"varint,10,opt,name=reject,proto3" json:"reject,omitempty"`
+	RejectHint uint64                 `protobuf:"varint,11,opt,name=reject_hint,json=rejectHint,proto3" json:"reject_hint,omitempty"`
+	HintTerm   uint64                 `protobuf:"varint,12,opt,name=hint_term,json=hintTerm,proto3" json:"hint_term,omitempty"`
+	Context    uint64                 `protobuf:"varint,13,opt,name=context,proto3" json:"context,omitempty"`
+	// snapshot is set on a MsgSnap carried by InstallSnapshot.
+	Snapshot      *RaftSnapshot `protobuf:"bytes,14,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	Transfer      bool          `protobuf:"varint,15,opt,name=transfer,proto3" json:"transfer,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RaftMessage) Reset() {
 	*x = RaftMessage{}
-	mi := &file_dkv_v1_raft_proto_msgTypes[2]
+	mi := &file_dkv_v1_raft_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -272,7 +454,7 @@ func (x *RaftMessage) String() string {
 func (*RaftMessage) ProtoMessage() {}
 
 func (x *RaftMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_raft_proto_msgTypes[2]
+	mi := &file_dkv_v1_raft_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -285,7 +467,7 @@ func (x *RaftMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftMessage.ProtoReflect.Descriptor instead.
 func (*RaftMessage) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{2}
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RaftMessage) GetShard() uint32 {
@@ -379,6 +561,271 @@ func (x *RaftMessage) GetContext() uint64 {
 	return 0
 }
 
+func (x *RaftMessage) GetSnapshot() *RaftSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+func (x *RaftMessage) GetTransfer() bool {
+	if x != nil {
+		return x.Transfer
+	}
+	return false
+}
+
+// RaftSnapshot is a snapshot's metadata: the index and term it covers and
+// the membership at that index.
+type RaftSnapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Index         uint64                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	Term          uint64                 `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`
+	Voters        []string               `protobuf:"bytes,3,rep,name=voters,proto3" json:"voters,omitempty"`
+	Learners      []string               `protobuf:"bytes,4,rep,name=learners,proto3" json:"learners,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RaftSnapshot) Reset() {
+	*x = RaftSnapshot{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RaftSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RaftSnapshot) ProtoMessage() {}
+
+func (x *RaftSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RaftSnapshot.ProtoReflect.Descriptor instead.
+func (*RaftSnapshot) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RaftSnapshot) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *RaftSnapshot) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *RaftSnapshot) GetVoters() []string {
+	if x != nil {
+		return x.Voters
+	}
+	return nil
+}
+
+func (x *RaftSnapshot) GetLearners() []string {
+	if x != nil {
+		return x.Learners
+	}
+	return nil
+}
+
+// InstallSnapshotRequest is one piece of a snapshot stream: first a
+// header, then the engine checkpoint's files in pieces.
+type InstallSnapshotRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Part:
+	//
+	//	*InstallSnapshotRequest_Header
+	//	*InstallSnapshotRequest_File
+	Part          isInstallSnapshotRequest_Part `protobuf_oneof:"part"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InstallSnapshotRequest) Reset() {
+	*x = InstallSnapshotRequest{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstallSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstallSnapshotRequest) ProtoMessage() {}
+
+func (x *InstallSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstallSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*InstallSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *InstallSnapshotRequest) GetPart() isInstallSnapshotRequest_Part {
+	if x != nil {
+		return x.Part
+	}
+	return nil
+}
+
+func (x *InstallSnapshotRequest) GetHeader() *RaftMessage {
+	if x != nil {
+		if x, ok := x.Part.(*InstallSnapshotRequest_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *InstallSnapshotRequest) GetFile() *SnapshotFileChunk {
+	if x != nil {
+		if x, ok := x.Part.(*InstallSnapshotRequest_File); ok {
+			return x.File
+		}
+	}
+	return nil
+}
+
+type isInstallSnapshotRequest_Part interface {
+	isInstallSnapshotRequest_Part()
+}
+
+type InstallSnapshotRequest_Header struct {
+	Header *RaftMessage `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type InstallSnapshotRequest_File struct {
+	File *SnapshotFileChunk `protobuf:"bytes,2,opt,name=file,proto3,oneof"`
+}
+
+func (*InstallSnapshotRequest_Header) isInstallSnapshotRequest_Part() {}
+
+func (*InstallSnapshotRequest_File) isInstallSnapshotRequest_Part() {}
+
+type SnapshotFileChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Data  []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	// last marks the final piece of the file.
+	Last          bool `protobuf:"varint,3,opt,name=last,proto3" json:"last,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotFileChunk) Reset() {
+	*x = SnapshotFileChunk{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotFileChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotFileChunk) ProtoMessage() {}
+
+func (x *SnapshotFileChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotFileChunk.ProtoReflect.Descriptor instead.
+func (*SnapshotFileChunk) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SnapshotFileChunk) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SnapshotFileChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *SnapshotFileChunk) GetLast() bool {
+	if x != nil {
+		return x.Last
+	}
+	return false
+}
+
+type InstallSnapshotResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InstallSnapshotResponse) Reset() {
+	*x = InstallSnapshotResponse{}
+	mi := &file_dkv_v1_raft_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstallSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstallSnapshotResponse) ProtoMessage() {}
+
+func (x *InstallSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_raft_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstallSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*InstallSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{9}
+}
+
 // RaftRequest is a batch: every pending message from one node to another,
 // for all shards, in one call.
 type RaftRequest struct {
@@ -390,7 +837,7 @@ type RaftRequest struct {
 
 func (x *RaftRequest) Reset() {
 	*x = RaftRequest{}
-	mi := &file_dkv_v1_raft_proto_msgTypes[3]
+	mi := &file_dkv_v1_raft_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -402,7 +849,7 @@ func (x *RaftRequest) String() string {
 func (*RaftRequest) ProtoMessage() {}
 
 func (x *RaftRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_raft_proto_msgTypes[3]
+	mi := &file_dkv_v1_raft_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -415,7 +862,7 @@ func (x *RaftRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftRequest.ProtoReflect.Descriptor instead.
 func (*RaftRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{3}
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RaftRequest) GetMessages() []*RaftMessage {
@@ -433,7 +880,7 @@ type RaftResponse struct {
 
 func (x *RaftResponse) Reset() {
 	*x = RaftResponse{}
-	mi := &file_dkv_v1_raft_proto_msgTypes[4]
+	mi := &file_dkv_v1_raft_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +892,7 @@ func (x *RaftResponse) String() string {
 func (*RaftResponse) ProtoMessage() {}
 
 func (x *RaftResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_raft_proto_msgTypes[4]
+	mi := &file_dkv_v1_raft_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,14 +905,14 @@ func (x *RaftResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftResponse.ProtoReflect.Descriptor instead.
 func (*RaftResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{4}
+	return file_dkv_v1_raft_proto_rawDescGZIP(), []int{11}
 }
 
 var File_dkv_v1_raft_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_raft_proto_rawDesc = "" +
 	"\n" +
-	"\x11dkv/v1/raft.proto\x12\x06dkv.v1\"\xa5\x02\n" +
+	"\x11dkv/v1/raft.proto\x12\x06dkv.v1\"\xd0\x02\n" +
 	"\aCommand\x12\"\n" +
 	"\x02op\x18\x01 \x01(\x0e2\x12.dkv.v1.Command.OpR\x02op\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
@@ -474,19 +921,34 @@ const file_dkv_v1_raft_proto_rawDesc = "" +
 	"\tclient_id\x18\x05 \x01(\tR\bclientId\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x06 \x01(\x04R\trequestId\x12&\n" +
-	"\x0fstamp_unix_nano\x18\a \x01(\x03R\rstampUnixNano\"?\n" +
+	"\x0fstamp_unix_nano\x18\a \x01(\x03R\rstampUnixNano\x12\x1d\n" +
+	"\x03txn\x18\b \x01(\v2\v.dkv.v1.TxnR\x03txn\"K\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +
 	"\x06OP_PUT\x10\x01\x12\r\n" +
 	"\tOP_DELETE\x10\x02\x12\n" +
 	"\n" +
-	"\x06OP_CAS\x10\x03\"]\n" +
+	"\x06OP_CAS\x10\x03\x12\n" +
+	"\n" +
+	"\x06OP_TXN\x10\x04\"e\n" +
+	"\x03Txn\x124\n" +
+	"\n" +
+	"conditions\x18\x01 \x03(\v2\x14.dkv.v1.TxnConditionR\n" +
+	"conditions\x12(\n" +
+	"\x06writes\x18\x02 \x03(\v2\x10.dkv.v1.TxnWriteR\x06writes\":\n" +
+	"\fTxnCondition\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x04R\aversion\"J\n" +
+	"\bTxnWrite\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x16\n" +
+	"\x06delete\x18\x03 \x01(\bR\x06delete\"]\n" +
 	"\tRaftEntry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x12\n" +
 	"\x04term\x18\x02 \x01(\x04R\x04term\x12\x12\n" +
 	"\x04type\x18\x03 \x01(\rR\x04type\x12\x12\n" +
-	"\x04data\x18\x04 \x01(\fR\x04data\"\xd5\x02\n" +
+	"\x04data\x18\x04 \x01(\fR\x04data\"\xa3\x03\n" +
 	"\vRaftMessage\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\rR\x04type\x12\x12\n" +
@@ -502,7 +964,23 @@ const file_dkv_v1_raft_proto_rawDesc = "" +
 	"\vreject_hint\x18\v \x01(\x04R\n" +
 	"rejectHint\x12\x1b\n" +
 	"\thint_term\x18\f \x01(\x04R\bhintTerm\x12\x18\n" +
-	"\acontext\x18\r \x01(\x04R\acontext\">\n" +
+	"\acontext\x18\r \x01(\x04R\acontext\x120\n" +
+	"\bsnapshot\x18\x0e \x01(\v2\x14.dkv.v1.RaftSnapshotR\bsnapshot\x12\x1a\n" +
+	"\btransfer\x18\x0f \x01(\bR\btransfer\"l\n" +
+	"\fRaftSnapshot\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x12\n" +
+	"\x04term\x18\x02 \x01(\x04R\x04term\x12\x16\n" +
+	"\x06voters\x18\x03 \x03(\tR\x06voters\x12\x1a\n" +
+	"\blearners\x18\x04 \x03(\tR\blearners\"\x80\x01\n" +
+	"\x16InstallSnapshotRequest\x12-\n" +
+	"\x06header\x18\x01 \x01(\v2\x13.dkv.v1.RaftMessageH\x00R\x06header\x12/\n" +
+	"\x04file\x18\x02 \x01(\v2\x19.dkv.v1.SnapshotFileChunkH\x00R\x04fileB\x06\n" +
+	"\x04part\"O\n" +
+	"\x11SnapshotFileChunk\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x12\n" +
+	"\x04last\x18\x03 \x01(\bR\x04last\"\x19\n" +
+	"\x17InstallSnapshotResponse\">\n" +
 	"\vRaftRequest\x12/\n" +
 	"\bmessages\x18\x01 \x03(\v2\x13.dkv.v1.RaftMessageR\bmessages\"\x0e\n" +
 	"\fRaftResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
@@ -520,24 +998,37 @@ func file_dkv_v1_raft_proto_rawDescGZIP() []byte {
 }
 
 var file_dkv_v1_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_dkv_v1_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_dkv_v1_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_dkv_v1_raft_proto_goTypes = []any{
-	(Command_Op)(0),      // 0: dkv.v1.Command.Op
-	(*Command)(nil),      // 1: dkv.v1.Command
-	(*RaftEntry)(nil),    // 2: dkv.v1.RaftEntry
-	(*RaftMessage)(nil),  // 3: dkv.v1.RaftMessage
-	(*RaftRequest)(nil),  // 4: dkv.v1.RaftRequest
-	(*RaftResponse)(nil), // 5: dkv.v1.RaftResponse
+	(Command_Op)(0),                 // 0: dkv.v1.Command.Op
+	(*Command)(nil),                 // 1: dkv.v1.Command
+	(*Txn)(nil),                     // 2: dkv.v1.Txn
+	(*TxnCondition)(nil),            // 3: dkv.v1.TxnCondition
+	(*TxnWrite)(nil),                // 4: dkv.v1.TxnWrite
+	(*RaftEntry)(nil),               // 5: dkv.v1.RaftEntry
+	(*RaftMessage)(nil),             // 6: dkv.v1.RaftMessage
+	(*RaftSnapshot)(nil),            // 7: dkv.v1.RaftSnapshot
+	(*InstallSnapshotRequest)(nil),  // 8: dkv.v1.InstallSnapshotRequest
+	(*SnapshotFileChunk)(nil),       // 9: dkv.v1.SnapshotFileChunk
+	(*InstallSnapshotResponse)(nil), // 10: dkv.v1.InstallSnapshotResponse
+	(*RaftRequest)(nil),             // 11: dkv.v1.RaftRequest
+	(*RaftResponse)(nil),            // 12: dkv.v1.RaftResponse
 }
 var file_dkv_v1_raft_proto_depIdxs = []int32{
 	0, // 0: dkv.v1.Command.op:type_name -> dkv.v1.Command.Op
-	2, // 1: dkv.v1.RaftMessage.entries:type_name -> dkv.v1.RaftEntry
-	3, // 2: dkv.v1.RaftRequest.messages:type_name -> dkv.v1.RaftMessage
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	2, // 1: dkv.v1.Command.txn:type_name -> dkv.v1.Txn
+	3, // 2: dkv.v1.Txn.conditions:type_name -> dkv.v1.TxnCondition
+	4, // 3: dkv.v1.Txn.writes:type_name -> dkv.v1.TxnWrite
+	5, // 4: dkv.v1.RaftMessage.entries:type_name -> dkv.v1.RaftEntry
+	7, // 5: dkv.v1.RaftMessage.snapshot:type_name -> dkv.v1.RaftSnapshot
+	6, // 6: dkv.v1.InstallSnapshotRequest.header:type_name -> dkv.v1.RaftMessage
+	9, // 7: dkv.v1.InstallSnapshotRequest.file:type_name -> dkv.v1.SnapshotFileChunk
+	6, // 8: dkv.v1.RaftRequest.messages:type_name -> dkv.v1.RaftMessage
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_raft_proto_init() }
@@ -545,13 +1036,17 @@ func file_dkv_v1_raft_proto_init() {
 	if File_dkv_v1_raft_proto != nil {
 		return
 	}
+	file_dkv_v1_raft_proto_msgTypes[7].OneofWrappers = []any{
+		(*InstallSnapshotRequest_Header)(nil),
+		(*InstallSnapshotRequest_File)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_raft_proto_rawDesc), len(file_dkv_v1_raft_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

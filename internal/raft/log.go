@@ -3,8 +3,9 @@ package raft
 import "fmt"
 
 // raftLog is the in-memory log. entries[0] is a sentinel holding the index
-// and term of the entry just before the first real one (0 and 0 until log
-// compaction arrives), so term lookups need no special cases.
+// and term of the entry just before the first real one: the last entry
+// covered by the latest snapshot (0 and 0 without one), so term lookups
+// need no special cases.
 type raftLog struct {
 	entries   []Entry
 	committed uint64
@@ -14,14 +15,18 @@ type raftLog struct {
 	stable uint64
 }
 
-func newLog(persisted []Entry, committed, applied uint64) (*raftLog, error) {
-	l := &raftLog{entries: []Entry{{}}}
+func newLog(snap SnapshotMeta, persisted []Entry, committed, applied uint64) (*raftLog, error) {
+	l := &raftLog{entries: []Entry{{Index: snap.Index, Term: snap.Term}}}
 	for i, e := range persisted {
-		if e.Index != uint64(i+1) {
-			return nil, fmt.Errorf("raft: persisted entry %d has index %d", i+1, e.Index)
+		if e.Index != snap.Index+uint64(i+1) {
+			return nil, fmt.Errorf("raft: persisted entry %d has index %d", snap.Index+uint64(i+1), e.Index)
 		}
-		if i > 0 && e.Term < persisted[i-1].Term {
-			return nil, fmt.Errorf("raft: persisted entry %d has term %d after %d", e.Index, e.Term, persisted[i-1].Term)
+		prevTerm := snap.Term
+		if i > 0 {
+			prevTerm = persisted[i-1].Term
+		}
+		if e.Term < prevTerm {
+			return nil, fmt.Errorf("raft: persisted entry %d has term %d after %d", e.Index, e.Term, prevTerm)
 		}
 	}
 	l.entries = append(l.entries, persisted...)
@@ -31,6 +36,9 @@ func newLog(persisted []Entry, committed, applied uint64) (*raftLog, error) {
 	if applied > l.lastIndex() {
 		return nil, fmt.Errorf("raft: state machine applied %d, beyond last persisted entry %d", applied, l.lastIndex())
 	}
+	if applied < snap.Index {
+		return nil, fmt.Errorf("raft: state machine applied %d, behind the snapshot at %d", applied, snap.Index)
+	}
 	// The commit index is persisted without fsync (Ready.MustSync), so it
 	// can lag what the state machine applied. Everything applied was
 	// committed.
@@ -38,6 +46,26 @@ func newLog(persisted []Entry, committed, applied uint64) (*raftLog, error) {
 	l.applied = applied
 	l.stable = l.lastIndex()
 	return l, nil
+}
+
+// compact discards entries up to and including i, which becomes the
+// sentinel. The caller guarantees i <= applied.
+func (l *raftLog) compact(i uint64) {
+	off := l.entries[0].Index
+	if i <= off {
+		return
+	}
+	rest := l.entries[i-off:]
+	ents := make([]Entry, len(rest))
+	copy(ents, rest)
+	ents[0] = Entry{Index: rest[0].Index, Term: rest[0].Term}
+	l.entries = ents
+}
+
+// restore replaces the log with an empty one after snapshot s.
+func (l *raftLog) restore(s SnapshotMeta) {
+	l.entries = []Entry{{Index: s.Index, Term: s.Term}}
+	l.committed, l.applied, l.stable = s.Index, s.Index, s.Index
 }
 
 func (l *raftLog) firstIndex() uint64 { return l.entries[0].Index + 1 }
@@ -78,10 +106,14 @@ func (l *raftLog) slice(lo, hi uint64, max int) []Entry {
 }
 
 // append adds entries that follow index prev, truncating any conflicting
-// suffix first. It returns the last index of the new entries. The caller
-// has checked that the entry at prev matches.
+// suffix first. It returns the index of the first entry it wrote, or 0 if
+// it already had them all. The caller has checked that the entry at prev
+// matches.
 func (l *raftLog) append(ents []Entry) uint64 {
 	for i, e := range ents {
+		if e.Index <= l.entries[0].Index {
+			continue // covered by the snapshot, so committed and matching
+		}
 		t, ok := l.term(e.Index)
 		if ok && t == e.Term {
 			continue // already have it
@@ -97,12 +129,9 @@ func (l *raftLog) append(ents []Entry) uint64 {
 		if e.Index <= l.stable {
 			l.stable = e.Index - 1 // the persisted suffix must be rewritten
 		}
-		break
+		return e.Index
 	}
-	if len(ents) == 0 {
-		return l.lastIndex()
-	}
-	return ents[len(ents)-1].Index
+	return 0
 }
 
 // findConflictByTerm returns the largest index <= index whose term is <=

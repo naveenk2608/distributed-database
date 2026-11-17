@@ -134,7 +134,7 @@ func TestRunAsSingleNodeCluster(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !strings.Contains(logs.String(), `"msg":"shard replicas open"`) {
+	if !strings.Contains(logs.String(), `"msg":"replicas open"`) {
 		t.Errorf("no shard replicas in the logs:\n%s", logs.String())
 	}
 	cancel()

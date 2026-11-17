@@ -149,6 +149,9 @@ func TestStatusStandalone(t *testing.T) {
 	if r := ctl(t, nil, "--addr="+node.Addr, "status", "extra"); r.code != exitError {
 		t.Errorf("status with an argument: exit %d", r.code)
 	}
+	if r := ctl(t, nil, "--addr="+node.Addr, "decommission", "abc"); r.code != exitError || !strings.Contains(r.stderr, "standalone") {
+		t.Errorf("decommission on a standalone node: exit %d, %q", r.code, r.stderr)
+	}
 }
 
 func TestShardsStandalone(t *testing.T) {

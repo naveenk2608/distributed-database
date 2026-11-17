@@ -36,6 +36,8 @@ func testLogger() *slog.Logger {
 type Cluster struct {
 	t       testing.TB
 	Members []*Member
+	// configure is applied to every node, including ones added later.
+	configure func(i int, c *config.Config)
 }
 
 // Member is one node of a Cluster.
@@ -47,15 +49,35 @@ type Member struct {
 
 	mu     sync.Mutex
 	nodeID string
+	node   *node.Node
 	cancel context.CancelFunc
 	done   chan error
 }
 
+// testConfig returns a node configuration with the fast timings described
+// on Start.
+func testConfig(t testing.TB) config.Config {
+	cfg := config.Default()
+	cfg.Server.ShutdownTimeout = 2 * time.Second
+	cfg.Cluster.PingInterval = 100 * time.Millisecond
+	cfg.Cluster.PingTimeout = 100 * time.Millisecond
+	cfg.Cluster.DownAfter = time.Second
+	cfg.Raft.TickInterval = 20 * time.Millisecond
+	cfg.Cluster.Shards = 8
+	cfg.Liveness.HeartbeatInterval = 200 * time.Millisecond
+	cfg.Liveness.SuspectAfter = 600 * time.Millisecond
+	cfg.Liveness.DeadAfter = 5 * time.Second
+	cfg.Rebalance.Interval = 200 * time.Millisecond
+	cfg.Storage.Dir = t.TempDir()
+	return cfg
+}
+
 // Start runs n nodes. Every node gets fast membership timings (ping every
 // 100ms, down after 1s), a fast Raft clock (20ms ticks, so election
-// timeouts of 200 to 400ms) and 8 shards rather than the default 64, to
-// keep the background load of idle Raft groups low; configure may change
-// any of them.
+// timeouts of 200 to 400ms), fast liveness and rebalancing (heartbeats
+// every 200ms, suspect after 600ms, dead after 5s, a rebalance round every
+// 200ms), and 8 shards rather than the default 64, to keep the background
+// load of idle Raft groups low; configure may change any of them.
 func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluster {
 	t.Helper()
 	publics, internals := listenN(t, n), listenN(t, n)
@@ -63,19 +85,12 @@ func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluste
 	for _, l := range internals {
 		peers = append(peers, l.Addr().String())
 	}
-	c := &Cluster{t: t}
+	c := &Cluster{t: t, configure: configure}
 	for i := range n {
-		cfg := config.Default()
+		cfg := testConfig(t)
 		cfg.Server.GRPCAddr = publics[i].Addr().String()
-		cfg.Server.ShutdownTimeout = 2 * time.Second
 		cfg.Cluster.InternalAddr = internals[i].Addr().String()
 		cfg.Cluster.Peers = peers
-		cfg.Cluster.PingInterval = 100 * time.Millisecond
-		cfg.Cluster.PingTimeout = 100 * time.Millisecond
-		cfg.Cluster.DownAfter = time.Second
-		cfg.Raft.TickInterval = 20 * time.Millisecond
-		cfg.Cluster.Shards = 8
-		cfg.Storage.Dir = t.TempDir()
 		if configure != nil {
 			configure(i, &cfg)
 		}
@@ -137,8 +152,95 @@ func (m *Member) start(t testing.TB, public, internal net.Listener) {
 	done := make(chan error, 1)
 	go func() { done <- n.Run(ctx, public, internal) }()
 	m.mu.Lock()
-	m.nodeID, m.cancel, m.done = n.ID(), cancel, done
+	m.nodeID, m.node, m.cancel, m.done = n.ID(), n, cancel, done
 	m.mu.Unlock()
+}
+
+// Node returns the member's running node, or nil when it is stopped.
+func (m *Member) Node() *node.Node {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cancel == nil {
+		return nil
+	}
+	return m.node
+}
+
+// Add starts a new node that joins the cluster through the existing
+// members (it is not in their bootstrap peer list) and returns its index.
+func (c *Cluster) Add() int {
+	c.t.Helper()
+	pub, in := listenN(c.t, 1)[0], listenN(c.t, 1)[0]
+	cfg := testConfig(c.t)
+	cfg.Server.GRPCAddr, cfg.Cluster.InternalAddr = pub.Addr().String(), in.Addr().String()
+	for _, m := range c.Members {
+		cfg.Cluster.Join = append(cfg.Cluster.Join, m.InternalAddr)
+	}
+	i := len(c.Members)
+	if c.configure != nil {
+		c.configure(i, &cfg)
+	}
+	cfg.Cluster.Peers = nil
+	if err := cfg.Validate(); err != nil {
+		c.t.Fatalf("nodetest: node %d: %v", i, err)
+	}
+	m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr}
+	c.Members = append(c.Members, m)
+	m.start(c.t, pub, in)
+	return i
+}
+
+// Wipe deletes a stopped member's data, as if its disk were replaced; on
+// its next start it gets a new node ID.
+func (c *Cluster) Wipe(i int) {
+	c.t.Helper()
+	m := c.Members[i]
+	if m.Running() {
+		c.t.Fatalf("nodetest: node %d is running", i)
+	}
+	dir := m.Config.Storage.Dir
+	if err := os.RemoveAll(dir); err != nil {
+		c.t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+// NodeStatus asks member i for every replica it holds.
+func (c *Cluster) NodeStatus(i int) (*dkvv1.NodeStatusResponse, error) {
+	conn, err := grpc.NewClient(c.Members[i].InternalAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return dkvv1.NewInternalServiceClient(conn).NodeStatus(ctx, &dkvv1.NodeStatusRequest{})
+}
+
+// Groups returns, for every group (shard -1 is the meta group), the
+// status reported by its leader among the running members.
+func (c *Cluster) Groups() map[int]*dkvv1.ReplicaStatus {
+	out := map[int]*dkvv1.ReplicaStatus{}
+	for i, m := range c.Members {
+		if !m.Running() {
+			continue
+		}
+		resp, err := c.NodeStatus(i)
+		if err != nil {
+			continue
+		}
+		for _, r := range resp.GetReplicas() {
+			if r.GetRole() != "leader" {
+				continue
+			}
+			if cur := out[int(r.GetShard())]; cur == nil || r.GetTerm() > cur.GetTerm() {
+				out[int(r.GetShard())] = r
+			}
+		}
+	}
+	return out
 }
 
 // NodeID returns the member's node ID (from its latest start).
@@ -272,11 +374,12 @@ func (c *Cluster) Leader(shard int) (int, uint64) {
 // Settled reports whether every shard has a running leader that every
 // running replica of the shard knows of.
 func (c *Cluster) Settled() bool {
-	running := map[string]bool{}
+	running := map[string]bool{} // by node ID, which names Raft members
 	for _, m := range c.Members {
-		running[m.InternalAddr] = m.Running()
+		running[m.NodeID()] = m.Running()
 	}
 	leaders := map[uint32]string{}
+	shards := 0
 	for i, m := range c.Members {
 		if !m.Running() {
 			continue
@@ -285,6 +388,7 @@ func (c *Cluster) Settled() bool {
 		if err != nil {
 			return false
 		}
+		shards = int(sm.GetShardCount())
 		for _, info := range sm.GetShards() {
 			if !info.GetLocal() {
 				continue
@@ -299,5 +403,5 @@ func (c *Cluster) Settled() bool {
 			leaders[info.GetShard()] = l
 		}
 	}
-	return true
+	return shards > 0 && len(leaders) == shards
 }

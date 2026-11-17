@@ -273,3 +273,12 @@ func (c *Client) ShardMap(ctx context.Context) (*dkvv1.ShardMapResponse, error) 
 	}
 	return resp, nil
 }
+
+// Decommission asks the cluster to move every replica off the node with
+// the given ID; the node is then marked decommissioned.
+func (c *Client) Decommission(ctx context.Context, nodeID string) error {
+	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).Decommission(ctx, &dkvv1.DecommissionRequest{NodeId: nodeID}); err != nil {
+		return fmt.Errorf("dkv: decommission: %w", err)
+	}
+	return nil
+}

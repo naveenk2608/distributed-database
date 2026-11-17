@@ -85,6 +85,8 @@ log:
 		Cluster:   Default().Cluster,
 		Transport: Default().Transport,
 		Raft:      Default().Raft,
+		Liveness:  Default().Liveness,
+		Rebalance: Default().Rebalance,
 		Storage: Storage{Dir: "/flag/dir", Sync: "interval", SyncInterval: 25 * time.Millisecond, // flag > env > file
 			MemtableBytes: 4 << 20, BlockCacheBytes: 64 << 20, CompactionConcurrency: 2}, // defaults
 		Limits: Limits{MaxKeyBytes: 111, MaxValueBytes: 200}, // env > file; file > default
@@ -154,6 +156,12 @@ func TestRejectsMistakes(t *testing.T) {
 		{name: "zero heartbeat ticks", args: []string{"--raft.heartbeat-ticks=0"}, want: "raft.heartbeat_ticks"},
 		{name: "election timeout too close to heartbeat", args: []string{"--raft.heartbeat-ticks=4", "--raft.election-ticks=8"}, want: "raft.election_ticks: must be at least 3 * raft.heartbeat_ticks (12), got 8"},
 		{name: "short session ttl", args: []string{"--raft.session-ttl=1s"}, want: "raft.session_ttl"},
+		{name: "dead before suspect", args: []string{"--liveness.dead-after=1s"}, want: "liveness.dead_after: must be at least liveness.suspect_after"},
+		{name: "suspect within a heartbeat", args: []string{"--liveness.suspect-after=500ms"}, want: "liveness.suspect_after"},
+		{name: "zero rebalance interval", args: []string{"--rebalance.interval=0s"}, want: "rebalance.interval"},
+		{name: "tiny compaction threshold", args: []string{"--raft.compact-entries=1"}, want: "raft.compact_entries"},
+		{name: "join without internal address", args: []string{"--cluster.join=10.0.0.1:7100"}, want: "cluster.internal_addr: required when cluster.join is set"},
+		{name: "cluster node without peers or join", args: []string{"--cluster.internal-addr=127.0.0.1:7100"}, want: "needs cluster.peers (to bootstrap) or cluster.join"},
 		{name: "bad sync policy", args: []string{"--storage.sync=sometimes"}, want: `storage.sync: must be always, interval or never, got "sometimes"`},
 		{name: "interval without period", args: []string{"--storage.sync=interval", "--storage.sync-interval=0s"}, want: "storage.sync_interval: must be positive"},
 		{name: "tiny memtable", args: []string{"--storage.memtable-bytes=1024"}, want: "storage.memtable_bytes"},

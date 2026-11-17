@@ -126,3 +126,103 @@ func TestDamageIsCorruption(t *testing.T) {
 		t.Fatalf("Open on a damaged log: %v", err)
 	}
 }
+
+func conf3() raft.ConfState {
+	return raft.ConfState{Voters: []string{"a", "b", "c"}, Learners: []string{"d"}}
+}
+
+func TestCompactAndRestore(t *testing.T) {
+	fs := vfs.NewMemFS()
+	l := open(t, fs)
+	var ents []raft.Entry
+	for i := uint64(1); i <= 10; i++ {
+		ents = append(ents, ent(i, 1+i/5))
+	}
+	hs := raft.HardState{Term: 3, Vote: "a", Commit: 8}
+	if err := l.Save(hs, ents, true); err != nil {
+		t.Fatal(err)
+	}
+	snap := raft.SnapshotMeta{Index: 6, Term: ents[5].Term, Conf: conf3()}
+	if err := l.Compact(raft.SnapshotMeta{Index: 6, Term: 99}); err == nil {
+		t.Fatal("compaction with the wrong term accepted")
+	}
+	if err := l.Compact(snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Save(raft.HardState{}, []raft.Entry{ent(11, 3)}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Save(raft.HardState{}, []raft.Entry{ent(5, 3)}, true); err == nil {
+		t.Fatal("entries below the compaction point accepted")
+	}
+	_ = l.Close()
+	if segs, _ := wal.ListSegments(fs, dir); len(segs) != 1 {
+		t.Fatalf("segments after compaction: %v; want only the checkpoint's, which the writer continues", segs)
+	}
+	l = open(t, fs)
+	got := l.Snapshot()
+	if got.Index != 6 || got.Term != snap.Term || !got.Conf.Equal(conf3()) || l.HardState() != hs ||
+		!equalEntries(l.Entries(), append(ents[6:], ent(11, 3))) || l.LastIndex() != 11 {
+		t.Fatalf("after compaction and reopen: snap %+v hs %+v entries %v", got, l.HardState(), l.Entries())
+	}
+	restored := raft.SnapshotMeta{Index: 40, Term: 7, Conf: raft.ConfState{Voters: []string{"x"}}}
+	if err := l.Restore(restored, raft.HardState{Term: 7}); err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Close()
+	l = open(t, fs)
+	if l.Snapshot().Index != 40 || len(l.Entries()) != 0 || l.HardState().Commit != 40 || l.HardState().Term != 7 {
+		t.Fatalf("after restore: %+v %+v %v", l.Snapshot(), l.HardState(), l.Entries())
+	}
+	if err := l.Save(raft.HardState{}, []raft.Entry{ent(41, 7)}, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPowerLossDuringCompaction crashes at every filesystem operation of a
+// compaction and of a restore: the recovered log is the state before or
+// after, never one that lost entries.
+func TestPowerLossDuringCompaction(t *testing.T) {
+	var ents []raft.Entry
+	for i := uint64(1); i <= 12; i++ {
+		ents = append(ents, ent(i, 2))
+	}
+	hs := raft.HardState{Term: 2, Commit: 12}
+	snap := raft.SnapshotMeta{Index: 7, Term: 2, Conf: conf3()}
+	restored := raft.SnapshotMeta{Index: 30, Term: 4, Conf: conf3()}
+	for _, op := range []string{"compact", "restore"} {
+		for n := int64(0); ; n++ {
+			fs := vfs.NewMemFS()
+			l := open(t, fs)
+			if err := l.Save(hs, ents, true); err != nil {
+				t.Fatal(err)
+			}
+			fs.CrashAfter(n)
+			var err error
+			if op == "compact" {
+				err = l.Compact(snap)
+			} else {
+				err = l.Restore(restored, raft.HardState{Term: 4})
+			}
+			crashed := fs.Crashed()
+			got := open(t, fs.CrashImage(rand.New(rand.NewPCG(uint64(n), 3))))
+			before := got.Snapshot().Index == 0 && equalEntries(got.Entries(), ents) && got.HardState() == hs
+			var after bool
+			if op == "compact" {
+				after = got.Snapshot().Index == 7 && equalEntries(got.Entries(), ents[7:]) && got.HardState() == hs
+			} else {
+				after = got.Snapshot().Index == 30 && len(got.Entries()) == 0 && got.HardState().Commit == 30
+			}
+			if !before && !after {
+				t.Fatalf("%s, crash after %d operations: recovered snap %+v hs %+v entries %v", op, n, got.Snapshot(), got.HardState(), got.Entries())
+			}
+			if !crashed {
+				if err != nil || !after {
+					t.Fatalf("%s without a crash: %v, after=%v", op, err, after)
+				}
+				t.Logf("%s: crashed at each of %d operations", op, n)
+				break
+			}
+		}
+	}
+}

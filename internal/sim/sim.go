@@ -1,14 +1,17 @@
 // Package sim is a deterministic simulator for the Raft core. It runs a
 // group of raft.Raft nodes over a simulated network that drops, delays,
 // duplicates and reorders messages, partitions nodes, and crashes and
-// restarts them (losing everything they had not persisted), all driven by
-// one seeded random generator, so any schedule replays exactly from its
-// seed. A Checker verifies Raft's safety properties after every step.
+// restarts them (losing everything they had not persisted), while leaders
+// change the membership one server at a time, transfer leadership, and
+// nodes compact their logs and catch up from snapshots. Everything is
+// driven by one seeded random generator, so any schedule replays exactly
+// from its seed. A Checker verifies Raft's safety properties as it runs.
 package sim
 
 import (
 	"fmt"
 	"hash/fnv"
+	"io"
 	"math/rand/v2"
 	"slices"
 
@@ -17,7 +20,10 @@ import (
 
 // Options shape a schedule. Zero values are filled from the seed.
 type Options struct {
-	Nodes       int
+	Nodes int // initial voters
+	// Spares are extra nodes that start uninitialized; leaders may add
+	// them (and any removed node) back as learners.
+	Spares      int
 	Steps       int
 	DropRate    float64 // per message
 	DupRate     float64 // per message
@@ -28,21 +34,31 @@ type Options struct {
 	HealRate    float64 // per step: heal the partition
 	ProposeRate float64 // per step
 	ReadRate    float64 // per step
+	// ConfRate: per step, a leader proposes a random membership change.
+	ConfRate float64
+	// TransferRate: per step, a leader hands leadership to a random voter.
+	TransferRate float64
+	// CompactRate: per step, a node compacts its log up to a random
+	// applied index, so lagging members need snapshots.
+	CompactRate float64
 	PreVote     bool
 	CheckQuorum bool
 	// MaxEntriesPerMsg bounds entries per append; small values make
 	// partial replication, and so the Figure 8 situation, more likely.
 	MaxEntriesPerMsg int
 	// CalmSteps run after Steps with every node up, the network healed and
-	// no message loss; a proposal made during them must reach every node,
-	// or the schedule fails the liveness check.
+	// no message loss; a proposal made during them must reach every member
+	// of the final membership, or the schedule fails the liveness check.
 	CalmSteps int
+	// Trace, if set, receives every event as a line of text.
+	Trace io.Writer
 }
 
 // RandomOptions draws a schedule's shape from rng.
 func RandomOptions(rng *rand.Rand) Options {
-	return Options{
+	o := Options{
 		Nodes:            []int{3, 3, 5}[rng.IntN(3)],
+		Spares:           rng.IntN(3),
 		Steps:            400,
 		DropRate:         []float64{0, 0.02, 0.1, 0.3}[rng.IntN(4)],
 		DupRate:          []float64{0, 0.02, 0.1}[rng.IntN(3)],
@@ -53,11 +69,22 @@ func RandomOptions(rng *rand.Rand) Options {
 		HealRate:         0.03,
 		ProposeRate:      0.3,
 		ReadRate:         0.1,
+		ConfRate:         []float64{0, 0.01, 0.03}[rng.IntN(3)],
+		TransferRate:     []float64{0, 0.005, 0.02}[rng.IntN(3)],
+		CompactRate:      []float64{0, 0.01, 0.05}[rng.IntN(3)],
 		PreVote:          rng.IntN(4) != 0,
 		CheckQuorum:      rng.IntN(4) != 0,
 		MaxEntriesPerMsg: []int{1, 2, 8}[rng.IntN(3)],
 		CalmSteps:        300,
 	}
+	if !o.CheckQuorum {
+		// Without the CheckQuorum lease a removed server that never
+		// learns of its removal keeps forcing elections (Raft thesis
+		// §4.2.3), so liveness cannot be required; dkv always enables
+		// CheckQuorum.
+		o.ConfRate = 0
+	}
+	return o
 }
 
 type envelope struct {
@@ -66,14 +93,17 @@ type envelope struct {
 }
 
 type simNode struct {
-	id   string
-	r    *raft.Raft
-	rng  *rand.Rand
-	up   bool
-	side int // partition side; messages only flow within a side
-	// Persisted state: what survives a crash.
-	hs  raft.HardState
-	log []raft.Entry
+	id    string
+	r     *raft.Raft
+	rng   *rand.Rand
+	up    bool
+	side  int      // partition side; messages only flow within a side
+	peers []string // bootstrap voters; nil for a spare
+	// Persisted state: what survives a crash. The state machine is
+	// durable only as of the snapshot; entries after it are re-applied.
+	snap raft.SnapshotMeta
+	hs   raft.HardState
+	log  []raft.Entry // entries after snap
 	// unsynced is a HardState written without fsync; a crash drops it.
 	unsynced *raft.HardState
 	// Commit index already reported to the checker.
@@ -88,6 +118,7 @@ type Result struct {
 	Trace uint64
 	// Stats summarize what happened.
 	Leaders, Commits, Crashes, Partitions, Reads, Delivered, Dropped int
+	ConfChanges, Transfers, Compactions, Snapshots                   int
 }
 
 // Sim is one schedule in progress.
@@ -107,16 +138,20 @@ type Sim struct {
 }
 
 type hashWriter struct {
-	h interface{ Write([]byte) (int, error) }
+	h   io.Writer
+	out io.Writer // optional human-readable copy
 }
 
 func (w hashWriter) event(format string, args ...any) {
 	_, _ = fmt.Fprintf(w.h, format, args...) // hashing into memory cannot fail
 	_, _ = w.h.Write([]byte{'\n'})
+	if w.out != nil {
+		_, _ = fmt.Fprintf(w.out, format+"\n", args...) // best effort debugging aid
+	}
 }
 
 // Run executes the schedule for seed with opts (RandomOptions if opts is
-// the zero value) and returns its result.
+// nil) and returns its result.
 func Run(seed uint64, opts *Options) Result {
 	rng := rand.New(rand.NewPCG(seed, 0x5ee1))
 	o := RandomOptions(rng)
@@ -124,23 +159,31 @@ func Run(seed uint64, opts *Options) Result {
 		o = *opts
 	}
 	h := fnv.New64a()
-	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), trace: hashWriter{h}}
-	for i := range o.Nodes {
-		s.ids = append(s.ids, fmt.Sprintf("n%d", i+1))
+	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), trace: hashWriter{h: h, out: o.Trace}}
+	var voters []string
+	for i := range o.Nodes + o.Spares {
+		id := fmt.Sprintf("n%d", i+1)
+		s.ids = append(s.ids, id)
+		if i < o.Nodes {
+			voters = append(voters, id)
+		}
 	}
 	for i, id := range s.ids {
 		n := &simNode{id: id, rng: rand.New(rand.NewPCG(seed, uint64(i)+1)), up: true}
+		if i < o.Nodes {
+			n.peers = voters
+		}
 		s.nodes[id] = n
 		s.start(n)
 	}
 	for s.now = 0; s.now < o.Steps; s.now++ {
 		s.step()
 		if s.now%10 == 0 {
-			s.check.LogMatching(s.liveLogs())
+			s.checkLogs()
 		}
 	}
 	s.calm()
-	s.check.LogMatching(s.liveLogs())
+	s.checkLogs()
 	s.res.Violations = s.check.Violations()
 	s.res.Trace = h.Sum64()
 	return s.res
@@ -148,9 +191,9 @@ func Run(seed uint64, opts *Options) Result {
 
 func (s *Sim) start(n *simNode) {
 	r, err := raft.New(raft.Config{
-		ID: n.id, Peers: s.ids, ElectionTick: 10, HeartbeatTick: 2,
+		ID: n.id, Peers: n.peers, ElectionTick: 10, HeartbeatTick: 2,
 		PreVote: s.opts.PreVote, CheckQuorum: s.opts.CheckQuorum, Rand: n.rng,
-		HardState: n.hs, Entries: slices.Clone(n.log),
+		Snapshot: n.snap, HardState: n.hs, Entries: slices.Clone(n.log), Applied: n.snap.Index,
 		MaxEntriesPerMsg: max(s.opts.MaxEntriesPerMsg, 1),
 	})
 	if err != nil {
@@ -158,7 +201,7 @@ func (s *Sim) start(n *simNode) {
 		return
 	}
 	n.r = r
-	n.reportedCommit = 0
+	n.reportedCommit = n.snap.Index
 }
 
 func (s *Sim) step() {
@@ -193,10 +236,16 @@ func (s *Sim) step() {
 		}
 		s.trace.event("%d heal", s.now)
 	}
+	if s.rng.Float64() < s.opts.CompactRate {
+		if n := s.pick(func(n *simNode) bool { return n.up && n.r.Applied() >= n.r.FirstIndex() }); n != nil {
+			s.compact(n)
+		}
+	}
 
-	// Client operations go to whoever believes it leads.
+	// Client and operator operations go to whoever believes it leads.
+	leader := func(n *simNode) bool { return n.up && n.r.State() == raft.StateLeader }
 	if s.rng.Float64() < s.opts.ProposeRate {
-		if n := s.pick(func(n *simNode) bool { return n.up && n.r.State() == raft.StateLeader }); n != nil {
+		if n := s.pick(leader); n != nil {
 			s.nextProp++
 			data := fmt.Appendf(nil, "p%d", s.nextProp)
 			if n.r.Propose(data) == nil {
@@ -205,11 +254,27 @@ func (s *Sim) step() {
 		}
 	}
 	if s.rng.Float64() < s.opts.ReadRate {
-		if n := s.pick(func(n *simNode) bool { return n.up && n.r.State() == raft.StateLeader }); n != nil {
+		if n := s.pick(leader); n != nil {
 			s.nextRead++
 			if n.r.ReadIndex(s.nextRead) == nil {
 				s.check.ReadStarted(s.nextRead)
 				s.trace.event("%d read %s %d", s.now, n.id, s.nextRead)
+			}
+		}
+	}
+	if s.rng.Float64() < s.opts.ConfRate {
+		if n := s.pick(leader); n != nil {
+			s.changeMembership(n)
+		}
+	}
+	if s.rng.Float64() < s.opts.TransferRate {
+		if n := s.pick(leader); n != nil {
+			if voters := n.r.Conf().Voters; len(voters) > 1 {
+				to := voters[s.rng.IntN(len(voters))]
+				if n.r.TransferLeader(to) == nil && to != n.id {
+					s.res.Transfers++
+					s.trace.event("%d transfer %s->%s", s.now, n.id, to)
+				}
 			}
 		}
 	}
@@ -235,7 +300,12 @@ func (s *Sim) step() {
 	s.rng.Shuffle(len(due), func(i, j int) { due[i], due[j] = due[j], due[i] })
 	for _, e := range due {
 		to, from := s.nodes[e.msg.To], s.nodes[e.msg.From]
-		if !to.up || (s.split && to.side != from.side) {
+		ok := to.up && (!s.split || to.side == from.side)
+		if e.msg.Type == raft.MsgSnap && from.up {
+			// The leader's runner learns how the stream ended.
+			from.r.ReportSnapshot(e.msg.To, ok)
+		}
+		if !ok {
 			s.res.Dropped++
 			continue
 		}
@@ -248,8 +318,56 @@ func (s *Sim) step() {
 	}
 }
 
+// changeMembership proposes a random single-server change on leader n:
+// promote a learner, add a non-member as a learner, or remove a member.
+func (s *Sim) changeMembership(n *simNode) {
+	conf := n.r.Conf()
+	var outsiders []string
+	for _, id := range s.ids {
+		if !conf.IsMember(id) {
+			outsiders = append(outsiders, id)
+		}
+	}
+	var t raft.ConfChangeType
+	var target string
+	switch k := s.rng.IntN(4); {
+	case k == 0 && len(conf.Learners) > 0:
+		t, target = raft.ConfPromote, conf.Learners[s.rng.IntN(len(conf.Learners))]
+	case k == 1 && len(outsiders) > 0:
+		t, target = raft.ConfAddLearner, outsiders[s.rng.IntN(len(outsiders))]
+	case k == 2:
+		members := conf.Members()
+		t, target = raft.ConfRemove, members[s.rng.IntN(len(members))]
+	default:
+		return
+	}
+	if _, err := n.r.ProposeConfChange(t, target); err == nil {
+		s.res.ConfChanges++
+		s.trace.event("%d conf %s %v %s", s.now, n.id, t, target)
+	}
+}
+
+// compact discards n's log up to a random applied index, as a runner does
+// once its state machine is durable to that point.
+func (s *Sim) compact(n *simNode) {
+	first, applied := n.r.FirstIndex(), n.r.Applied()
+	i := first + s.rng.Uint64N(applied-first+1)
+	if err := n.r.Compact(i); err != nil {
+		s.check.violate("compact %s to %d: %v", n.id, i, err)
+		return
+	}
+	if i > n.snap.Index {
+		n.log = slices.Clone(n.log[i-n.snap.Index:])
+		n.snap = n.r.Snapshot()
+	}
+	s.res.Compactions++
+	s.trace.event("%d compact %s %d", s.now, n.id, i)
+}
+
 // calm restarts every node, heals the network and stops faults, then
-// requires a new proposal to be applied by every node: the liveness check.
+// requires a new proposal to be applied by every member of the leader's
+// membership: the liveness check. Like a client, it proposes again if the
+// proposal is lost to a leader change.
 func (s *Sim) calm() {
 	if s.opts.CalmSteps == 0 {
 		return
@@ -264,29 +382,39 @@ func (s *Sim) calm() {
 		}
 	}
 	s.opts.CrashRate, s.opts.SplitRate, s.opts.DropRate, s.opts.DupRate = 0, 0, 0, 0
-	s.opts.ProposeRate, s.opts.ReadRate = 0, 0
+	s.opts.ProposeRate, s.opts.ReadRate, s.opts.ConfRate, s.opts.TransferRate = 0, 0, 0, 0
 	end := s.now + s.opts.CalmSteps
 	var final []byte
+	var members []string
+	proposedAt := 0
 	for ; s.now < end; s.now++ {
-		if final == nil && s.now >= end-s.opts.CalmSteps*2/3 {
-			if n := s.pick(func(n *simNode) bool { return n.r.State() == raft.StateLeader }); n != nil {
-				data := []byte("final")
+		if s.now >= end-s.opts.CalmSteps*2/3 && (final == nil || s.now-proposedAt > 50) {
+			if n := s.pick(func(n *simNode) bool { return n.r.State() == raft.StateLeader && n.r.Transferee() == "" }); n != nil {
+				data := fmt.Appendf(nil, "final@%d", s.now)
 				if n.r.Propose(data) == nil {
-					final = data
+					final, members, proposedAt = data, n.r.Conf().Members(), s.now
 					s.trace.event("%d propose-final %s", s.now, n.id)
 				}
 			}
 		}
 		s.step()
-		if final != nil && s.check.AppliedEverywhere(final, s.ids) {
+		if final != nil && s.check.AppliedEverywhere(final, members, s.snapIndexes()) {
 			return
 		}
 	}
 	if final == nil {
 		s.check.violate("Liveness: no leader accepted a proposal in %d calm steps", s.opts.CalmSteps)
 	} else {
-		s.check.violate("Liveness: a proposal made during %d calm steps was not applied by every node", s.opts.CalmSteps)
+		s.check.violate("Liveness: a proposal made during %d calm steps was not applied by every member of %v", s.opts.CalmSteps, members)
 	}
+}
+
+func (s *Sim) snapIndexes() map[string]uint64 {
+	out := map[string]uint64{}
+	for _, id := range s.ids {
+		out[id] = s.nodes[id].snap.Index
+	}
+	return out
 }
 
 func (s *Sim) pick(ok func(*simNode) bool) *simNode {
@@ -303,12 +431,22 @@ func (s *Sim) pick(ok func(*simNode) bool) *simNode {
 }
 
 // processReady handles every live node's Ready in ID order, the way the
-// replica runner does: persist, send, apply, advance.
+// replica runner does: install a snapshot, persist, send, apply, advance.
 func (s *Sim) processReady() {
 	for _, id := range s.ids {
 		n := s.nodes[id]
 		for n.up && n.r.HasReady() {
 			rd := n.r.Ready()
+			if rd.Snapshot != nil {
+				// Installing a snapshot replaces the state machine and the
+				// log, durably, before anything is sent. The HardState
+				// below carries the new commit index.
+				n.snap, n.log, n.unsynced = *rd.Snapshot, nil, nil
+				n.reportedCommit = max(n.reportedCommit, rd.Snapshot.Index)
+				s.res.Snapshots++
+				s.check.SnapshotInstalled(n.id, *rd.Snapshot)
+				s.trace.event("%d install %s %d", s.now, n.id, rd.Snapshot.Index)
+			}
 			// An unsynced write (a commit-only HardState update) is lost
 			// in a crash unless a later synced write makes it durable, as
 			// a later fsync of the same log file would.
@@ -327,22 +465,32 @@ func (s *Sim) processReady() {
 			}
 			if len(rd.Entries) > 0 {
 				first := rd.Entries[0].Index
-				n.log = append(n.log[:first-1], rd.Entries...)
+				n.log = append(n.log[:first-1-n.snap.Index], rd.Entries...)
 			}
 			if rd.SoftState != nil && rd.SoftState.State == raft.StateLeader {
 				s.res.Leaders++
-				s.check.LeaderElected(n.r.Term(), n.id, n.r.Entries())
+				s.check.LeaderElected(n.r.Term(), n.id, n.r.FirstIndex(), n.r.Entries())
 				s.trace.event("%d leader %s t%d", s.now, n.id, n.r.Term())
 			}
 			if c := n.r.Committed(); c > n.reportedCommit {
-				ents := n.r.Entries()
-				for i := n.reportedCommit + 1; i <= c; i++ {
-					s.check.Committed(n.id, ents[i-1])
+				ents, first := n.r.Entries(), n.r.FirstIndex()
+				for i := max(n.reportedCommit+1, first); i <= c; i++ {
+					s.check.Committed(n.id, ents[i-first])
 				}
 				n.reportedCommit = c
 				s.res.Commits++
 			}
 			for _, m := range rd.Messages {
+				if m.Type == raft.MsgSnap && m.Snapshot == nil {
+					// Act as the leader's runner: describe a snapshot at
+					// the applied index; it travels like any message.
+					meta, err := n.r.SnapshotAt(n.r.Applied())
+					if err != nil {
+						s.check.violate("snapshot on %s: %v", n.id, err)
+						continue
+					}
+					m.Snapshot = &meta
+				}
 				s.send(m)
 			}
 			for _, e := range rd.CommittedEntries {
@@ -360,6 +508,9 @@ func (s *Sim) processReady() {
 func (s *Sim) send(m raft.Message) {
 	if s.rng.Float64() < s.opts.DropRate {
 		s.res.Dropped++
+		if m.Type == raft.MsgSnap {
+			s.nodes[m.From].r.ReportSnapshot(m.To, false)
+		}
 		return
 	}
 	copies := 1
@@ -375,14 +526,16 @@ func (s *Sim) send(m raft.Message) {
 	}
 }
 
-func (s *Sim) liveLogs() map[string][]raft.Entry {
-	out := map[string][]raft.Entry{}
+// checkLogs runs the Log Matching check over every node's log: the live
+// one, or for a crashed node what it persisted.
+func (s *Sim) checkLogs() {
+	logs := map[string]LogView{}
 	for _, id := range s.ids {
 		if n := s.nodes[id]; n.up {
-			out[id] = n.r.Entries()
+			logs[id] = LogView{First: n.r.FirstIndex(), Entries: n.r.Entries()}
 		} else {
-			out[id] = n.log // a crashed node's log is what it persisted
+			logs[id] = LogView{First: n.snap.Index + 1, Entries: n.log}
 		}
 	}
-	return out
+	s.check.LogMatching(logs)
 }

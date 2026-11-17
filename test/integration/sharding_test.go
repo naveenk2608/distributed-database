@@ -13,6 +13,7 @@ import (
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
+	"github.com/naveenk2608/distributed-database/internal/meta"
 	"github.com/naveenk2608/distributed-database/internal/node"
 	"github.com/naveenk2608/distributed-database/internal/node/nodetest"
 	"github.com/naveenk2608/distributed-database/internal/placement"
@@ -24,8 +25,9 @@ func shardCluster(t *testing.T, n, shards, rf int) *nodetest.Cluster {
 		cfg.Cluster.Shards, cfg.Cluster.ReplicationFactor = shards, rf
 		cfg.Storage.MemtableBytes = 256 << 10
 	})
-	nodetest.WaitFor(t, 10*time.Second, "cluster to form", func() bool { return allUp(c) })
-	nodetest.WaitFor(t, 10*time.Second, "every shard to elect a leader", c.Settled)
+	// Data tests need leaders, not every node's ping view to read up at
+	// the same moment (which a busy machine can delay).
+	nodetest.WaitFor(t, 20*time.Second, "every shard to elect a leader", c.Settled)
 	return c
 }
 
@@ -65,14 +67,13 @@ func lastSeqs(t *testing.T, c *nodetest.Cluster, shards int) [][]int64 {
 func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 	const n, shards, rf, keys = 4, 16, 2, 400
 	c := shardCluster(t, n, shards, rf)
-	var addrs []string
+	// Placement is by node ID: the initial layout every bootstrap node
+	// computes from the members' IDs.
+	var ids []string
 	for _, m := range c.Members {
-		addrs = append(addrs, m.InternalAddr)
+		ids = append(ids, m.NodeID())
 	}
-	want, err := placement.Compute(addrs, shards, rf)
-	if err != nil {
-		t.Fatal(err)
-	}
+	want := meta.InitialLayout(ids, shards, rf, 3)
 	for i := range c.Members {
 		sm, err := c.ShardMap(i)
 		if err != nil {
@@ -80,11 +81,11 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 		}
 		for _, info := range sm.GetShards() {
 			s := int(info.GetShard())
-			if !slices.Equal(info.GetReplicas(), want.ReplicaSet(s)) {
-				t.Fatalf("node %d places shard %d on %v; placement computes %v", i, s, info.GetReplicas(), want.ReplicaSet(s))
+			if got := slices.Sorted(slices.Values(info.GetVoterIds())); !slices.Equal(got, want[s]) {
+				t.Fatalf("node %d places shard %d on %v; the initial layout is %v", i, s, got, want[s])
 			}
-			if info.GetLocal() != slices.Contains(want.ReplicaSet(s), addrs[i]) {
-				t.Fatalf("node %d local=%v for shard %d with replicas %v", i, info.GetLocal(), s, want.ReplicaSet(s))
+			if info.GetLocal() != slices.Contains(want[s], ids[i]) {
+				t.Fatalf("node %d local=%v for shard %d with replicas %v", i, info.GetLocal(), s, want[s])
 			}
 		}
 	}
@@ -97,7 +98,7 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 	writes := make([]int, shards)
 	for k := range keys {
 		key := []byte(fmt.Sprintf("user/%05d", k))
-		resp, err := kv[k%n].Put(reqCtx(t, 5*time.Second), &dkvv1.PutRequest{Key: key, Value: []byte(fmt.Sprint(k))})
+		resp, err := kv[k%n].Put(reqCtx(t, 10*time.Second), &dkvv1.PutRequest{Key: key, Value: []byte(fmt.Sprint(k))})
 		if err != nil {
 			t.Fatalf("put %s via node %d: %v", key, k%n, err)
 		}
@@ -108,15 +109,15 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 		key := []byte(fmt.Sprintf("user/%05d", k))
 		s := placement.ShardOf(key, shards)
 		for i := range n {
-			resp, err := kv[i].Get(reqCtx(t, 5*time.Second), &dkvv1.GetRequest{Key: key})
+			resp, err := kv[i].Get(reqCtx(t, 10*time.Second), &dkvv1.GetRequest{Key: key})
 			if err != nil || !resp.GetFound() || string(resp.GetValue()) != fmt.Sprint(k) || resp.GetVersion() != versions[k] {
 				t.Fatalf("get %s via node %d: %v, %v", key, i, resp, err)
 			}
-			if !slices.Contains(want.ReplicaSet(s), addrs[i]) {
+			if !slices.Contains(want[s], ids[i]) {
 				continue
 			}
 			// A stale read is served by the node's own replica.
-			resp, err = kv[i].Get(reqCtx(t, 5*time.Second), &dkvv1.GetRequest{Key: key,
+			resp, err = kv[i].Get(reqCtx(t, 10*time.Second), &dkvv1.GetRequest{Key: key,
 				Consistency: dkvv1.Consistency_CONSISTENCY_STALE, MinVersion: versions[k]})
 			if err != nil || string(resp.GetValue()) != fmt.Sprint(k) || resp.GetAppliedIndex() < versions[k] {
 				t.Fatalf("stale get %s from node %d's replica of shard %d: %v, %v", key, i, s, resp, err)
@@ -125,8 +126,8 @@ func TestAnyNodeAcceptsAnyKey(t *testing.T) {
 	}
 	seqs := lastSeqs(t, c, shards)
 	for s := range shards {
-		for i, addr := range addrs {
-			if !slices.Contains(want.ReplicaSet(s), addr) && seqs[i][s] != -1 {
+		for i, id := range ids {
+			if !slices.Contains(want[s], id) && seqs[i][s] != -1 {
 				t.Errorf("shard %d: node %d holds a replica it should not", s, i)
 			}
 		}

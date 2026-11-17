@@ -21,6 +21,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ReplicaChange int32
+
+const (
+	ReplicaChange_REPLICA_CHANGE_UNSPECIFIED ReplicaChange = 0
+	ReplicaChange_REPLICA_CHANGE_ADD_LEARNER ReplicaChange = 1
+	ReplicaChange_REPLICA_CHANGE_PROMOTE     ReplicaChange = 2
+	ReplicaChange_REPLICA_CHANGE_REMOVE      ReplicaChange = 3
+)
+
+// Enum value maps for ReplicaChange.
+var (
+	ReplicaChange_name = map[int32]string{
+		0: "REPLICA_CHANGE_UNSPECIFIED",
+		1: "REPLICA_CHANGE_ADD_LEARNER",
+		2: "REPLICA_CHANGE_PROMOTE",
+		3: "REPLICA_CHANGE_REMOVE",
+	}
+	ReplicaChange_value = map[string]int32{
+		"REPLICA_CHANGE_UNSPECIFIED": 0,
+		"REPLICA_CHANGE_ADD_LEARNER": 1,
+		"REPLICA_CHANGE_PROMOTE":     2,
+		"REPLICA_CHANGE_REMOVE":      3,
+	}
+)
+
+func (x ReplicaChange) Enum() *ReplicaChange {
+	p := new(ReplicaChange)
+	*p = x
+	return p
+}
+
+func (x ReplicaChange) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ReplicaChange) Descriptor() protoreflect.EnumDescriptor {
+	return file_dkv_v1_cluster_proto_enumTypes[0].Descriptor()
+}
+
+func (ReplicaChange) Type() protoreflect.EnumType {
+	return &file_dkv_v1_cluster_proto_enumTypes[0]
+}
+
+func (x ReplicaChange) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ReplicaChange.Descriptor instead.
+func (ReplicaChange) EnumDescriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{0}
+}
+
 // NodeInfo identifies a node.
 type NodeInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -31,11 +83,15 @@ type NodeInfo struct {
 	// internal_addr is the address other nodes use to reach this node.
 	InternalAddr      string `protobuf:"bytes,3,opt,name=internal_addr,json=internalAddr,proto3" json:"internal_addr,omitempty"`
 	StartedAtUnixNano int64  `protobuf:"varint,4,opt,name=started_at_unix_nano,json=startedAtUnixNano,proto3" json:"started_at_unix_nano,omitempty"`
-	// placement fingerprints the shard count, replication factor and member
-	// list; nodes whose fingerprints differ would place shards differently.
-	Placement     string `protobuf:"bytes,5,opt,name=placement,proto3" json:"placement,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// placement fingerprints the shard count, replication factor and
+	// bootstrap peer list; nodes whose fingerprints differ were configured
+	// differently.
+	Placement string `protobuf:"bytes,5,opt,name=placement,proto3" json:"placement,omitempty"`
+	// bootstrap_members lists the node IDs the cluster was bootstrapped
+	// with, once this node has bootstrapped or joined; empty on a fresh node.
+	BootstrapMembers []string `protobuf:"bytes,6,rep,name=bootstrap_members,json=bootstrapMembers,proto3" json:"bootstrap_members,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *NodeInfo) Reset() {
@@ -101,6 +157,13 @@ func (x *NodeInfo) GetPlacement() string {
 		return x.Placement
 	}
 	return ""
+}
+
+func (x *NodeInfo) GetBootstrapMembers() []string {
+	if x != nil {
+		return x.BootstrapMembers
+	}
+	return nil
 }
 
 type PingRequest struct {
@@ -200,6 +263,8 @@ type ForwardRequest struct {
 	//	*ForwardRequest_Get
 	//	*ForwardRequest_Delete
 	//	*ForwardRequest_Cas
+	//	*ForwardRequest_Txn
+	//	*ForwardRequest_Scan
 	Op            isForwardRequest_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -285,6 +350,24 @@ func (x *ForwardRequest) GetCas() *CompareAndSetRequest {
 	return nil
 }
 
+func (x *ForwardRequest) GetTxn() *TxnRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Txn); ok {
+			return x.Txn
+		}
+	}
+	return nil
+}
+
+func (x *ForwardRequest) GetScan() *ScanRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Scan); ok {
+			return x.Scan
+		}
+	}
+	return nil
+}
+
 type isForwardRequest_Op interface {
 	isForwardRequest_Op()
 }
@@ -305,6 +388,14 @@ type ForwardRequest_Cas struct {
 	Cas *CompareAndSetRequest `protobuf:"bytes,5,opt,name=cas,proto3,oneof"`
 }
 
+type ForwardRequest_Txn struct {
+	Txn *TxnRequest `protobuf:"bytes,6,opt,name=txn,proto3,oneof"`
+}
+
+type ForwardRequest_Scan struct {
+	Scan *ScanRequest `protobuf:"bytes,7,opt,name=scan,proto3,oneof"`
+}
+
 func (*ForwardRequest_Put) isForwardRequest_Op() {}
 
 func (*ForwardRequest_Get) isForwardRequest_Op() {}
@@ -312,6 +403,278 @@ func (*ForwardRequest_Get) isForwardRequest_Op() {}
 func (*ForwardRequest_Delete) isForwardRequest_Op() {}
 
 func (*ForwardRequest_Cas) isForwardRequest_Op() {}
+
+func (*ForwardRequest_Txn) isForwardRequest_Op() {}
+
+func (*ForwardRequest_Scan) isForwardRequest_Op() {}
+
+type TxnRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Txn           *Txn                   `protobuf:"bytes,1,opt,name=txn,proto3" json:"txn,omitempty"`
+	ClientId      string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RequestId     uint64                 `protobuf:"varint,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TxnRequest) Reset() {
+	*x = TxnRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TxnRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TxnRequest) ProtoMessage() {}
+
+func (x *TxnRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TxnRequest.ProtoReflect.Descriptor instead.
+func (*TxnRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TxnRequest) GetTxn() *Txn {
+	if x != nil {
+		return x.Txn
+	}
+	return nil
+}
+
+func (x *TxnRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *TxnRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+type TxnResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Succeeded     bool                   `protobuf:"varint,1,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
+	Version       uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TxnResponse) Reset() {
+	*x = TxnResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TxnResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TxnResponse) ProtoMessage() {}
+
+func (x *TxnResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TxnResponse.ProtoReflect.Descriptor instead.
+func (*TxnResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TxnResponse) GetSucceeded() bool {
+	if x != nil {
+		return x.Succeeded
+	}
+	return false
+}
+
+func (x *TxnResponse) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+type ScanRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Prefix        []byte                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	Consistency   Consistency            `protobuf:"varint,2,opt,name=consistency,proto3,enum=dkv.v1.Consistency" json:"consistency,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanRequest) Reset() {
+	*x = ScanRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanRequest) ProtoMessage() {}
+
+func (x *ScanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
+func (*ScanRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ScanRequest) GetPrefix() []byte {
+	if x != nil {
+		return x.Prefix
+	}
+	return nil
+}
+
+func (x *ScanRequest) GetConsistency() Consistency {
+	if x != nil {
+		return x.Consistency
+	}
+	return Consistency_CONSISTENCY_UNSPECIFIED
+}
+
+type ScanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kvs           []*KeyValue            `protobuf:"bytes,1,rep,name=kvs,proto3" json:"kvs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanResponse) Reset() {
+	*x = ScanResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanResponse) ProtoMessage() {}
+
+func (x *ScanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanResponse.ProtoReflect.Descriptor instead.
+func (*ScanResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ScanResponse) GetKvs() []*KeyValue {
+	if x != nil {
+		return x.Kvs
+	}
+	return nil
+}
+
+type KeyValue struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Version       uint64                 `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *KeyValue) Reset() {
+	*x = KeyValue{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KeyValue) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KeyValue) ProtoMessage() {}
+
+func (x *KeyValue) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KeyValue.ProtoReflect.Descriptor instead.
+func (*KeyValue) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *KeyValue) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *KeyValue) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *KeyValue) GetVersion() uint64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
 
 type ForwardResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -322,6 +685,8 @@ type ForwardResponse struct {
 	//	*ForwardResponse_Delete
 	//	*ForwardResponse_NotOwner
 	//	*ForwardResponse_Cas
+	//	*ForwardResponse_Txn
+	//	*ForwardResponse_Scan
 	Result        isForwardResponse_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -329,7 +694,7 @@ type ForwardResponse struct {
 
 func (x *ForwardResponse) Reset() {
 	*x = ForwardResponse{}
-	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	mi := &file_dkv_v1_cluster_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +706,7 @@ func (x *ForwardResponse) String() string {
 func (*ForwardResponse) ProtoMessage() {}
 
 func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_cluster_proto_msgTypes[4]
+	mi := &file_dkv_v1_cluster_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +719,7 @@ func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
 func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{4}
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ForwardResponse) GetResult() isForwardResponse_Result {
@@ -409,6 +774,24 @@ func (x *ForwardResponse) GetCas() *CompareAndSetResponse {
 	return nil
 }
 
+func (x *ForwardResponse) GetTxn() *TxnResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_Txn); ok {
+			return x.Txn
+		}
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetScan() *ScanResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ForwardResponse_Scan); ok {
+			return x.Scan
+		}
+	}
+	return nil
+}
+
 type isForwardResponse_Result interface {
 	isForwardResponse_Result()
 }
@@ -433,6 +816,14 @@ type ForwardResponse_Cas struct {
 	Cas *CompareAndSetResponse `protobuf:"bytes,5,opt,name=cas,proto3,oneof"`
 }
 
+type ForwardResponse_Txn struct {
+	Txn *TxnResponse `protobuf:"bytes,6,opt,name=txn,proto3,oneof"`
+}
+
+type ForwardResponse_Scan struct {
+	Scan *ScanResponse `protobuf:"bytes,7,opt,name=scan,proto3,oneof"`
+}
+
 func (*ForwardResponse_Put) isForwardResponse_Result() {}
 
 func (*ForwardResponse_Get) isForwardResponse_Result() {}
@@ -442,6 +833,10 @@ func (*ForwardResponse_Delete) isForwardResponse_Result() {}
 func (*ForwardResponse_NotOwner) isForwardResponse_Result() {}
 
 func (*ForwardResponse_Cas) isForwardResponse_Result() {}
+
+func (*ForwardResponse_Txn) isForwardResponse_Result() {}
+
+func (*ForwardResponse_Scan) isForwardResponse_Result() {}
 
 // NotOwner says the receiving node does not serve the shard: it holds no
 // replica, or its replica is not the shard's Raft leader.
@@ -457,7 +852,7 @@ type NotOwner struct {
 
 func (x *NotOwner) Reset() {
 	*x = NotOwner{}
-	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	mi := &file_dkv_v1_cluster_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +864,7 @@ func (x *NotOwner) String() string {
 func (*NotOwner) ProtoMessage() {}
 
 func (x *NotOwner) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_cluster_proto_msgTypes[5]
+	mi := &file_dkv_v1_cluster_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +877,7 @@ func (x *NotOwner) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotOwner.ProtoReflect.Descriptor instead.
 func (*NotOwner) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{5}
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *NotOwner) GetShard() uint32 {
@@ -499,43 +894,760 @@ func (x *NotOwner) GetOwnerHint() string {
 	return ""
 }
 
+type NodeStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeStatusRequest) Reset() {
+	*x = NodeStatusRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeStatusRequest) ProtoMessage() {}
+
+func (x *NodeStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeStatusRequest.ProtoReflect.Descriptor instead.
+func (*NodeStatusRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{11}
+}
+
+type NodeStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Replicas      []*ReplicaStatus       `protobuf:"bytes,2,rep,name=replicas,proto3" json:"replicas,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeStatusResponse) Reset() {
+	*x = NodeStatusResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeStatusResponse) ProtoMessage() {}
+
+func (x *NodeStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeStatusResponse.ProtoReflect.Descriptor instead.
+func (*NodeStatusResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *NodeStatusResponse) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeStatusResponse) GetReplicas() []*ReplicaStatus {
+	if x != nil {
+		return x.Replicas
+	}
+	return nil
+}
+
+// ReplicaStatus describes one replica (shard -1 is the meta group).
+type ReplicaStatus struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Shard    int32                  `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	Leader   string                 `protobuf:"bytes,2,opt,name=leader,proto3" json:"leader,omitempty"`
+	Term     uint64                 `protobuf:"varint,3,opt,name=term,proto3" json:"term,omitempty"`
+	Role     string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	Commit   uint64                 `protobuf:"varint,5,opt,name=commit,proto3" json:"commit,omitempty"`
+	Applied  uint64                 `protobuf:"varint,6,opt,name=applied,proto3" json:"applied,omitempty"`
+	Voters   []string               `protobuf:"bytes,7,rep,name=voters,proto3" json:"voters,omitempty"`
+	Learners []string               `protobuf:"bytes,8,rep,name=learners,proto3" json:"learners,omitempty"`
+	// progress is each member's match index, on the leader only.
+	Progress           map[string]uint64 `protobuf:"bytes,9,rep,name=progress,proto3" json:"progress,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	FirstIndex         uint64            `protobuf:"varint,10,opt,name=first_index,json=firstIndex,proto3" json:"first_index,omitempty"`
+	LastIndex          uint64            `protobuf:"varint,11,opt,name=last_index,json=lastIndex,proto3" json:"last_index,omitempty"`
+	SnapshotsSent      int64             `protobuf:"varint,12,opt,name=snapshots_sent,json=snapshotsSent,proto3" json:"snapshots_sent,omitempty"`
+	SnapshotsInstalled int64             `protobuf:"varint,13,opt,name=snapshots_installed,json=snapshotsInstalled,proto3" json:"snapshots_installed,omitempty"`
+	Transferee         string            `protobuf:"bytes,14,opt,name=transferee,proto3" json:"transferee,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ReplicaStatus) Reset() {
+	*x = ReplicaStatus{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicaStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicaStatus) ProtoMessage() {}
+
+func (x *ReplicaStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicaStatus.ProtoReflect.Descriptor instead.
+func (*ReplicaStatus) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ReplicaStatus) GetShard() int32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetLeader() string {
+	if x != nil {
+		return x.Leader
+	}
+	return ""
+}
+
+func (x *ReplicaStatus) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ReplicaStatus) GetCommit() uint64 {
+	if x != nil {
+		return x.Commit
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetApplied() uint64 {
+	if x != nil {
+		return x.Applied
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetVoters() []string {
+	if x != nil {
+		return x.Voters
+	}
+	return nil
+}
+
+func (x *ReplicaStatus) GetLearners() []string {
+	if x != nil {
+		return x.Learners
+	}
+	return nil
+}
+
+func (x *ReplicaStatus) GetProgress() map[string]uint64 {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+func (x *ReplicaStatus) GetFirstIndex() uint64 {
+	if x != nil {
+		return x.FirstIndex
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetLastIndex() uint64 {
+	if x != nil {
+		return x.LastIndex
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetSnapshotsSent() int64 {
+	if x != nil {
+		return x.SnapshotsSent
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetSnapshotsInstalled() int64 {
+	if x != nil {
+		return x.SnapshotsInstalled
+	}
+	return 0
+}
+
+func (x *ReplicaStatus) GetTransferee() string {
+	if x != nil {
+		return x.Transferee
+	}
+	return ""
+}
+
+type ChangeReplicasRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Shard         int32                  `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	Change        ReplicaChange          `protobuf:"varint,2,opt,name=change,proto3,enum=dkv.v1.ReplicaChange" json:"change,omitempty"`
+	NodeId        string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChangeReplicasRequest) Reset() {
+	*x = ChangeReplicasRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChangeReplicasRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChangeReplicasRequest) ProtoMessage() {}
+
+func (x *ChangeReplicasRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChangeReplicasRequest.ProtoReflect.Descriptor instead.
+func (*ChangeReplicasRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ChangeReplicasRequest) GetShard() int32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *ChangeReplicasRequest) GetChange() ReplicaChange {
+	if x != nil {
+		return x.Change
+	}
+	return ReplicaChange_REPLICA_CHANGE_UNSPECIFIED
+}
+
+func (x *ChangeReplicasRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type ChangeReplicasResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NotLeader     *NotOwner              `protobuf:"bytes,1,opt,name=not_leader,json=notLeader,proto3" json:"not_leader,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChangeReplicasResponse) Reset() {
+	*x = ChangeReplicasResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChangeReplicasResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChangeReplicasResponse) ProtoMessage() {}
+
+func (x *ChangeReplicasResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChangeReplicasResponse.ProtoReflect.Descriptor instead.
+func (*ChangeReplicasResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ChangeReplicasResponse) GetNotLeader() *NotOwner {
+	if x != nil {
+		return x.NotLeader
+	}
+	return nil
+}
+
+type TransferLeaderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Shard         int32                  `protobuf:"varint,1,opt,name=shard,proto3" json:"shard,omitempty"`
+	To            string                 `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransferLeaderRequest) Reset() {
+	*x = TransferLeaderRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferLeaderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferLeaderRequest) ProtoMessage() {}
+
+func (x *TransferLeaderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferLeaderRequest.ProtoReflect.Descriptor instead.
+func (*TransferLeaderRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TransferLeaderRequest) GetShard() int32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *TransferLeaderRequest) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+type TransferLeaderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NotLeader     *NotOwner              `protobuf:"bytes,1,opt,name=not_leader,json=notLeader,proto3" json:"not_leader,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransferLeaderResponse) Reset() {
+	*x = TransferLeaderResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferLeaderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferLeaderResponse) ProtoMessage() {}
+
+func (x *TransferLeaderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferLeaderResponse.ProtoReflect.Descriptor instead.
+func (*TransferLeaderResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TransferLeaderResponse) GetNotLeader() *NotOwner {
+	if x != nil {
+		return x.NotLeader
+	}
+	return nil
+}
+
+type JoinRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          *NodeInfo              `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinRequest) Reset() {
+	*x = JoinRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinRequest) ProtoMessage() {}
+
+func (x *JoinRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinRequest.ProtoReflect.Descriptor instead.
+func (*JoinRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *JoinRequest) GetNode() *NodeInfo {
+	if x != nil {
+		return x.Node
+	}
+	return nil
+}
+
+type JoinResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	BootstrapMembers []string               `protobuf:"bytes,1,rep,name=bootstrap_members,json=bootstrapMembers,proto3" json:"bootstrap_members,omitempty"`
+	Nodes            []*NodeRecord          `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	// descriptors lets the new node find the meta group and route at once.
+	Descriptors   []*ShardDescriptor `protobuf:"bytes,3,rep,name=descriptors,proto3" json:"descriptors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinResponse) Reset() {
+	*x = JoinResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinResponse) ProtoMessage() {}
+
+func (x *JoinResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinResponse.ProtoReflect.Descriptor instead.
+func (*JoinResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *JoinResponse) GetBootstrapMembers() []string {
+	if x != nil {
+		return x.BootstrapMembers
+	}
+	return nil
+}
+
+func (x *JoinResponse) GetNodes() []*NodeRecord {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *JoinResponse) GetDescriptors() []*ShardDescriptor {
+	if x != nil {
+		return x.Descriptors
+	}
+	return nil
+}
+
+type HeartbeatRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          *NodeInfo              `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatRequest) Reset() {
+	*x = HeartbeatRequest{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatRequest) ProtoMessage() {}
+
+func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *HeartbeatRequest) GetNode() *NodeInfo {
+	if x != nil {
+		return x.Node
+	}
+	return nil
+}
+
+type HeartbeatResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NotLeader     *NotOwner              `protobuf:"bytes,1,opt,name=not_leader,json=notLeader,proto3" json:"not_leader,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_dkv_v1_cluster_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_cluster_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_cluster_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *HeartbeatResponse) GetNotLeader() *NotOwner {
+	if x != nil {
+		return x.NotLeader
+	}
+	return nil
+}
+
 var File_dkv_v1_cluster_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\x14dkv/v1/cluster.proto\x12\x06dkv.v1\x1a\x0fdkv/v1/kv.proto\x1a\x11dkv/v1/raft.proto\"\xba\x01\n" +
+	"\x14dkv/v1/cluster.proto\x12\x06dkv.v1\x1a\x0fdkv/v1/kv.proto\x1a\x11dkv/v1/meta.proto\x1a\x11dkv/v1/raft.proto\"\xe7\x01\n" +
 	"\bNodeInfo\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
 	"\fcluster_name\x18\x02 \x01(\tR\vclusterName\x12#\n" +
 	"\rinternal_addr\x18\x03 \x01(\tR\finternalAddr\x12/\n" +
 	"\x14started_at_unix_nano\x18\x04 \x01(\x03R\x11startedAtUnixNano\x12\x1c\n" +
-	"\tplacement\x18\x05 \x01(\tR\tplacement\"3\n" +
+	"\tplacement\x18\x05 \x01(\tR\tplacement\x12+\n" +
+	"\x11bootstrap_members\x18\x06 \x03(\tR\x10bootstrapMembers\"3\n" +
 	"\vPingRequest\x12$\n" +
 	"\x04from\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04from\"4\n" +
 	"\fPingResponse\x12$\n" +
-	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\"\xdf\x01\n" +
+	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\"\xb2\x02\n" +
 	"\x0eForwardRequest\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12&\n" +
 	"\x03put\x18\x02 \x01(\v2\x12.dkv.v1.PutRequestH\x00R\x03put\x12&\n" +
 	"\x03get\x18\x03 \x01(\v2\x12.dkv.v1.GetRequestH\x00R\x03get\x12/\n" +
 	"\x06delete\x18\x04 \x01(\v2\x15.dkv.v1.DeleteRequestH\x00R\x06delete\x120\n" +
-	"\x03cas\x18\x05 \x01(\v2\x1c.dkv.v1.CompareAndSetRequestH\x00R\x03casB\x04\n" +
-	"\x02op\"\x83\x02\n" +
+	"\x03cas\x18\x05 \x01(\v2\x1c.dkv.v1.CompareAndSetRequestH\x00R\x03cas\x12&\n" +
+	"\x03txn\x18\x06 \x01(\v2\x12.dkv.v1.TxnRequestH\x00R\x03txn\x12)\n" +
+	"\x04scan\x18\a \x01(\v2\x13.dkv.v1.ScanRequestH\x00R\x04scanB\x04\n" +
+	"\x02op\"g\n" +
+	"\n" +
+	"TxnRequest\x12\x1d\n" +
+	"\x03txn\x18\x01 \x01(\v2\v.dkv.v1.TxnR\x03txn\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x03 \x01(\x04R\trequestId\"E\n" +
+	"\vTxnResponse\x12\x1c\n" +
+	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x04R\aversion\"\\\n" +
+	"\vScanRequest\x12\x16\n" +
+	"\x06prefix\x18\x01 \x01(\fR\x06prefix\x125\n" +
+	"\vconsistency\x18\x02 \x01(\x0e2\x13.dkv.v1.ConsistencyR\vconsistency\"2\n" +
+	"\fScanResponse\x12\"\n" +
+	"\x03kvs\x18\x01 \x03(\v2\x10.dkv.v1.KeyValueR\x03kvs\"L\n" +
+	"\bKeyValue\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x04R\aversion\"\xd8\x02\n" +
 	"\x0fForwardResponse\x12'\n" +
 	"\x03put\x18\x01 \x01(\v2\x13.dkv.v1.PutResponseH\x00R\x03put\x12'\n" +
 	"\x03get\x18\x02 \x01(\v2\x13.dkv.v1.GetResponseH\x00R\x03get\x120\n" +
 	"\x06delete\x18\x03 \x01(\v2\x16.dkv.v1.DeleteResponseH\x00R\x06delete\x12/\n" +
 	"\tnot_owner\x18\x04 \x01(\v2\x10.dkv.v1.NotOwnerH\x00R\bnotOwner\x121\n" +
-	"\x03cas\x18\x05 \x01(\v2\x1d.dkv.v1.CompareAndSetResponseH\x00R\x03casB\b\n" +
+	"\x03cas\x18\x05 \x01(\v2\x1d.dkv.v1.CompareAndSetResponseH\x00R\x03cas\x12'\n" +
+	"\x03txn\x18\x06 \x01(\v2\x13.dkv.v1.TxnResponseH\x00R\x03txn\x12*\n" +
+	"\x04scan\x18\a \x01(\v2\x14.dkv.v1.ScanResponseH\x00R\x04scanB\b\n" +
 	"\x06result\"?\n" +
 	"\bNotOwner\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x1d\n" +
 	"\n" +
-	"owner_hint\x18\x02 \x01(\tR\townerHint2\xb3\x01\n" +
+	"owner_hint\x18\x02 \x01(\tR\townerHint\"\x13\n" +
+	"\x11NodeStatusRequest\"`\n" +
+	"\x12NodeStatusResponse\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x121\n" +
+	"\breplicas\x18\x02 \x03(\v2\x15.dkv.v1.ReplicaStatusR\breplicas\"\x81\x04\n" +
+	"\rReplicaStatus\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12\x16\n" +
+	"\x06leader\x18\x02 \x01(\tR\x06leader\x12\x12\n" +
+	"\x04term\x18\x03 \x01(\x04R\x04term\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x16\n" +
+	"\x06commit\x18\x05 \x01(\x04R\x06commit\x12\x18\n" +
+	"\aapplied\x18\x06 \x01(\x04R\aapplied\x12\x16\n" +
+	"\x06voters\x18\a \x03(\tR\x06voters\x12\x1a\n" +
+	"\blearners\x18\b \x03(\tR\blearners\x12?\n" +
+	"\bprogress\x18\t \x03(\v2#.dkv.v1.ReplicaStatus.ProgressEntryR\bprogress\x12\x1f\n" +
+	"\vfirst_index\x18\n" +
+	" \x01(\x04R\n" +
+	"firstIndex\x12\x1d\n" +
+	"\n" +
+	"last_index\x18\v \x01(\x04R\tlastIndex\x12%\n" +
+	"\x0esnapshots_sent\x18\f \x01(\x03R\rsnapshotsSent\x12/\n" +
+	"\x13snapshots_installed\x18\r \x01(\x03R\x12snapshotsInstalled\x12\x1e\n" +
+	"\n" +
+	"transferee\x18\x0e \x01(\tR\n" +
+	"transferee\x1a;\n" +
+	"\rProgressEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"u\n" +
+	"\x15ChangeReplicasRequest\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12-\n" +
+	"\x06change\x18\x02 \x01(\x0e2\x15.dkv.v1.ReplicaChangeR\x06change\x12\x17\n" +
+	"\anode_id\x18\x03 \x01(\tR\x06nodeId\"I\n" +
+	"\x16ChangeReplicasResponse\x12/\n" +
+	"\n" +
+	"not_leader\x18\x01 \x01(\v2\x10.dkv.v1.NotOwnerR\tnotLeader\"=\n" +
+	"\x15TransferLeaderRequest\x12\x14\n" +
+	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12\x0e\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\"I\n" +
+	"\x16TransferLeaderResponse\x12/\n" +
+	"\n" +
+	"not_leader\x18\x01 \x01(\v2\x10.dkv.v1.NotOwnerR\tnotLeader\"3\n" +
+	"\vJoinRequest\x12$\n" +
+	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\"\xa0\x01\n" +
+	"\fJoinResponse\x12+\n" +
+	"\x11bootstrap_members\x18\x01 \x03(\tR\x10bootstrapMembers\x12(\n" +
+	"\x05nodes\x18\x02 \x03(\v2\x12.dkv.v1.NodeRecordR\x05nodes\x129\n" +
+	"\vdescriptors\x18\x03 \x03(\v2\x17.dkv.v1.ShardDescriptorR\vdescriptors\"8\n" +
+	"\x10HeartbeatRequest\x12$\n" +
+	"\x04node\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\"D\n" +
+	"\x11HeartbeatResponse\x12/\n" +
+	"\n" +
+	"not_leader\x18\x01 \x01(\v2\x10.dkv.v1.NotOwnerR\tnotLeader*\x86\x01\n" +
+	"\rReplicaChange\x12\x1e\n" +
+	"\x1aREPLICA_CHANGE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aREPLICA_CHANGE_ADD_LEARNER\x10\x01\x12\x1a\n" +
+	"\x16REPLICA_CHANGE_PROMOTE\x10\x02\x12\x19\n" +
+	"\x15REPLICA_CHANGE_REMOVE\x10\x032\xe5\x04\n" +
 	"\x0fInternalService\x121\n" +
 	"\x04Ping\x12\x13.dkv.v1.PingRequest\x1a\x14.dkv.v1.PingResponse\x12:\n" +
 	"\aForward\x12\x16.dkv.v1.ForwardRequest\x1a\x17.dkv.v1.ForwardResponse\x121\n" +
-	"\x04Raft\x12\x13.dkv.v1.RaftRequest\x1a\x14.dkv.v1.RaftResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
+	"\x04Raft\x12\x13.dkv.v1.RaftRequest\x1a\x14.dkv.v1.RaftResponse\x12T\n" +
+	"\x0fInstallSnapshot\x12\x1e.dkv.v1.InstallSnapshotRequest\x1a\x1f.dkv.v1.InstallSnapshotResponse(\x01\x12C\n" +
+	"\n" +
+	"NodeStatus\x12\x19.dkv.v1.NodeStatusRequest\x1a\x1a.dkv.v1.NodeStatusResponse\x12O\n" +
+	"\x0eChangeReplicas\x12\x1d.dkv.v1.ChangeReplicasRequest\x1a\x1e.dkv.v1.ChangeReplicasResponse\x12O\n" +
+	"\x0eTransferLeader\x12\x1d.dkv.v1.TransferLeaderRequest\x1a\x1e.dkv.v1.TransferLeaderResponse\x121\n" +
+	"\x04Join\x12\x13.dkv.v1.JoinRequest\x1a\x14.dkv.v1.JoinResponse\x12@\n" +
+	"\tHeartbeat\x12\x18.dkv.v1.HeartbeatRequest\x1a\x19.dkv.v1.HeartbeatResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
 
 var (
 	file_dkv_v1_cluster_proto_rawDescOnce sync.Once
@@ -549,48 +1661,102 @@ func file_dkv_v1_cluster_proto_rawDescGZIP() []byte {
 	return file_dkv_v1_cluster_proto_rawDescData
 }
 
-var file_dkv_v1_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_dkv_v1_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_dkv_v1_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_dkv_v1_cluster_proto_goTypes = []any{
-	(*NodeInfo)(nil),              // 0: dkv.v1.NodeInfo
-	(*PingRequest)(nil),           // 1: dkv.v1.PingRequest
-	(*PingResponse)(nil),          // 2: dkv.v1.PingResponse
-	(*ForwardRequest)(nil),        // 3: dkv.v1.ForwardRequest
-	(*ForwardResponse)(nil),       // 4: dkv.v1.ForwardResponse
-	(*NotOwner)(nil),              // 5: dkv.v1.NotOwner
-	(*PutRequest)(nil),            // 6: dkv.v1.PutRequest
-	(*GetRequest)(nil),            // 7: dkv.v1.GetRequest
-	(*DeleteRequest)(nil),         // 8: dkv.v1.DeleteRequest
-	(*CompareAndSetRequest)(nil),  // 9: dkv.v1.CompareAndSetRequest
-	(*PutResponse)(nil),           // 10: dkv.v1.PutResponse
-	(*GetResponse)(nil),           // 11: dkv.v1.GetResponse
-	(*DeleteResponse)(nil),        // 12: dkv.v1.DeleteResponse
-	(*CompareAndSetResponse)(nil), // 13: dkv.v1.CompareAndSetResponse
-	(*RaftRequest)(nil),           // 14: dkv.v1.RaftRequest
-	(*RaftResponse)(nil),          // 15: dkv.v1.RaftResponse
+	(ReplicaChange)(0),              // 0: dkv.v1.ReplicaChange
+	(*NodeInfo)(nil),                // 1: dkv.v1.NodeInfo
+	(*PingRequest)(nil),             // 2: dkv.v1.PingRequest
+	(*PingResponse)(nil),            // 3: dkv.v1.PingResponse
+	(*ForwardRequest)(nil),          // 4: dkv.v1.ForwardRequest
+	(*TxnRequest)(nil),              // 5: dkv.v1.TxnRequest
+	(*TxnResponse)(nil),             // 6: dkv.v1.TxnResponse
+	(*ScanRequest)(nil),             // 7: dkv.v1.ScanRequest
+	(*ScanResponse)(nil),            // 8: dkv.v1.ScanResponse
+	(*KeyValue)(nil),                // 9: dkv.v1.KeyValue
+	(*ForwardResponse)(nil),         // 10: dkv.v1.ForwardResponse
+	(*NotOwner)(nil),                // 11: dkv.v1.NotOwner
+	(*NodeStatusRequest)(nil),       // 12: dkv.v1.NodeStatusRequest
+	(*NodeStatusResponse)(nil),      // 13: dkv.v1.NodeStatusResponse
+	(*ReplicaStatus)(nil),           // 14: dkv.v1.ReplicaStatus
+	(*ChangeReplicasRequest)(nil),   // 15: dkv.v1.ChangeReplicasRequest
+	(*ChangeReplicasResponse)(nil),  // 16: dkv.v1.ChangeReplicasResponse
+	(*TransferLeaderRequest)(nil),   // 17: dkv.v1.TransferLeaderRequest
+	(*TransferLeaderResponse)(nil),  // 18: dkv.v1.TransferLeaderResponse
+	(*JoinRequest)(nil),             // 19: dkv.v1.JoinRequest
+	(*JoinResponse)(nil),            // 20: dkv.v1.JoinResponse
+	(*HeartbeatRequest)(nil),        // 21: dkv.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),       // 22: dkv.v1.HeartbeatResponse
+	nil,                             // 23: dkv.v1.ReplicaStatus.ProgressEntry
+	(*PutRequest)(nil),              // 24: dkv.v1.PutRequest
+	(*GetRequest)(nil),              // 25: dkv.v1.GetRequest
+	(*DeleteRequest)(nil),           // 26: dkv.v1.DeleteRequest
+	(*CompareAndSetRequest)(nil),    // 27: dkv.v1.CompareAndSetRequest
+	(*Txn)(nil),                     // 28: dkv.v1.Txn
+	(Consistency)(0),                // 29: dkv.v1.Consistency
+	(*PutResponse)(nil),             // 30: dkv.v1.PutResponse
+	(*GetResponse)(nil),             // 31: dkv.v1.GetResponse
+	(*DeleteResponse)(nil),          // 32: dkv.v1.DeleteResponse
+	(*CompareAndSetResponse)(nil),   // 33: dkv.v1.CompareAndSetResponse
+	(*NodeRecord)(nil),              // 34: dkv.v1.NodeRecord
+	(*ShardDescriptor)(nil),         // 35: dkv.v1.ShardDescriptor
+	(*RaftRequest)(nil),             // 36: dkv.v1.RaftRequest
+	(*InstallSnapshotRequest)(nil),  // 37: dkv.v1.InstallSnapshotRequest
+	(*RaftResponse)(nil),            // 38: dkv.v1.RaftResponse
+	(*InstallSnapshotResponse)(nil), // 39: dkv.v1.InstallSnapshotResponse
 }
 var file_dkv_v1_cluster_proto_depIdxs = []int32{
-	0,  // 0: dkv.v1.PingRequest.from:type_name -> dkv.v1.NodeInfo
-	0,  // 1: dkv.v1.PingResponse.node:type_name -> dkv.v1.NodeInfo
-	6,  // 2: dkv.v1.ForwardRequest.put:type_name -> dkv.v1.PutRequest
-	7,  // 3: dkv.v1.ForwardRequest.get:type_name -> dkv.v1.GetRequest
-	8,  // 4: dkv.v1.ForwardRequest.delete:type_name -> dkv.v1.DeleteRequest
-	9,  // 5: dkv.v1.ForwardRequest.cas:type_name -> dkv.v1.CompareAndSetRequest
-	10, // 6: dkv.v1.ForwardResponse.put:type_name -> dkv.v1.PutResponse
-	11, // 7: dkv.v1.ForwardResponse.get:type_name -> dkv.v1.GetResponse
-	12, // 8: dkv.v1.ForwardResponse.delete:type_name -> dkv.v1.DeleteResponse
-	5,  // 9: dkv.v1.ForwardResponse.not_owner:type_name -> dkv.v1.NotOwner
-	13, // 10: dkv.v1.ForwardResponse.cas:type_name -> dkv.v1.CompareAndSetResponse
-	1,  // 11: dkv.v1.InternalService.Ping:input_type -> dkv.v1.PingRequest
-	3,  // 12: dkv.v1.InternalService.Forward:input_type -> dkv.v1.ForwardRequest
-	14, // 13: dkv.v1.InternalService.Raft:input_type -> dkv.v1.RaftRequest
-	2,  // 14: dkv.v1.InternalService.Ping:output_type -> dkv.v1.PingResponse
-	4,  // 15: dkv.v1.InternalService.Forward:output_type -> dkv.v1.ForwardResponse
-	15, // 16: dkv.v1.InternalService.Raft:output_type -> dkv.v1.RaftResponse
-	14, // [14:17] is the sub-list for method output_type
-	11, // [11:14] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	1,  // 0: dkv.v1.PingRequest.from:type_name -> dkv.v1.NodeInfo
+	1,  // 1: dkv.v1.PingResponse.node:type_name -> dkv.v1.NodeInfo
+	24, // 2: dkv.v1.ForwardRequest.put:type_name -> dkv.v1.PutRequest
+	25, // 3: dkv.v1.ForwardRequest.get:type_name -> dkv.v1.GetRequest
+	26, // 4: dkv.v1.ForwardRequest.delete:type_name -> dkv.v1.DeleteRequest
+	27, // 5: dkv.v1.ForwardRequest.cas:type_name -> dkv.v1.CompareAndSetRequest
+	5,  // 6: dkv.v1.ForwardRequest.txn:type_name -> dkv.v1.TxnRequest
+	7,  // 7: dkv.v1.ForwardRequest.scan:type_name -> dkv.v1.ScanRequest
+	28, // 8: dkv.v1.TxnRequest.txn:type_name -> dkv.v1.Txn
+	29, // 9: dkv.v1.ScanRequest.consistency:type_name -> dkv.v1.Consistency
+	9,  // 10: dkv.v1.ScanResponse.kvs:type_name -> dkv.v1.KeyValue
+	30, // 11: dkv.v1.ForwardResponse.put:type_name -> dkv.v1.PutResponse
+	31, // 12: dkv.v1.ForwardResponse.get:type_name -> dkv.v1.GetResponse
+	32, // 13: dkv.v1.ForwardResponse.delete:type_name -> dkv.v1.DeleteResponse
+	11, // 14: dkv.v1.ForwardResponse.not_owner:type_name -> dkv.v1.NotOwner
+	33, // 15: dkv.v1.ForwardResponse.cas:type_name -> dkv.v1.CompareAndSetResponse
+	6,  // 16: dkv.v1.ForwardResponse.txn:type_name -> dkv.v1.TxnResponse
+	8,  // 17: dkv.v1.ForwardResponse.scan:type_name -> dkv.v1.ScanResponse
+	14, // 18: dkv.v1.NodeStatusResponse.replicas:type_name -> dkv.v1.ReplicaStatus
+	23, // 19: dkv.v1.ReplicaStatus.progress:type_name -> dkv.v1.ReplicaStatus.ProgressEntry
+	0,  // 20: dkv.v1.ChangeReplicasRequest.change:type_name -> dkv.v1.ReplicaChange
+	11, // 21: dkv.v1.ChangeReplicasResponse.not_leader:type_name -> dkv.v1.NotOwner
+	11, // 22: dkv.v1.TransferLeaderResponse.not_leader:type_name -> dkv.v1.NotOwner
+	1,  // 23: dkv.v1.JoinRequest.node:type_name -> dkv.v1.NodeInfo
+	34, // 24: dkv.v1.JoinResponse.nodes:type_name -> dkv.v1.NodeRecord
+	35, // 25: dkv.v1.JoinResponse.descriptors:type_name -> dkv.v1.ShardDescriptor
+	1,  // 26: dkv.v1.HeartbeatRequest.node:type_name -> dkv.v1.NodeInfo
+	11, // 27: dkv.v1.HeartbeatResponse.not_leader:type_name -> dkv.v1.NotOwner
+	2,  // 28: dkv.v1.InternalService.Ping:input_type -> dkv.v1.PingRequest
+	4,  // 29: dkv.v1.InternalService.Forward:input_type -> dkv.v1.ForwardRequest
+	36, // 30: dkv.v1.InternalService.Raft:input_type -> dkv.v1.RaftRequest
+	37, // 31: dkv.v1.InternalService.InstallSnapshot:input_type -> dkv.v1.InstallSnapshotRequest
+	12, // 32: dkv.v1.InternalService.NodeStatus:input_type -> dkv.v1.NodeStatusRequest
+	15, // 33: dkv.v1.InternalService.ChangeReplicas:input_type -> dkv.v1.ChangeReplicasRequest
+	17, // 34: dkv.v1.InternalService.TransferLeader:input_type -> dkv.v1.TransferLeaderRequest
+	19, // 35: dkv.v1.InternalService.Join:input_type -> dkv.v1.JoinRequest
+	21, // 36: dkv.v1.InternalService.Heartbeat:input_type -> dkv.v1.HeartbeatRequest
+	3,  // 37: dkv.v1.InternalService.Ping:output_type -> dkv.v1.PingResponse
+	10, // 38: dkv.v1.InternalService.Forward:output_type -> dkv.v1.ForwardResponse
+	38, // 39: dkv.v1.InternalService.Raft:output_type -> dkv.v1.RaftResponse
+	39, // 40: dkv.v1.InternalService.InstallSnapshot:output_type -> dkv.v1.InstallSnapshotResponse
+	13, // 41: dkv.v1.InternalService.NodeStatus:output_type -> dkv.v1.NodeStatusResponse
+	16, // 42: dkv.v1.InternalService.ChangeReplicas:output_type -> dkv.v1.ChangeReplicasResponse
+	18, // 43: dkv.v1.InternalService.TransferLeader:output_type -> dkv.v1.TransferLeaderResponse
+	20, // 44: dkv.v1.InternalService.Join:output_type -> dkv.v1.JoinResponse
+	22, // 45: dkv.v1.InternalService.Heartbeat:output_type -> dkv.v1.HeartbeatResponse
+	37, // [37:46] is the sub-list for method output_type
+	28, // [28:37] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_cluster_proto_init() }
@@ -599,32 +1765,38 @@ func file_dkv_v1_cluster_proto_init() {
 		return
 	}
 	file_dkv_v1_kv_proto_init()
+	file_dkv_v1_meta_proto_init()
 	file_dkv_v1_raft_proto_init()
 	file_dkv_v1_cluster_proto_msgTypes[3].OneofWrappers = []any{
 		(*ForwardRequest_Put)(nil),
 		(*ForwardRequest_Get)(nil),
 		(*ForwardRequest_Delete)(nil),
 		(*ForwardRequest_Cas)(nil),
+		(*ForwardRequest_Txn)(nil),
+		(*ForwardRequest_Scan)(nil),
 	}
-	file_dkv_v1_cluster_proto_msgTypes[4].OneofWrappers = []any{
+	file_dkv_v1_cluster_proto_msgTypes[9].OneofWrappers = []any{
 		(*ForwardResponse_Put)(nil),
 		(*ForwardResponse_Get)(nil),
 		(*ForwardResponse_Delete)(nil),
 		(*ForwardResponse_NotOwner)(nil),
 		(*ForwardResponse_Cas)(nil),
+		(*ForwardResponse_Txn)(nil),
+		(*ForwardResponse_Scan)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_cluster_proto_rawDesc), len(file_dkv_v1_cluster_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   6,
+			NumEnums:      1,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_dkv_v1_cluster_proto_goTypes,
 		DependencyIndexes: file_dkv_v1_cluster_proto_depIdxs,
+		EnumInfos:         file_dkv_v1_cluster_proto_enumTypes,
 		MessageInfos:      file_dkv_v1_cluster_proto_msgTypes,
 	}.Build()
 	File_dkv_v1_cluster_proto = out.File

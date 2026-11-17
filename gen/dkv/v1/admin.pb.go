@@ -76,6 +76,86 @@ func (MemberState) EnumDescriptor() ([]byte, []int) {
 	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
 }
 
+type DecommissionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecommissionRequest) Reset() {
+	*x = DecommissionRequest{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecommissionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecommissionRequest) ProtoMessage() {}
+
+func (x *DecommissionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecommissionRequest.ProtoReflect.Descriptor instead.
+func (*DecommissionRequest) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *DecommissionRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type DecommissionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DecommissionResponse) Reset() {
+	*x = DecommissionResponse{}
+	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DecommissionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DecommissionResponse) ProtoMessage() {}
+
+func (x *DecommissionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DecommissionResponse.ProtoReflect.Descriptor instead.
+func (*DecommissionResponse) Descriptor() ([]byte, []int) {
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{1}
+}
+
 type ClusterStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -84,7 +164,7 @@ type ClusterStatusRequest struct {
 
 func (x *ClusterStatusRequest) Reset() {
 	*x = ClusterStatusRequest{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	mi := &file_dkv_v1_admin_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +176,7 @@ func (x *ClusterStatusRequest) String() string {
 func (*ClusterStatusRequest) ProtoMessage() {}
 
 func (x *ClusterStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[0]
+	mi := &file_dkv_v1_admin_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +189,7 @@ func (x *ClusterStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterStatusRequest.ProtoReflect.Descriptor instead.
 func (*ClusterStatusRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{0}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{2}
 }
 
 type ClusterStatusResponse struct {
@@ -122,7 +202,7 @@ type ClusterStatusResponse struct {
 
 func (x *ClusterStatusResponse) Reset() {
 	*x = ClusterStatusResponse{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	mi := &file_dkv_v1_admin_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -134,7 +214,7 @@ func (x *ClusterStatusResponse) String() string {
 func (*ClusterStatusResponse) ProtoMessage() {}
 
 func (x *ClusterStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[1]
+	mi := &file_dkv_v1_admin_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -147,7 +227,7 @@ func (x *ClusterStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterStatusResponse.ProtoReflect.Descriptor instead.
 func (*ClusterStatusResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{1}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ClusterStatusResponse) GetSelf() *NodeInfo {
@@ -178,13 +258,17 @@ type MemberStatus struct {
 	RttNanos            int64  `protobuf:"varint,6,opt,name=rtt_nanos,json=rttNanos,proto3" json:"rtt_nanos,omitempty"`
 	ConsecutiveFailures uint32 `protobuf:"varint,7,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
 	LastError           string `protobuf:"bytes,8,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// node_state is the meta group's record of the node; suspect is set when
+	// the meta leader has not heard its heartbeat for liveness.suspect_after.
+	NodeState     NodeState `protobuf:"varint,9,opt,name=node_state,json=nodeState,proto3,enum=dkv.v1.NodeState" json:"node_state,omitempty"`
+	Suspect       bool      `protobuf:"varint,10,opt,name=suspect,proto3" json:"suspect,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MemberStatus) Reset() {
 	*x = MemberStatus{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	mi := &file_dkv_v1_admin_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -196,7 +280,7 @@ func (x *MemberStatus) String() string {
 func (*MemberStatus) ProtoMessage() {}
 
 func (x *MemberStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[2]
+	mi := &file_dkv_v1_admin_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -209,7 +293,7 @@ func (x *MemberStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberStatus.ProtoReflect.Descriptor instead.
 func (*MemberStatus) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{2}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *MemberStatus) GetAddr() string {
@@ -268,6 +352,20 @@ func (x *MemberStatus) GetLastError() string {
 	return ""
 }
 
+func (x *MemberStatus) GetNodeState() NodeState {
+	if x != nil {
+		return x.NodeState
+	}
+	return NodeState_NODE_STATE_UNSPECIFIED
+}
+
+func (x *MemberStatus) GetSuspect() bool {
+	if x != nil {
+		return x.Suspect
+	}
+	return false
+}
+
 type ShardMapRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -276,7 +374,7 @@ type ShardMapRequest struct {
 
 func (x *ShardMapRequest) Reset() {
 	*x = ShardMapRequest{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	mi := &file_dkv_v1_admin_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -288,7 +386,7 @@ func (x *ShardMapRequest) String() string {
 func (*ShardMapRequest) ProtoMessage() {}
 
 func (x *ShardMapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[3]
+	mi := &file_dkv_v1_admin_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -301,7 +399,7 @@ func (x *ShardMapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardMapRequest.ProtoReflect.Descriptor instead.
 func (*ShardMapRequest) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{3}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{5}
 }
 
 type ShardMapResponse struct {
@@ -315,7 +413,7 @@ type ShardMapResponse struct {
 
 func (x *ShardMapResponse) Reset() {
 	*x = ShardMapResponse{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	mi := &file_dkv_v1_admin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -327,7 +425,7 @@ func (x *ShardMapResponse) String() string {
 func (*ShardMapResponse) ProtoMessage() {}
 
 func (x *ShardMapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[4]
+	mi := &file_dkv_v1_admin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -340,7 +438,7 @@ func (x *ShardMapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardMapResponse.ProtoReflect.Descriptor instead.
 func (*ShardMapResponse) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{4}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ShardMapResponse) GetShardCount() uint32 {
@@ -376,17 +474,21 @@ type ShardInfo struct {
 	LastSeq uint64 `protobuf:"varint,4,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
 	// For a local replica: the leader it knows of, its term, its role and
 	// its commit index.
-	Leader        string `protobuf:"bytes,5,opt,name=leader,proto3" json:"leader,omitempty"`
-	Term          uint64 `protobuf:"varint,6,opt,name=term,proto3" json:"term,omitempty"`
-	Role          string `protobuf:"bytes,7,opt,name=role,proto3" json:"role,omitempty"`
-	CommitIndex   uint64 `protobuf:"varint,8,opt,name=commit_index,json=commitIndex,proto3" json:"commit_index,omitempty"`
+	Leader      string `protobuf:"bytes,5,opt,name=leader,proto3" json:"leader,omitempty"`
+	Term        uint64 `protobuf:"varint,6,opt,name=term,proto3" json:"term,omitempty"`
+	Role        string `protobuf:"bytes,7,opt,name=role,proto3" json:"role,omitempty"`
+	CommitIndex uint64 `protobuf:"varint,8,opt,name=commit_index,json=commitIndex,proto3" json:"commit_index,omitempty"`
+	// voter_ids and learner_ids name the members by node ID; replicas lists
+	// the voters' internal addresses.
+	VoterIds      []string `protobuf:"bytes,9,rep,name=voter_ids,json=voterIds,proto3" json:"voter_ids,omitempty"`
+	LearnerIds    []string `protobuf:"bytes,10,rep,name=learner_ids,json=learnerIds,proto3" json:"learner_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ShardInfo) Reset() {
 	*x = ShardInfo{}
-	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	mi := &file_dkv_v1_admin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -398,7 +500,7 @@ func (x *ShardInfo) String() string {
 func (*ShardInfo) ProtoMessage() {}
 
 func (x *ShardInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_dkv_v1_admin_proto_msgTypes[5]
+	mi := &file_dkv_v1_admin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -411,7 +513,7 @@ func (x *ShardInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardInfo.ProtoReflect.Descriptor instead.
 func (*ShardInfo) Descriptor() ([]byte, []int) {
-	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{5}
+	return file_dkv_v1_admin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ShardInfo) GetShard() uint32 {
@@ -470,15 +572,32 @@ func (x *ShardInfo) GetCommitIndex() uint64 {
 	return 0
 }
 
+func (x *ShardInfo) GetVoterIds() []string {
+	if x != nil {
+		return x.VoterIds
+	}
+	return nil
+}
+
+func (x *ShardInfo) GetLearnerIds() []string {
+	if x != nil {
+		return x.LearnerIds
+	}
+	return nil
+}
+
 var File_dkv_v1_admin_proto protoreflect.FileDescriptor
 
 const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\n" +
-	"\x12dkv/v1/admin.proto\x12\x06dkv.v1\x1a\x14dkv/v1/cluster.proto\"\x16\n" +
+	"\x12dkv/v1/admin.proto\x12\x06dkv.v1\x1a\x14dkv/v1/cluster.proto\x1a\x11dkv/v1/meta.proto\".\n" +
+	"\x13DecommissionRequest\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"\x16\n" +
+	"\x14DecommissionResponse\"\x16\n" +
 	"\x14ClusterStatusRequest\"m\n" +
 	"\x15ClusterStatusResponse\x12$\n" +
 	"\x04self\x18\x01 \x01(\v2\x10.dkv.v1.NodeInfoR\x04self\x12.\n" +
-	"\amembers\x18\x02 \x03(\v2\x14.dkv.v1.MemberStatusR\amembers\"\xa5\x02\n" +
+	"\amembers\x18\x02 \x03(\v2\x14.dkv.v1.MemberStatusR\amembers\"\xf1\x02\n" +
 	"\fMemberStatus\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12$\n" +
 	"\x04node\x18\x02 \x01(\v2\x10.dkv.v1.NodeInfoR\x04node\x12)\n" +
@@ -488,13 +607,17 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\trtt_nanos\x18\x06 \x01(\x03R\brttNanos\x121\n" +
 	"\x14consecutive_failures\x18\a \x01(\rR\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\b \x01(\tR\tlastError\"\x11\n" +
+	"last_error\x18\b \x01(\tR\tlastError\x120\n" +
+	"\n" +
+	"node_state\x18\t \x01(\x0e2\x11.dkv.v1.NodeStateR\tnodeState\x12\x18\n" +
+	"\asuspect\x18\n" +
+	" \x01(\bR\asuspect\"\x11\n" +
 	"\x0fShardMapRequest\"\x8d\x01\n" +
 	"\x10ShardMapResponse\x12\x1f\n" +
 	"\vshard_count\x18\x01 \x01(\rR\n" +
 	"shardCount\x12-\n" +
 	"\x12replication_factor\x18\x02 \x01(\rR\x11replicationFactor\x12)\n" +
-	"\x06shards\x18\x03 \x03(\v2\x11.dkv.v1.ShardInfoR\x06shards\"\xd1\x01\n" +
+	"\x06shards\x18\x03 \x03(\v2\x11.dkv.v1.ShardInfoR\x06shards\"\x8f\x02\n" +
 	"\tShardInfo\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x1a\n" +
 	"\breplicas\x18\x02 \x03(\tR\breplicas\x12\x14\n" +
@@ -503,15 +626,20 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x06leader\x18\x05 \x01(\tR\x06leader\x12\x12\n" +
 	"\x04term\x18\x06 \x01(\x04R\x04term\x12\x12\n" +
 	"\x04role\x18\a \x01(\tR\x04role\x12!\n" +
-	"\fcommit_index\x18\b \x01(\x04R\vcommitIndex*q\n" +
+	"\fcommit_index\x18\b \x01(\x04R\vcommitIndex\x12\x1b\n" +
+	"\tvoter_ids\x18\t \x03(\tR\bvoterIds\x12\x1f\n" +
+	"\vlearner_ids\x18\n" +
+	" \x03(\tR\n" +
+	"learnerIds*q\n" +
 	"\vMemberState\x12\x1c\n" +
 	"\x18MEMBER_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MEMBER_STATE_UNKNOWN\x10\x01\x12\x13\n" +
 	"\x0fMEMBER_STATE_UP\x10\x02\x12\x15\n" +
-	"\x11MEMBER_STATE_DOWN\x10\x032\x9b\x01\n" +
+	"\x11MEMBER_STATE_DOWN\x10\x032\xe6\x01\n" +
 	"\fAdminService\x12L\n" +
 	"\rClusterStatus\x12\x1c.dkv.v1.ClusterStatusRequest\x1a\x1d.dkv.v1.ClusterStatusResponse\x12=\n" +
-	"\bShardMap\x12\x17.dkv.v1.ShardMapRequest\x1a\x18.dkv.v1.ShardMapResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
+	"\bShardMap\x12\x17.dkv.v1.ShardMapRequest\x1a\x18.dkv.v1.ShardMapResponse\x12I\n" +
+	"\fDecommission\x12\x1b.dkv.v1.DecommissionRequest\x1a\x1c.dkv.v1.DecommissionResponseB>Z<github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1b\x06proto3"
 
 var (
 	file_dkv_v1_admin_proto_rawDescOnce sync.Once
@@ -526,32 +654,38 @@ func file_dkv_v1_admin_proto_rawDescGZIP() []byte {
 }
 
 var file_dkv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_dkv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_dkv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_dkv_v1_admin_proto_goTypes = []any{
 	(MemberState)(0),              // 0: dkv.v1.MemberState
-	(*ClusterStatusRequest)(nil),  // 1: dkv.v1.ClusterStatusRequest
-	(*ClusterStatusResponse)(nil), // 2: dkv.v1.ClusterStatusResponse
-	(*MemberStatus)(nil),          // 3: dkv.v1.MemberStatus
-	(*ShardMapRequest)(nil),       // 4: dkv.v1.ShardMapRequest
-	(*ShardMapResponse)(nil),      // 5: dkv.v1.ShardMapResponse
-	(*ShardInfo)(nil),             // 6: dkv.v1.ShardInfo
-	(*NodeInfo)(nil),              // 7: dkv.v1.NodeInfo
+	(*DecommissionRequest)(nil),   // 1: dkv.v1.DecommissionRequest
+	(*DecommissionResponse)(nil),  // 2: dkv.v1.DecommissionResponse
+	(*ClusterStatusRequest)(nil),  // 3: dkv.v1.ClusterStatusRequest
+	(*ClusterStatusResponse)(nil), // 4: dkv.v1.ClusterStatusResponse
+	(*MemberStatus)(nil),          // 5: dkv.v1.MemberStatus
+	(*ShardMapRequest)(nil),       // 6: dkv.v1.ShardMapRequest
+	(*ShardMapResponse)(nil),      // 7: dkv.v1.ShardMapResponse
+	(*ShardInfo)(nil),             // 8: dkv.v1.ShardInfo
+	(*NodeInfo)(nil),              // 9: dkv.v1.NodeInfo
+	(NodeState)(0),                // 10: dkv.v1.NodeState
 }
 var file_dkv_v1_admin_proto_depIdxs = []int32{
-	7, // 0: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
-	3, // 1: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
-	7, // 2: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
-	0, // 3: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
-	6, // 4: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
-	1, // 5: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
-	4, // 6: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
-	2, // 7: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
-	5, // 8: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	9,  // 0: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
+	5,  // 1: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
+	9,  // 2: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
+	0,  // 3: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
+	10, // 4: dkv.v1.MemberStatus.node_state:type_name -> dkv.v1.NodeState
+	8,  // 5: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
+	3,  // 6: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
+	6,  // 7: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
+	1,  // 8: dkv.v1.AdminService.Decommission:input_type -> dkv.v1.DecommissionRequest
+	4,  // 9: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
+	7,  // 10: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
+	2,  // 11: dkv.v1.AdminService.Decommission:output_type -> dkv.v1.DecommissionResponse
+	9,  // [9:12] is the sub-list for method output_type
+	6,  // [6:9] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_admin_proto_init() }
@@ -560,13 +694,14 @@ func file_dkv_v1_admin_proto_init() {
 		return
 	}
 	file_dkv_v1_cluster_proto_init()
+	file_dkv_v1_meta_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dkv_v1_admin_proto_rawDesc), len(file_dkv_v1_admin_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

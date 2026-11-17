@@ -140,8 +140,8 @@ func startCluster(t *testing.T, n, holders int) *testCluster {
 		}
 		pool := transport.NewPool(tcfg)
 		t.Cleanup(func() { _ = pool.Close() })
-		nd.router = New(Config{Self: nd.addr, Shards: shards, Replicas: c.replicas, Local: local,
-			Pool: pool, Log: slog.New(slog.DiscardHandler)})
+		nd.router = New(Config{Self: nd.addr, Shards: shards, Replicas: c.replicas, Resolve: identity,
+			Local: localOf(local), Pool: pool, Log: slog.New(slog.DiscardHandler)})
 		srv := transport.NewServer(tcfg)
 		dkvv1.RegisterInternalServiceServer(srv, internalAPI{r: nd.router})
 		var swg sync.WaitGroup
@@ -177,6 +177,13 @@ func (c *testCluster) leader(shard int) *testNode {
 	}
 	c.t.Fatalf("shard %d: replicas did not agree on a leader", shard)
 	return nil
+}
+
+// In these tests node IDs are the nodes' addresses.
+func identity(id string) string { return id }
+
+func localOf(m map[int]Replica) func(int) Replica {
+	return func(s int) Replica { return m[s] }
 }
 
 func ctx(t *testing.T) context.Context {
@@ -355,7 +362,7 @@ func TestDeadReplicasFailWithinDeadline(t *testing.T) {
 	pool := transport.NewPool(tcfg)
 	defer func() { _ = pool.Close() }()
 	r := New(Config{Self: "127.0.0.1:1", Shards: shards, Pool: pool, Log: slog.New(slog.DiscardHandler),
-		Replicas: func(int) []string { return []string{dead} }, Local: map[int]Replica{}})
+		Replicas: func(int) []string { return []string{dead} }, Resolve: identity, Local: localOf(nil)})
 	c, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	start := time.Now()

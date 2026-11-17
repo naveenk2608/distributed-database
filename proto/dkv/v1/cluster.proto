@@ -3,13 +3,13 @@ syntax = "proto3";
 package dkv.v1;
 
 import "dkv/v1/kv.proto";
+import "dkv/v1/meta.proto";
 import "dkv/v1/raft.proto";
 
 option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
 
 // InternalService is the node-to-node API, served on each node's internal
-// address (cluster.internal_addr). Clients never call it. Later phases add
-// Raft message batches, snapshot streams and request forwarding.
+// address (cluster.internal_addr). Clients never call it.
 service InternalService {
   // Ping returns the receiving node's identity. Every node pings each peer
   // in its bootstrap list to detect failures; a peer in another cluster
@@ -25,6 +25,28 @@ service InternalService {
   // Raft delivers a batch of Raft messages for any number of shards.
   // Delivery is best effort: Raft tolerates lost messages.
   rpc Raft(RaftRequest) returns (RaftResponse);
+
+  // InstallSnapshot streams a snapshot from a group's leader to a member
+  // that needs it. It returns once the receiver has staged the data.
+  rpc InstallSnapshot(stream InstallSnapshotRequest) returns (InstallSnapshotResponse);
+
+  // NodeStatus reports every replica the receiving node holds.
+  rpc NodeStatus(NodeStatusRequest) returns (NodeStatusResponse);
+
+  // ChangeReplicas makes a single-server membership change in a group; the
+  // receiver must lead it, or it answers not_leader.
+  rpc ChangeReplicas(ChangeReplicasRequest) returns (ChangeReplicasResponse);
+
+  // TransferLeader hands a group's leadership to another voter; the
+  // receiver must lead it, or it answers not_leader.
+  rpc TransferLeader(TransferLeaderRequest) returns (TransferLeaderResponse);
+
+  // Join registers a new node with the cluster's meta group.
+  rpc Join(JoinRequest) returns (JoinResponse);
+
+  // Heartbeat tells the meta leader that a node is alive; any other node
+  // answers not_leader.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 // NodeInfo identifies a node.
@@ -36,9 +58,13 @@ message NodeInfo {
   // internal_addr is the address other nodes use to reach this node.
   string internal_addr = 3;
   int64 started_at_unix_nano = 4;
-  // placement fingerprints the shard count, replication factor and member
-  // list; nodes whose fingerprints differ would place shards differently.
+  // placement fingerprints the shard count, replication factor and
+  // bootstrap peer list; nodes whose fingerprints differ were configured
+  // differently.
   string placement = 5;
+  // bootstrap_members lists the node IDs the cluster was bootstrapped
+  // with, once this node has bootstrapped or joined; empty on a fresh node.
+  repeated string bootstrap_members = 6;
 }
 
 message PingRequest {
@@ -56,7 +82,35 @@ message ForwardRequest {
     GetRequest get = 3;
     DeleteRequest delete = 4;
     CompareAndSetRequest cas = 5;
+    TxnRequest txn = 6;
+    ScanRequest scan = 7;
   }
+}
+
+message TxnRequest {
+  Txn txn = 1;
+  string client_id = 2;
+  uint64 request_id = 3;
+}
+
+message TxnResponse {
+  bool succeeded = 1;
+  uint64 version = 2;
+}
+
+message ScanRequest {
+  bytes prefix = 1;
+  Consistency consistency = 2;
+}
+
+message ScanResponse {
+  repeated KeyValue kvs = 1;
+}
+
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+  uint64 version = 3;
 }
 
 message ForwardResponse {
@@ -66,6 +120,8 @@ message ForwardResponse {
     DeleteResponse delete = 3;
     NotOwner not_owner = 4;
     CompareAndSetResponse cas = 5;
+    TxnResponse txn = 6;
+    ScanResponse scan = 7;
   }
 }
 
@@ -76,4 +132,75 @@ message NotOwner {
   // owner_hint is the internal address of the node the receiver believes
   // leads the shard, or empty if it knows of no leader.
   string owner_hint = 2;
+}
+
+message NodeStatusRequest {}
+
+message NodeStatusResponse {
+  string node_id = 1;
+  repeated ReplicaStatus replicas = 2;
+}
+
+// ReplicaStatus describes one replica (shard -1 is the meta group).
+message ReplicaStatus {
+  int32 shard = 1;
+  string leader = 2;
+  uint64 term = 3;
+  string role = 4;
+  uint64 commit = 5;
+  uint64 applied = 6;
+  repeated string voters = 7;
+  repeated string learners = 8;
+  // progress is each member's match index, on the leader only.
+  map<string, uint64> progress = 9;
+  uint64 first_index = 10;
+  uint64 last_index = 11;
+  int64 snapshots_sent = 12;
+  int64 snapshots_installed = 13;
+  string transferee = 14;
+}
+
+enum ReplicaChange {
+  REPLICA_CHANGE_UNSPECIFIED = 0;
+  REPLICA_CHANGE_ADD_LEARNER = 1;
+  REPLICA_CHANGE_PROMOTE = 2;
+  REPLICA_CHANGE_REMOVE = 3;
+}
+
+message ChangeReplicasRequest {
+  int32 shard = 1;
+  ReplicaChange change = 2;
+  string node_id = 3;
+}
+
+message ChangeReplicasResponse {
+  NotOwner not_leader = 1;
+}
+
+message TransferLeaderRequest {
+  int32 shard = 1;
+  string to = 2;
+}
+
+message TransferLeaderResponse {
+  NotOwner not_leader = 1;
+}
+
+message JoinRequest {
+  NodeInfo node = 1;
+}
+
+message JoinResponse {
+  repeated string bootstrap_members = 1;
+  repeated NodeRecord nodes = 2;
+  // descriptors lets the new node find the meta group and route at once.
+  repeated ShardDescriptor descriptors = 3;
+}
+
+message HeartbeatRequest {
+  NodeInfo node = 1;
+}
+
+message HeartbeatResponse {
+  NotOwner not_leader = 1;
 }

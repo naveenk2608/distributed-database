@@ -233,7 +233,8 @@ Other tests: a shard's keys fail within the deadline while its owner is down and
 
 ## Phase 6: Raft consensus and replication
 
-Status: **done.** All three gate items passed locally on 2026-11-16.
+Status: **done.** All three gate items passed locally on 2026-11-16; CI run 43984531065 on main
+at 8c7def4 (`check`, `crash`, `storage-gate`, `sim`) is green.
 
 ### Gate
 
@@ -340,4 +341,111 @@ and stale reads.
   with three local processes; not on separate machines.
 - The Docker Compose gate is still blocked (see "Needs from you").
 - Not done: an independent second review of the Phase 6 diff against the plan.
+
+## Phase 7: Snapshots, failure detection, membership changes and recovery
+
+Status: **done.** All four gate items passed locally on 2026-11-17.
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| A node down past the dead timeout has its replicas recreated elsewhere and every shard returns to RF voters | `test/integration` `TestDeadNodeReplicasAreRecreated`: 4 nodes, 8 shards plus the meta group, RF 3, `liveness.dead_after` 1.5 s. One node is stopped; the test waits until every group's leader reports 3 voters, none of them the stopped node, and no learners; the stopped node must be recorded dead, nothing may move before the dead timeout, the descriptors must drop it, and every acknowledged write must read back. Four runs (three under `-race`): every group had 3 live voters again 2.2–3.1 s after the stop, with the node a voter in 5 to 9 of the 9 groups. | Passed |
+| A wiped node rejoins and catches up through snapshots | `TestWipedNodeRejoinsThroughSnapshots`: 3 nodes, 4 shards, `raft.compact_entries` 50; 400 writes, then the test waits until every shard's log is compacted. One node is stopped, its data directory deleted, and it is restarted with the same configuration. It comes back with a new node ID, sees from its peers' pings that the cluster was bootstrapped without it, and joins; its old identity is declared dead and removed. Every group then has 3 voters including the new ID and not the old one; the node's own replicas serve every acknowledged write through stale reads. Four runs: back in every group 2.1–2.5 s after the restart, each time after installing 4 snapshots. | Passed |
+| Adding a node rebalances with write unavailability limited to brief leader-transfer pauses, measured and reported | `TestAddedNodeTakesItsShare`: 3 nodes, 8 shards; four writers run through the client during the whole rebalance. A fourth node joins with `cluster.join`; the test waits until every group's voters equal the placement the ring computes over the four nodes (no learners) and until no node leads two more groups than another, with the new node leading at least one. Every write must succeed (the client retries a leader that is handing over) and none may take over 2 s; every acknowledged write reads back through the new node. Four runs: placement reached in 0.86–1.1 s; 298–661 writes during the rebalance, 0 failed; write latency p99 57–96 ms, max 89–396 ms; 0–3 writes over 100 ms. | Passed |
+| Losing meta quorum stops rebalancing but not reads or writes | `TestMetaQuorumLossStopsRebalancingNotData`: 4 nodes, 8 shards, `dead_after` 1 s. Every node drops the meta group's Raft traffic in both directions (a transport filter, the fault-injection hook), and the test waits until the meta group has no leader. A data node is then stopped. For three dead timeouts, writes and linearizable reads to keys of all shards keep succeeding, and no group changes its voters. When the filter is removed, the meta group elects a leader, waits a full dead timeout, and the stopped node is replaced in every group. Four runs: 64–176 writes and their reads during the outage; replaced 1.6–1.9 s after recovery. | Passed |
+
+Mutation checks (each deliberate bug applied alone; the named tests fail):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| The planner removes a group's leader without transferring leadership first | `meta` `TestPlanConvergesSafely`, `TestNewNodeGetsItsShareAndLeaders` |
+| The planner promotes a learner that has not caught up | `TestLearnerWaitsUntilCaughtUp` |
+| The planner adds a learner before removing a surplus voter | `TestPlanConvergesSafely`, `TestNewNodeGetsItsShareAndLeaders`, `TestDecommission` |
+| A new meta leader declares nodes dead without waiting a full timeout | `TestLiveness` |
+| A removed voter stops campaigning before its removal commits | `raft` `TestRemovedNodeCampaignsUntilItsRemovalCommits` |
+| A non-voter's timer reset keeps it inside its lease forever | `TestLearnerLeaseExpires` |
+| The engine is switched to a snapshot before the Raft log records it | `replica` `TestCrashDuringSnapshotInstall` |
+| An interrupted snapshot install is not finished on restart | `TestCrashDuringSnapshotInstall` |
+| A wiped node bootstraps instead of joining | `TestWipedNodeRejoinsThroughSnapshots` |
+| Leaders never send snapshots | `TestWipedNodeRejoinsThroughSnapshots` |
+
+The thirteen Raft mutations of Phase 6 were rerun on the Phase 7 core and are all still
+caught (some now also by the membership tests).
+
+Also tried: writing a staged snapshot's completion marker before moving its files was not
+caught, and is not a bug: the marker is only consulted after the Raft log records the
+snapshot, which happens after both steps finish in the same goroutine.
+
+The simulator (`make sim SEEDS=10000`) now also changes membership (adding spare nodes that
+start uninitialized, promoting, removing), transfers leadership, compacts logs and installs
+snapshots. Last run: 10,000 schedules in 53 s, zero violations: 36,089 leaders, 2,907,248
+commit advances, 33,585 crashes, 22,207 partitions, 306,049 reads confirmed, 12,397
+membership changes, 18,009 leader transfers, 100,004 compactions, 11,695 snapshots
+installed. It found two liveness bugs while the work was in progress: a removed leader that
+lost leadership before its removal committed could never be replaced (fixed by letting it
+campaign, Raft thesis §4.2.2), and a learner whose leader died stayed inside its lease
+forever (fixed by not resetting its timer); each has a unit test that fails without the fix.
+
+### Implemented and tested
+
+- **`internal/raft`** (ADR 0003, 0012): log compaction (`Compact`, `SnapshotAt`), snapshot
+  requests and installs (`MsgSnap`, `ReportSnapshot`, `Ready.Snapshot`), single-server
+  membership changes with learners applied on append (one at a time, only after the
+  leader's first commit), a bootstrap entry recording the initial voters, uninitialized
+  replicas, removed voters campaigning until their removal commits, removed leaders stepping
+  down on commit, leader transfer with `MsgTimeoutNow`.
+- **`internal/raft/raftlog`:** checkpoint records for compaction and snapshot installs,
+  written as the only record of a new segment before older segments are deleted; power loss
+  at each of the seven filesystem operations recovers the old or the new log.
+- **`internal/replica`:** log compaction after flushing the engine; snapshots sent from engine
+  checkpoints by a background goroutine and received into a staging directory, marked
+  complete, recorded in the Raft log and then made the engine through the `ENGINE` pointer
+  file, with interrupted installs finished on restart; conditional multi-key transactions
+  (`Txn`); prefix scans; membership changes and leader transfer; status with membership,
+  progress and transfer counters; `Destroy`.
+- **`internal/meta`** (ADR 0011–0013): meta records and keys, the initial layout, the bootstrap
+  transaction, liveness tracking, and the rebalance planner as a pure function, with a seeded
+  property test (300 random clusters) that it converges safely.
+- **`internal/node`:** node IDs as Raft member IDs and a directory of addresses and
+  descriptors (refreshed from the meta group, cached in `DIRECTORY`); bootstrap once every
+  bootstrap peer has answered, or join through `cluster.join` or through the peers when the
+  cluster exists without this node; replicas reopened from disk, created for a group's leader
+  on demand, and deleted once the group's leader no longer lists the node; heartbeats to the
+  meta leader; on the meta leader, meta bootstrap, liveness decisions, group status
+  collection and the rebalancer's steps; `InstallSnapshot` streaming; a Raft transport filter
+  for fault-injection tests.
+- **`internal/router`:** groups addressed by node ID, the meta group routed like a shard for
+  internal transactions and scans, local replicas created at run time.
+- **Protocol:** `meta.proto` (node records, descriptors, settings), `OP_TXN`, snapshot fields
+  on Raft messages, `InstallSnapshot`, `NodeStatus`, `ChangeReplicas`, `TransferLeader`,
+  `Join`, `Heartbeat`, `AdminService.Decommission`, node state and suspicion in member status.
+- **Config:** `cluster.join`, `cluster.meta_replicas`, `raft.compact_entries`,
+  `liveness.heartbeat_interval`, `liveness.suspect_after`, `liveness.dead_after`,
+  `rebalance.interval`, with validation (a cluster node needs peers or join).
+- **Tools:** `dkvctl decommission <node-id>` and `client.Decommission`; `dkvctl status` shows
+  each node's state from the meta group.
+- **Docs:** ADRs 0011, 0012, 0013; 0003, 0010, 0021, 0023 and 0024 revised.
+
+Other tests: decommissioning drains a node, marks it decommissioned, and the node then
+deletes its replicas (`TestDecommissionDrainsNode`); a learner catches up by snapshot after
+compaction and survives a restart, leader transfer moves leadership to a named voter
+(`replica` tests); a snapshot install is crash-tested at each of 61 filesystem operations;
+conf-change encoding, overwritten membership entries being undone, one change at a time,
+compaction rules (`raft` tests); `vfs.RemoveAll` and `WriteFileDurably`; config validation for
+the new keys.
+
+### Known limitations
+
+- Nodes poll the meta group every rebalance interval rather than watching a stream; routing
+  can be stale for that long (covered by NotOwner hints and retries).
+- Bootstrapping needs every bootstrap peer reachable once.
+- A node's directory knows a joined node only through the meta group; pings cover only the
+  bootstrap peers, so status shows joined nodes without ping data.
+- Snapshots are streamed whole on every attempt (no resume), and one at a time per follower.
+- Only the meta leader knows which nodes are suspect; other nodes' status does not show it.
+- Leader balancing stops when no single transfer within a group narrows the gap by two or
+  more; the leader count per node can differ by two.
+- The Docker Compose gate is still blocked (see "Needs from you").
+- Not done: an independent second review of the Phase 7 diff against the plan.
 

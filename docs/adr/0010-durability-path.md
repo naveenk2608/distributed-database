@@ -1,6 +1,6 @@
 # ADR 0010: Durability path for replicas
 
-Status: Accepted for Phase 6 (two logs); to be revisited in Phase 10
+Status: Accepted for Phases 6–7 (two logs); to be revisited in Phase 10
 
 ## Context
 
@@ -53,3 +53,22 @@ path in Phase 10.
   fault injection covers it.
 - The Raft log grows without bound until Phase 7 adds snapshots and
   truncation.
+
+## Revision in Phase 7
+
+- Logs are compacted: once a replica's Raft log holds `raft.compact_entries`
+  applied entries (default 10,000), it flushes its engine, writes a
+  checkpoint record (snapshot metadata, HardState and the remaining
+  entries) as the only record of a new segment, fsyncs it and deletes the
+  older segments, keeping the last quarter of the entries for followers
+  that lag a little. A single checksummed record means a crash leaves the
+  old log or the new one, never a mix; a test crashes at each of the seven
+  filesystem operations of a compaction and of an install.
+- A follower that needs compacted entries receives a snapshot: the
+  leader checkpoints its engine (hard links, no copy) at its applied index
+  and streams the files over `InternalService.InstallSnapshot`. The
+  receiver stages them in `snap-N/`, marks them complete, records the
+  snapshot in its Raft log and then repoints `ENGINE` at `snap-N/`; a
+  restart finishes an install a crash interrupted. A test crashes the
+  receiver's filesystem after each of the 61 operations of receiving and
+  installing a snapshot and always recovers and catches up.

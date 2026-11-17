@@ -13,6 +13,9 @@ message Command {
     OP_PUT = 1;
     OP_DELETE = 2;
     OP_CAS = 3;
+    // OP_TXN applies txn: its puts and deletes happen together, and only if
+    // every condition holds. The meta group uses it; clients cannot.
+    OP_TXN = 4;
   }
   Op op = 1;
   bytes key = 2;
@@ -23,6 +26,25 @@ message Command {
   // stamp_unix_nano is the proposing leader's clock; sessions expire by
   // these stamps, never by a replica's own clock.
   int64 stamp_unix_nano = 7;
+  Txn txn = 8;
+}
+
+// Txn is an atomic conditional multi-key write within one group.
+message Txn {
+  repeated TxnCondition conditions = 1;
+  repeated TxnWrite writes = 2;
+}
+
+// TxnCondition requires key to be at version (0: the key has no value).
+message TxnCondition {
+  bytes key = 1;
+  uint64 version = 2;
+}
+
+message TxnWrite {
+  bytes key = 1;
+  bytes value = 2;
+  bool delete = 3;
 }
 
 message RaftEntry {
@@ -47,7 +69,37 @@ message RaftMessage {
   uint64 reject_hint = 11;
   uint64 hint_term = 12;
   uint64 context = 13;
+  // snapshot is set on a MsgSnap carried by InstallSnapshot.
+  RaftSnapshot snapshot = 14;
+  bool transfer = 15;
 }
+
+// RaftSnapshot is a snapshot's metadata: the index and term it covers and
+// the membership at that index.
+message RaftSnapshot {
+  uint64 index = 1;
+  uint64 term = 2;
+  repeated string voters = 3;
+  repeated string learners = 4;
+}
+
+// InstallSnapshotRequest is one piece of a snapshot stream: first a
+// header, then the engine checkpoint's files in pieces.
+message InstallSnapshotRequest {
+  oneof part {
+    RaftMessage header = 1;
+    SnapshotFileChunk file = 2;
+  }
+}
+
+message SnapshotFileChunk {
+  string name = 1;
+  bytes data = 2;
+  // last marks the final piece of the file.
+  bool last = 3;
+}
+
+message InstallSnapshotResponse {}
 
 // RaftRequest is a batch: every pending message from one node to another,
 // for all shards, in one call.

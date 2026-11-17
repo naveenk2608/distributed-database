@@ -36,6 +36,8 @@ type Config struct {
 	Cluster   Cluster   `yaml:"cluster"`
 	Transport Transport `yaml:"transport"`
 	Raft      Raft      `yaml:"raft"`
+	Liveness  Liveness  `yaml:"liveness"`
+	Rebalance Rebalance `yaml:"rebalance"`
 	Storage   Storage   `yaml:"storage"`
 	Limits    Limits    `yaml:"limits"`
 	Log       Log       `yaml:"log"`
@@ -81,6 +83,11 @@ type Cluster struct {
 	// ReplicationFactor is the number of replicas of each shard. Recorded
 	// like Shards.
 	ReplicationFactor int `yaml:"replication_factor"`
+	// MetaReplicas is the meta group's size, fixed at bootstrap.
+	MetaReplicas int `yaml:"meta_replicas"`
+	// Join lists internal addresses of nodes of an existing cluster that a
+	// new node, one not in peers, contacts to join it.
+	Join []string `yaml:"join"`
 }
 
 // Transport configures the gRPC connections between nodes.
@@ -108,6 +115,30 @@ type Raft struct {
 	// SessionTTL is how long a client's deduplication session lives
 	// without a write. A retry arriving later than this may apply twice.
 	SessionTTL time.Duration `yaml:"session_ttl"`
+	// CompactEntries is the Raft log length, in applied entries, at which
+	// a replica compacts its log; followers further behind get a snapshot.
+	CompactEntries int `yaml:"compact_entries"`
+}
+
+// Liveness configures failure detection: every node heartbeats the meta
+// group's leader, which keeps the timestamps in memory and writes only its
+// decisions (docs/adr/0013).
+type Liveness struct {
+	// HeartbeatInterval is how often a node heartbeats the meta leader.
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+	// SuspectAfter: silence after which a node is reported suspect.
+	SuspectAfter time.Duration `yaml:"suspect_after"`
+	// DeadAfter: silence after which the meta leader declares a node dead
+	// and its replicas are recreated elsewhere. A new meta leader waits
+	// this long before declaring anyone dead.
+	DeadAfter time.Duration `yaml:"dead_after"`
+}
+
+// Rebalance configures the rebalancer, which runs on the meta leader.
+type Rebalance struct {
+	// Interval is how often it compares the wanted placement with each
+	// group's membership and takes the next steps.
+	Interval time.Duration `yaml:"interval"`
 }
 
 // Storage configures the node's storage engine.
@@ -153,9 +184,11 @@ func Default() Config {
 	return Config{
 		Server: Server{ShutdownTimeout: 10 * time.Second},
 		Cluster: Cluster{Name: "dkv", PingInterval: time.Second, PingTimeout: 500 * time.Millisecond, DownAfter: 5 * time.Second,
-			Shards: 64, ReplicationFactor: 3},
+			Shards: 64, ReplicationFactor: 3, MetaReplicas: 3},
 		Transport: Transport{DialTimeout: 2 * time.Second, KeepaliveTime: 10 * time.Second, KeepaliveTimeout: 3 * time.Second},
-		Raft:      Raft{TickInterval: 50 * time.Millisecond, ElectionTicks: 10, HeartbeatTicks: 2, SessionTTL: time.Hour},
+		Raft:      Raft{TickInterval: 50 * time.Millisecond, ElectionTicks: 10, HeartbeatTicks: 2, SessionTTL: time.Hour, CompactEntries: 10000},
+		Liveness:  Liveness{HeartbeatInterval: time.Second, SuspectAfter: 3 * time.Second, DeadAfter: 30 * time.Second},
+		Rebalance: Rebalance{Interval: time.Second},
 		Storage: Storage{Sync: "always", SyncInterval: 10 * time.Millisecond, MemtableBytes: 4 << 20,
 			BlockCacheBytes: 64 << 20, CompactionConcurrency: 2},
 		Limits: Limits{MaxKeyBytes: 4 << 10, MaxValueBytes: 1 << 20},
@@ -302,6 +335,10 @@ var settings = []setting{
 		func(c *Config) *int { return &c.Cluster.Shards }),
 	intSetting("cluster.replication_factor", "replicas per shard; fixed when the cluster is bootstrapped",
 		func(c *Config) *int { return &c.Cluster.ReplicationFactor }),
+	intSetting("cluster.meta_replicas", "replicas of the meta group; fixed when the cluster is bootstrapped",
+		func(c *Config) *int { return &c.Cluster.MetaReplicas }),
+	stringListSetting("cluster.join", "internal addresses of an existing cluster's nodes, for a new node to join through",
+		func(c *Config) *[]string { return &c.Cluster.Join }),
 	durationSetting("transport.dial_timeout", "deadline for connecting to a peer",
 		func(c *Config) *time.Duration { return &c.Transport.DialTimeout }),
 	durationSetting("transport.keepalive_time", "idle time before a keepalive ping on a peer connection",
@@ -316,6 +353,16 @@ var settings = []setting{
 		func(c *Config) *int { return &c.Raft.HeartbeatTicks }),
 	durationSetting("raft.session_ttl", "how long a client deduplication session lives without a write",
 		func(c *Config) *time.Duration { return &c.Raft.SessionTTL }),
+	intSetting("raft.compact_entries", "raft log length, in applied entries, that triggers compaction",
+		func(c *Config) *int { return &c.Raft.CompactEntries }),
+	durationSetting("liveness.heartbeat_interval", "how often a node heartbeats the meta leader",
+		func(c *Config) *time.Duration { return &c.Liveness.HeartbeatInterval }),
+	durationSetting("liveness.suspect_after", "heartbeat silence after which a node is reported suspect",
+		func(c *Config) *time.Duration { return &c.Liveness.SuspectAfter }),
+	durationSetting("liveness.dead_after", "heartbeat silence after which a node is declared dead and its replicas are moved",
+		func(c *Config) *time.Duration { return &c.Liveness.DeadAfter }),
+	durationSetting("rebalance.interval", "how often the rebalancer on the meta leader runs",
+		func(c *Config) *time.Duration { return &c.Rebalance.Interval }),
 	stringSetting("storage.dir", "data directory (required)",
 		func(c *Config) *string { return &c.Storage.Dir }),
 	stringSetting("storage.sync", "WAL sync policy: always, interval or never",
@@ -510,6 +557,20 @@ func (c *Config) validateCluster() []error {
 	if cl.ReplicationFactor < 1 {
 		bad("cluster.replication_factor", "must be at least 1, got %d", cl.ReplicationFactor)
 	}
+	if cl.MetaReplicas < 1 {
+		bad("cluster.meta_replicas", "must be at least 1, got %d", cl.MetaReplicas)
+	}
+	for _, j := range cl.Join {
+		if _, err := splitHostPort(j, false); err != nil {
+			errs = append(errs, fmt.Errorf("cluster.join: %w", err))
+		}
+	}
+	if len(cl.Join) > 0 && cl.InternalAddr == "" {
+		bad("cluster.internal_addr", "required when cluster.join is set")
+	}
+	if cl.InternalAddr != "" && len(cl.Peers) == 0 && len(cl.Join) == 0 {
+		bad("cluster.peers", "a cluster node needs cluster.peers (to bootstrap) or cluster.join (to join an existing cluster)")
+	}
 	if len(cl.Peers) > 0 {
 		if cl.ReplicationFactor > len(seen) {
 			bad("cluster.replication_factor", "%d needs at least that many peers, have %d", cl.ReplicationFactor, len(seen))
@@ -553,6 +614,22 @@ func (c *Config) validateCluster() []error {
 	}
 	if r.SessionTTL < time.Minute {
 		bad("raft.session_ttl", "must be at least 1m, got %v", r.SessionTTL)
+	}
+	if r.CompactEntries < 10 {
+		bad("raft.compact_entries", "must be at least 10, got %d", r.CompactEntries)
+	}
+	l := c.Liveness
+	if l.HeartbeatInterval <= 0 {
+		bad("liveness.heartbeat_interval", "must be positive, got %v", l.HeartbeatInterval)
+	}
+	if l.SuspectAfter <= l.HeartbeatInterval {
+		bad("liveness.suspect_after", "must be longer than liveness.heartbeat_interval (%v), got %v", l.HeartbeatInterval, l.SuspectAfter)
+	}
+	if l.DeadAfter < l.SuspectAfter {
+		bad("liveness.dead_after", "must be at least liveness.suspect_after (%v), got %v", l.SuspectAfter, l.DeadAfter)
+	}
+	if c.Rebalance.Interval <= 0 {
+		bad("rebalance.interval", "must be positive, got %v", c.Rebalance.Interval)
 	}
 	return errs
 }

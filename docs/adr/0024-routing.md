@@ -1,6 +1,6 @@
 # ADR 0024: Routing with one-hop forwarding and NotOwner hints
 
-Status: Accepted (Phase 5); revised in Phase 6 for Raft leaders
+Status: Accepted (Phase 5); revised in Phases 6 and 7
 
 ## Context
 
@@ -66,3 +66,16 @@ With Raft, a shard is served by its current leader, which changes.
   failover remove both: with a minority of a shard's replicas down every
   key keeps working once a new leader is elected, and with a majority down
   requests fail within the client's deadline.
+
+## Revision in Phase 7
+
+- Groups' members are node IDs, resolved to addresses through the
+  directory (ADR 0011); a group's voters for routing come from its
+  descriptor, refreshed every rebalance interval.
+- The meta group is routed like a shard (number −1) for internal
+  transactions and scans, so any node can read or change metadata through
+  whichever node leads the meta group.
+- Retries continue until the caller's deadline; the attempt limit (12)
+  applies only to callers without one. A fixed limit made requests fail
+  after about 3.5 s of leadership churn on a heavily loaded machine even
+  when the caller allowed longer.

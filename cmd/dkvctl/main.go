@@ -6,6 +6,7 @@
 //	dkvctl [flags] cas <key> <expected-version> <value>
 //	dkvctl [flags] status
 //	dkvctl [flags] shards
+//	dkvctl [flags] decommission <node-id>
 //
 // Flags go before the command. Exit status follows grep: 0 on success,
 // 1 when get finds no value or cas finds another version, 2 on any error.
@@ -101,6 +102,8 @@ Commands:
                       must not exist); exit status 1 if it is not
   status              show the node's view of the cluster
   shards              show where each shard is placed and the node's local replicas
+  decommission <node-id>
+                      move every replica off a node, then mark it decommissioned
 
 Flags:
 `)
@@ -122,7 +125,7 @@ Flags:
 	if len(cmd) == 0 {
 		return usage("missing command")
 	}
-	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "cas": 3, "status": 0, "shards": 0}
+	wantArgs := map[string]int{"put": 2, "get": 1, "delete": 1, "cas": 3, "status": 0, "shards": 0, "decommission": 1}
 	n, ok := wantArgs[cmd[0]]
 	if !ok {
 		return usage(fmt.Sprintf("unknown command %q", cmd[0]))
@@ -150,6 +153,14 @@ Flags:
 			return exitError
 		}
 		printStatus(out, resp, time.Now())
+		return exitOK
+	}
+	if cmd[0] == "decommission" {
+		if err := c.Decommission(ctx, cmd[1]); err != nil {
+			out.errorf("%v", err)
+			return exitError
+		}
+		out.result("node %s is being decommissioned; its replicas move to other nodes\n", cmd[1])
 		return exitOK
 	}
 	if cmd[0] == "shards" {
@@ -226,7 +237,7 @@ Flags:
 func printStatus(out *output, resp *dkvv1.ClusterStatusResponse, now time.Time) {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ADDRESS\tNODE ID\tSTATE\tLAST SEEN\tRTT\tERROR")
+	_, _ = fmt.Fprintln(tw, "ADDRESS\tNODE ID\tSTATE\tNODE STATE\tLAST SEEN\tRTT\tERROR")
 	for _, m := range resp.GetMembers() {
 		id := m.GetNode().GetNodeId()
 		if id == "" {
@@ -243,7 +254,14 @@ func printStatus(out *output, resp *dkvv1.ClusterStatusResponse, now time.Time) 
 			rtt = time.Duration(m.GetRttNanos()).Round(10 * time.Microsecond).String()
 		}
 		state := strings.TrimPrefix(m.GetState().String(), "MEMBER_STATE_")
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.GetAddr(), id, state, seen, rtt, m.GetLastError())
+		nodeState := "-"
+		if ns := m.GetNodeState(); ns != dkvv1.NodeState_NODE_STATE_UNSPECIFIED {
+			nodeState = strings.ToLower(strings.TrimPrefix(ns.String(), "NODE_STATE_"))
+		}
+		if m.GetSuspect() {
+			nodeState += " (suspect)"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.GetAddr(), id, state, nodeState, seen, rtt, m.GetLastError())
 	}
 	_ = tw.Flush() // writes to a strings.Builder cannot fail
 	out.result("%s", b.String())

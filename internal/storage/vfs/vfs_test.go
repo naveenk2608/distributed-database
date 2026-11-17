@@ -315,3 +315,36 @@ func TestMemCrashImageKeepsAPrefixOfDirectoryChanges(t *testing.T) {
 		t.Errorf("exact image %v, want only the synced entries", names)
 	}
 }
+
+func TestRemoveAllAndWriteFileDurably(t *testing.T) {
+	m := NewMemFS()
+	for _, d := range []string{"/a/b/c", "/a/d"} {
+		if err := m.MkdirAll(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"/a/x", "/a/b/y", "/a/b/c/z"} {
+		if err := WriteFileDurably(m, f, []byte(f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := ReadFile(m, "/a/b/y"); err != nil || string(b) != "/a/b/y" {
+		t.Fatalf("read back: %q %v", b, err)
+	}
+	if err := RemoveAll(m, "/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := m.List("/a"); len(names) != 2 {
+		t.Fatalf("left in /a: %v", names)
+	}
+	if err := RemoveAll(m, "/missing"); err != nil {
+		t.Fatalf("missing path: %v", err)
+	}
+	// A crash image keeps either the old or the new contents.
+	if err := WriteFileDurably(m, "/a/x", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadFile(m.CrashImage(nil), "/a/x"); err != nil || string(b) != "new" {
+		t.Fatalf("after crash: %q %v", b, err)
+	}
+}

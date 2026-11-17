@@ -15,19 +15,25 @@ type network struct {
 	ids   []string
 	nodes map[string]*Raft
 	cfg   Config
-	// persisted state per node, as a runner would keep it
-	hs    map[string]HardState
-	logs  map[string][]Entry
-	drop  func(Message) bool
-	edit  func(Message) Message // applied to delivered messages
-	sent  int
-	reads map[string][]ReadState // confirmed reads per node
+	// persisted state per node, as a runner would keep it: the snapshot,
+	// the HardState, the entries after the snapshot and the applied index
+	snaps   map[string]SnapshotMeta
+	hs      map[string]HardState
+	logs    map[string][]Entry
+	applied map[string]uint64
+	// snapshots streamed, by receiver
+	snapsSent map[string]int
+	drop      func(Message) bool
+	edit      func(Message) Message // applied to delivered messages
+	sent      int
+	reads     map[string][]ReadState // confirmed reads per node
 }
 
 func newNetwork(t *testing.T, n int, configure func(*Config)) *network {
 	t.Helper()
 	nw := &network{t: t, nodes: map[string]*Raft{}, hs: map[string]HardState{}, logs: map[string][]Entry{},
-		reads: map[string][]ReadState{}}
+		reads: map[string][]ReadState{}, snaps: map[string]SnapshotMeta{}, applied: map[string]uint64{},
+		snapsSent: map[string]int{}}
 	for i := range n {
 		nw.ids = append(nw.ids, fmt.Sprintf("s%d", i+1))
 	}
@@ -44,12 +50,35 @@ func newNetwork(t *testing.T, n int, configure func(*Config)) *network {
 func (nw *network) start(id string, seed uint64) {
 	cfg := nw.cfg
 	cfg.ID, cfg.Rand = id, rand.New(rand.NewPCG(seed, 99))
-	cfg.HardState, cfg.Entries = nw.hs[id], slices.Clone(nw.logs[id])
+	cfg.Snapshot, cfg.HardState, cfg.Entries, cfg.Applied = nw.snaps[id], nw.hs[id], slices.Clone(nw.logs[id]), nw.applied[id]
 	r, err := New(cfg)
 	if err != nil {
 		nw.t.Fatal(err)
 	}
 	nw.nodes[id] = r
+}
+
+// join adds an uninitialized node: no bootstrap peers and no state.
+func (nw *network) join(id string) {
+	cfg := nw.cfg
+	cfg.ID, cfg.Rand, cfg.Peers = id, rand.New(rand.NewPCG(uint64(len(nw.ids)), 99)), nil
+	r, err := New(cfg)
+	if err != nil {
+		nw.t.Fatal(err)
+	}
+	nw.ids = append(nw.ids, id)
+	nw.nodes[id] = r
+}
+
+// compact compacts id's log up to its applied index, as a runner would
+// after making the state machine durable.
+func (nw *network) compact(id string) {
+	r := nw.nodes[id]
+	if err := r.Compact(r.Applied()); err != nil {
+		nw.t.Fatal(err)
+	}
+	nw.snaps[id] = r.Snapshot()
+	nw.logs[id] = slices.Clone(r.Entries())
 }
 
 // settle processes Ready and delivers messages until quiescent.
@@ -63,15 +92,40 @@ func (nw *network) settle() {
 			}
 			progressed = true
 			rd := r.Ready()
+			if rd.Snapshot != nil {
+				nw.snaps[id], nw.logs[id], nw.applied[id] = *rd.Snapshot, nil, rd.Snapshot.Index
+			}
 			if !rd.HardState.IsEmpty() {
 				nw.hs[id] = rd.HardState
 			}
 			if len(rd.Entries) > 0 {
-				nw.logs[id] = append(nw.logs[id][:rd.Entries[0].Index-1], rd.Entries...)
+				off := nw.snaps[id].Index
+				nw.logs[id] = append(nw.logs[id][:rd.Entries[0].Index-1-off], rd.Entries...)
+			}
+			if n := len(rd.CommittedEntries); n > 0 {
+				nw.applied[id] = rd.CommittedEntries[n-1].Index
 			}
 			nw.reads[id] = append(nw.reads[id], rd.ReadStates...)
 			r.Advance(rd)
 			for _, m := range rd.Messages {
+				if m.Type == MsgSnap && m.Snapshot == nil {
+					// Act as the leader's runner: describe a snapshot at
+					// the applied index and stream it, then report.
+					meta, err := r.SnapshotAt(r.Applied())
+					if err != nil {
+						nw.t.Fatal(err)
+					}
+					m.Snapshot = &meta
+					delivered := nw.nodes[m.To] != nil && (nw.drop == nil || !nw.drop(m))
+					if delivered {
+						nw.snapsSent[m.To]++
+						if err := nw.nodes[m.To].Step(m); err != nil {
+							nw.t.Fatal(err)
+						}
+					}
+					r.ReportSnapshot(m.To, delivered)
+					continue
+				}
 				if to := nw.nodes[m.To]; to != nil && (nw.drop == nil || !nw.drop(m)) {
 					if nw.edit != nil {
 						m = nw.edit(m)
@@ -121,25 +175,26 @@ func TestElectionAndReplication(t *testing.T) {
 	for _, pre := range []bool{false, true} {
 		nw := newNetwork(t, 3, func(c *Config) { c.PreVote = pre })
 		nw.campaign("s1")
-		if l := nw.leaders(); !slices.Equal(l, []string{"s1"}) || nw.nodes["s1"].Term() != 1 {
+		// Term 1 is the bootstrap entry's; the first election is term 2.
+		if l := nw.leaders(); !slices.Equal(l, []string{"s1"}) || nw.nodes["s1"].Term() != 2 {
 			t.Fatalf("prevote=%v: leaders %v term %d", pre, l, nw.nodes["s1"].Term())
 		}
 		nw.propose("s1", "a")
 		nw.propose("s1", "b")
 		for _, id := range nw.ids {
-			ents := nw.nodes[id].Entries()
-			if len(ents) != 3 || string(ents[2].Data) != "b" {
+			ents := nw.nodes[id].Entries() // bootstrap, no-op, a, b
+			if len(ents) != 4 || ents[0].Type != EntryConfChange || string(ents[3].Data) != "b" {
 				t.Fatalf("%s log %v", id, ents)
 			}
 		}
-		if nw.nodes["s1"].Committed() != 3 {
+		if nw.nodes["s1"].Committed() != 4 {
 			t.Fatalf("leader committed %d", nw.nodes["s1"].Committed())
 		}
 		nw.nodes["s1"].bcastHeartbeat(0) // carries the commit index to followers
 		nw.settle()
 		for _, id := range nw.ids {
-			if c := nw.nodes[id].Committed(); c != 3 {
-				t.Errorf("%s committed %d, want 3", id, c)
+			if c := nw.nodes[id].Committed(); c != 4 {
+				t.Errorf("%s committed %d, want 4", id, c)
 			}
 		}
 	}
@@ -160,17 +215,19 @@ func TestNoLeaderWithoutQuorum(t *testing.T) {
 // ends in a newer term could still be elected and overwrite it.
 func TestFigure8(t *testing.T) {
 	nw := newNetwork(t, 5, func(c *Config) { c.MaxEntriesPerMsg = 1 })
-	nw.campaign("s1") // term 1; no-op at index 1 everywhere
-	if nw.nodes["s1"].Committed() != 1 {
-		t.Fatalf("setup: committed %d", nw.nodes["s1"].Committed())
+	nw.campaign("s1") // term A; bootstrap entry and no-op committed everywhere
+	termA, base := nw.nodes["s1"].Term(), nw.nodes["s1"].Committed()
+	if base != nw.nodes["s1"].LastIndex() {
+		t.Fatalf("setup: committed %d of %d", base, nw.nodes["s1"].LastIndex())
 	}
+	xi := base + 1 // X's index
 
-	// s1 replicates entry X (index 2, term 1) to s2 only.
+	// s1 replicates entry X (index xi, term A) to s2 only.
 	nw.drop = func(m Message) bool { return (m.From != "s1" || m.To != "s2") && (m.From != "s2" || m.To != "s1") }
 	nw.propose("s1", "X")
 
-	// s5 becomes leader of term 2 with votes from s3 and s4, appends its
-	// no-op at index 2 (term 2), and replicates nothing.
+	// s5 becomes leader of term A+1 with votes from s3 and s4, appends its
+	// no-op at index xi (term A+1), and replicates nothing.
 	nw.drop = func(m Message) bool {
 		if m.Type == MsgVote || m.Type == MsgVoteResp {
 			return isolate("s1", "s2")(m)
@@ -178,41 +235,42 @@ func TestFigure8(t *testing.T) {
 		return true
 	}
 	nw.campaign("s5")
-	if nw.nodes["s5"].State() != StateLeader {
-		t.Fatalf("setup: s5 is %v", nw.nodes["s5"].State())
+	if nw.nodes["s5"].State() != StateLeader || nw.nodes["s5"].Term() != termA+1 {
+		t.Fatalf("setup: s5 is %v in term %d", nw.nodes["s5"].State(), nw.nodes["s5"].Term())
 	}
 
-	// s1 wins term 3 with votes from s2 and s3, then replicates X (term 1)
-	// to s3, one entry per message, but its term-3 no-op reaches nobody:
-	// it is stripped from every append, so followers acknowledge X and the
-	// leader learns that a majority holds it.
+	// s1 wins term A+2 with votes from s2 and s3, then replicates X (term
+	// A) to s3, one entry per message, but its term-(A+2) no-op reaches
+	// nobody: it is stripped from every append, so followers acknowledge X
+	// and the leader learns that a majority holds it.
 	nw.drop = func(m Message) bool { return isolate("s4", "s5")(m) }
-	nw.nodes["s1"].becomeFollower(nw.nodes["s5"].Term(), "") // learns term 2 exists
+	nw.nodes["s1"].becomeFollower(nw.nodes["s5"].Term(), "") // learns term A+1 exists
 	nw.nodes["s1"].hup()
 	l := nw.nodes["s1"]
+	termC := termA + 2
 	nw.drop = func(m Message) bool {
 		if isolate("s4", "s5")(m) {
 			return true
 		}
 		// Once the leader knows a follower holds X, stop delivering the
 		// stripped appends it keeps retrying.
-		return m.Type == MsgApp && m.From == "s1" && l.prs[m.To].match >= 2 &&
-			slices.ContainsFunc(m.Entries, func(e Entry) bool { return e.Term == 3 })
+		return m.Type == MsgApp && m.From == "s1" && l.prs[m.To].match >= xi &&
+			slices.ContainsFunc(m.Entries, func(e Entry) bool { return e.Term == termC })
 	}
 	nw.edit = func(m Message) Message {
 		if m.Type == MsgApp {
-			m.Entries = slices.DeleteFunc(slices.Clone(m.Entries), func(e Entry) bool { return e.Term == 3 })
+			m.Entries = slices.DeleteFunc(slices.Clone(m.Entries), func(e Entry) bool { return e.Term == termC })
 		}
 		return m
 	}
 	nw.settle()
-	if l.State() != StateLeader || l.Term() != 3 {
+	if l.State() != StateLeader || l.Term() != termC {
 		t.Fatalf("setup: s1 is %v in term %d", l.State(), l.Term())
 	}
 	holders := 0
 	for _, id := range nw.ids {
-		if ents := nw.nodes[id].Entries(); len(ents) >= 2 && string(ents[1].Data) == "X" &&
-			(id == "s1" || l.prs[id].match >= 2) {
+		if ents := nw.nodes[id].Entries(); uint64(len(ents)) >= xi && string(ents[xi-1].Data) == "X" &&
+			(id == "s1" || l.prs[id].match >= xi) {
 			holders++
 		}
 	}
@@ -223,11 +281,11 @@ func TestFigure8(t *testing.T) {
 		t.Fatalf("setup: the leader knows X is on %d nodes, want a majority", holders)
 	}
 
-	// The crux: X (term 1) is on a majority but must not be committed by
-	// counting, since s5 (last entry term 2) could still win and overwrite
-	// index 2.
-	if c := nw.nodes["s1"].Committed(); c >= 2 {
-		t.Fatalf("leader of term 3 committed index %d holding a term-1 entry by counting replicas (Figure 8)", c)
+	// The crux: X (term A) is on a majority but must not be committed by
+	// counting, since s5 (last entry term A+1) could still win and
+	// overwrite index xi.
+	if c := nw.nodes["s1"].Committed(); c >= xi {
+		t.Fatalf("leader of term %d committed index %d holding a term-%d entry by counting replicas (Figure 8)", termC, c, termA)
 	}
 }
 
@@ -338,19 +396,19 @@ func TestConflictHintsConvergeQuickly(t *testing.T) {
 
 func TestVoteSurvivesRestart(t *testing.T) {
 	nw := newNetwork(t, 3, nil)
-	nw.drop = isolate("s3") // s2 votes for s1 in term 1
+	nw.drop = isolate("s3") // s2 votes for s1 in term 2
 	nw.campaign("s1")
-	if nw.hs["s2"].Vote != "s1" || nw.hs["s2"].Term != 1 {
+	if nw.hs["s2"].Vote != "s1" || nw.hs["s2"].Term != 2 {
 		t.Fatalf("persisted state of s2: %+v", nw.hs["s2"])
 	}
 	nw.start("s2", 1234) // crash and restart from persisted state
-	if err := nw.nodes["s2"].Step(Message{Type: MsgVote, From: "s3", To: "s2", Term: 1}); err != nil {
+	if err := nw.nodes["s2"].Step(Message{Type: MsgVote, From: "s3", To: "s2", Term: 2}); err != nil {
 		t.Fatal(err)
 	}
 	rd := nw.nodes["s2"].Ready()
 	for _, m := range rd.Messages {
 		if m.Type == MsgVoteResp && !m.Reject {
-			t.Fatal("restarted node voted twice in term 1")
+			t.Fatal("restarted node voted twice in term 2")
 		}
 	}
 }
@@ -364,14 +422,14 @@ func TestSingleNodeGroup(t *testing.T) {
 	if nw.nodes["s1"].State() != StateLeader {
 		t.Fatal("single node did not elect itself")
 	}
-	nw.propose("s1", "x")
-	if nw.nodes["s1"].Committed() != 2 {
+	nw.propose("s1", "x") // after the bootstrap entry and the no-op
+	if nw.nodes["s1"].Committed() != 3 {
 		t.Fatalf("committed %d", nw.nodes["s1"].Committed())
 	}
 	if err := nw.nodes["s1"].ReadIndex(1); err != nil {
 		t.Fatal(err)
 	}
-	if rd := nw.nodes["s1"].Ready(); len(rd.ReadStates) != 1 || rd.ReadStates[0].Index != 2 {
+	if rd := nw.nodes["s1"].Ready(); len(rd.ReadStates) != 1 || rd.ReadStates[0].Index != 3 {
 		t.Fatalf("single-node read: %v", rd.ReadStates)
 	}
 }

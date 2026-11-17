@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/transport"
@@ -57,9 +58,9 @@ type Membership struct {
 	clock   Clock
 	log     *slog.Logger
 	started time.Time
-	self    *dkvv1.NodeInfo
 
 	mu    sync.Mutex
+	self  *dkvv1.NodeInfo  // replaced, never modified, so it can be shared
 	peers map[string]*peer // by address
 	order []string         // addresses in configuration order
 }
@@ -102,7 +103,52 @@ func New(cfg Config, pool *transport.Pool, clock Clock, log *slog.Logger) *Membe
 }
 
 // Self returns this node's identity.
-func (m *Membership) Self() *dkvv1.NodeInfo { return m.self }
+func (m *Membership) Self() *dkvv1.NodeInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.self
+}
+
+// SetBootstrapMembers records the node IDs the cluster was bootstrapped
+// with, which this node reports from now on.
+func (m *Membership) SetBootstrapMembers(ids []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	self := proto.Clone(m.self).(*dkvv1.NodeInfo)
+	self.BootstrapMembers = slices.Clone(ids)
+	m.self = self
+	for _, p := range m.peers {
+		if p.self {
+			p.node = self
+		}
+	}
+}
+
+// Peer is a bootstrap peer as last heard from.
+type Peer struct {
+	Addr string
+	// Node is the identity from its last answer; nil if it never answered.
+	Node *dkvv1.NodeInfo
+	Up   bool
+	Self bool
+}
+
+// Peers returns every bootstrap peer, in configuration order.
+func (m *Membership) Peers() []Peer {
+	now := m.clock.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Peer
+	for _, addr := range m.order {
+		p := m.peers[addr]
+		node := p.node
+		if p.self {
+			node = m.self
+		}
+		out = append(out, Peer{Addr: addr, Node: node, Self: p.self, Up: m.stateLocked(p, now) == dkvv1.MemberState_MEMBER_STATE_UP})
+	}
+	return out
+}
 
 // Run pings every peer until ctx is cancelled, from one goroutine per
 // peer, and returns after all of them have exited.
@@ -144,7 +190,7 @@ func (m *Membership) pingOnce(ctx context.Context, addr string) bool {
 	start := m.clock.Now()
 	if err == nil {
 		cctx, cancel := context.WithTimeout(ctx, m.cfg.PingTimeout)
-		resp, err = dkvv1.NewInternalServiceClient(conn).Ping(cctx, &dkvv1.PingRequest{From: m.self})
+		resp, err = dkvv1.NewInternalServiceClient(conn).Ping(cctx, &dkvv1.PingRequest{From: m.Self()})
 		cancel()
 	}
 	now := m.clock.Now()
@@ -257,5 +303,5 @@ func (s *PingService) Ping(_ context.Context, req *dkvv1.PingRequest) (*dkvv1.Pi
 		return nil, status.Errorf(codes.FailedPrecondition, "node %s belongs to cluster %q, not %q",
 			s.m.cfg.NodeID, s.m.cfg.ClusterName, from.GetClusterName())
 	}
-	return &dkvv1.PingResponse{Node: s.m.self}, nil
+	return &dkvv1.PingResponse{Node: s.m.Self()}, nil
 }

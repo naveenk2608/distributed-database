@@ -1,6 +1,6 @@
 # ADR 0003: Raft as a deterministic core driven by a runner
 
-Status: Accepted (Phase 6)
+Status: Accepted (Phase 6); extended in Phase 7
 
 ## Context
 
@@ -102,3 +102,18 @@ The project may not use an existing Raft library.
   Phase 7's membership changes decide whether node IDs replace them.
 - Idle groups still cost CPU (the 0.06 of a core per node above).
   Quiescing idle groups or node-level heartbeats are options for Phase 10.
+
+## Extension in Phase 7
+
+The core gained log compaction and snapshots (`Compact`, `SnapshotAt`,
+`MsgSnap`, `ReportSnapshot`, `Ready.Snapshot`), single-server membership
+changes with learners and leader transfer (ADR 0012), all still without
+I/O: a `MsgSnap` from the core asks the runner to stream a checkpoint,
+and the receiving runner steps it back in with the snapshot's metadata
+once the data is staged. The simulator now adds random membership
+changes (including spare nodes that start uninitialized), leader
+transfers, compactions and snapshot installs to its schedules, checks
+Leader Completeness, State Machine Safety and Log Matching over
+compacted logs and installed snapshots, and requires the members of the
+final membership to apply a final proposal. Membership changes are made
+only in schedules with CheckQuorum on (ADR 0012).

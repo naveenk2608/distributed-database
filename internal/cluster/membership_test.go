@@ -134,8 +134,10 @@ func TestSelfListedUnderAnotherAddress(t *testing.T) {
 	alias := "localhost:" + port
 	pool := transport.NewPool(tcfg)
 	defer func() { _ = pool.Close() }()
+	// A generous ping timeout: this checks alias detection, and a loaded
+	// machine can take over a second to connect.
 	m := New(Config{ClusterName: "c", NodeID: "me", Advertise: addr, Peers: []string{alias},
-		PingInterval: time.Second, PingTimeout: time.Second, DownAfter: 5 * time.Second}, pool, nil, slog.New(slog.DiscardHandler))
+		PingInterval: 5 * time.Second, PingTimeout: 5 * time.Second, DownAfter: 10 * time.Second}, pool, nil, slog.New(slog.DiscardHandler))
 	if m.pingOnce(context.Background(), alias) {
 		t.Fatal("pinging this node's own alias should stop the loop")
 	}

@@ -1,20 +1,26 @@
 // Package node assembles a dkv node from its configuration: the storage
 // engines, the public API server, and in a cluster the internal transport,
-// membership, one Raft replica per shard held, and the router. cmd/dkv-server and the in-process test cluster
-// (nodetest) both build nodes with it.
+// membership pings, the replicas of every group the node belongs to (data
+// shards and possibly the meta group), the router, and the background
+// work of Phase 7: bootstrap or join, the directory refresh, heartbeats,
+// and on the meta leader, liveness decisions and the rebalancer.
+// cmd/dkv-server and the in-process test cluster (nodetest) both build
+// nodes with it.
 //
 // Data directory layout:
 //
 //	standalone:  <dir>/NODE_ID, and one engine in <dir> itself
-//	cluster:     <dir>/LOCK, NODE_ID, CLUSTER, and per shard replica the
-//	             node holds <dir>/shards/NNNN/kv (engine) and raft (log)
+//	cluster:     <dir>/LOCK, NODE_ID, CLUSTER, MEMBERS, DIRECTORY, and per
+//	             group replica <dir>/shards/NNNN/ (or shards/meta/)
 package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -29,8 +35,8 @@ import (
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/cluster"
 	"github.com/naveenk2608/distributed-database/internal/config"
+	"github.com/naveenk2608/distributed-database/internal/meta"
 	"github.com/naveenk2608/distributed-database/internal/placement"
-	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/replica"
 	"github.com/naveenk2608/distributed-database/internal/router"
 	"github.com/naveenk2608/distributed-database/internal/server"
@@ -39,6 +45,18 @@ import (
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
+
+// membersFile records the node IDs the cluster was bootstrapped with, once
+// this node has bootstrapped or joined.
+const membersFile = "MEMBERS"
+
+type membersRecord struct {
+	Members []string `json:"members"`
+	// Complete is set once every bootstrap replica of this node exists.
+	Complete bool `json:"complete"`
+	// Joined is set on a node that joined an existing cluster.
+	Joined bool `json:"joined,omitempty"`
+}
 
 // Node is one dkv node.
 type Node struct {
@@ -50,16 +68,32 @@ type Node struct {
 
 	lock        io.Closer // cluster: the data directory lock
 	advertise   string
-	pmap        *placement.Map
 	fingerprint string
+	dir         *directory
 	pool        *transport.Pool
 	net         *raftNet
-	replicas    map[int]*replica.Replica // cluster: one per shard replica held
+	cache       *sstable.Cache
+	compactions *lsm.CompactionPool
+
+	mu       sync.Mutex
+	replicas map[int]*replica.Replica // by shard; meta.Shard is the meta group
+	created  map[int]time.Time
+	members  membersRecord
+	closed   bool
+
+	// Set by Run.
+	mship *cluster.Membership
+	rt    *router.Router
+
+	lvMu sync.Mutex
+	lv   *meta.Liveness // while this node's meta replica leads
 }
 
-// ShardDir returns the directory of a shard replica under the data dir:
-// its engine in kv/ and its Raft log in raft/.
+// ShardDir returns the directory of a group replica under the data dir.
 func ShardDir(dataDir string, shard int) string {
+	if shard == meta.Shard {
+		return filepath.Join(dataDir, "shards", "meta")
+	}
 	return filepath.Join(dataDir, "shards", fmt.Sprintf("%04d", shard))
 }
 
@@ -94,7 +128,7 @@ func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("node: lock %s: %w", dir, err)
 	}
-	n := &Node{cfg: cfg, lock: lock, replicas: map[int]*replica.Replica{}}
+	n := &Node{cfg: cfg, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{}}
 	defer func() {
 		if err != nil {
 			_ = n.closeReplicas() // the open error is the one worth reporting
@@ -115,57 +149,156 @@ func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
 		return nil, err
 	}
 	n.advertise = cfg.Cluster.Advertised()
-	if n.pmap, err = placement.Compute(cfg.Cluster.Peers, cfg.Cluster.Shards, cfg.Cluster.ReplicationFactor); err != nil {
+	n.fingerprint = placement.Fingerprint(cfg.Cluster.Peers, cfg.Cluster.Shards, cfg.Cluster.ReplicationFactor)
+	if err := n.loadMembers(); err != nil {
 		return nil, err
 	}
-	n.fingerprint = placement.Fingerprint(cfg.Cluster.Peers, cfg.Cluster.Shards, cfg.Cluster.ReplicationFactor)
+	n.dir = newDirectory(dir)
+	if err := n.dir.load(); err != nil {
+		n.log.Warn("ignoring a damaged directory cache", "error", err)
+	}
+	n.dir.Learn(n.id, n.advertise)
 
 	n.pool = transport.NewPool(transportConfig(cfg.Transport))
 	// A Raft batch that takes longer than an election timeout to deliver
 	// is useless anyway; give up on it then.
-	n.net = newRaftNet(n.pool, n.advertise, cfg.Cluster.Peers,
-		time.Duration(cfg.Raft.ElectionTicks)*cfg.Raft.TickInterval, n.log.With("component", "raftnet"))
-	cache := sstable.NewCache(int64(cfg.Storage.BlockCacheBytes))
-	pool := lsm.NewCompactionPool(cfg.Storage.CompactionConcurrency)
-	held := n.pmap.ShardsOf(n.advertise)
-	for _, s := range held {
-		shardLog := n.log.With("shard", s)
-		rp, err := replica.Open(replica.Config{
-			Shard: s, ID: n.advertise, Peers: n.pmap.ReplicaSet(s), Dir: ShardDir(dir, s),
-			Engine:       storageOptions(cfg.Storage, shardLog, cache, pool),
-			ElectionTick: cfg.Raft.ElectionTicks, HeartbeatTick: cfg.Raft.HeartbeatTicks,
-			SessionTTL: cfg.Raft.SessionTTL, Sender: n.net, Log: shardLog,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("node: shard %d: %w", s, err)
-		}
-		n.replicas[s] = rp
+	n.net = newRaftNet(n.pool, n.dir, time.Duration(cfg.Raft.ElectionTicks)*cfg.Raft.TickInterval, n.log.With("component", "raftnet"))
+	n.cache = sstable.NewCache(int64(cfg.Storage.BlockCacheBytes))
+	n.compactions = lsm.NewCompactionPool(cfg.Storage.CompactionConcurrency)
+
+	// Reopen every replica this node has on disk.
+	entries, err := os.ReadDir(filepath.Join(dir, "shards"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("node: list shards: %w", err)
 	}
-	n.warnAboutUnheldShards(held)
-	n.log.Info("shard replicas open", "shards", cfg.Cluster.Shards, "replication_factor", cfg.Cluster.ReplicationFactor,
-		"held", len(held), "placement", n.fingerprint)
+	for _, e := range entries {
+		shard := meta.Shard
+		if e.Name() != "meta" {
+			s, err := strconv.Atoi(e.Name())
+			if err != nil || s < 0 || s >= cfg.Cluster.Shards {
+				n.log.Warn("ignoring an unknown directory under shards", "dir", e.Name())
+				continue
+			}
+			shard = s
+		}
+		if _, err := n.openReplica(shard, nil); err != nil {
+			return nil, err
+		}
+	}
+	n.log.Info("replicas open", "count", len(n.replicas), "shards", cfg.Cluster.Shards,
+		"replication_factor", cfg.Cluster.ReplicationFactor, "bootstrapped", len(n.members.Members) > 0)
 	return n, nil
 }
 
-// warnAboutUnheldShards logs shard directories this node no longer holds
-// a replica of; Phase 7's rebalancer moves such data, until then it is
-// left alone.
-func (n *Node) warnAboutUnheldShards(held []int) {
-	entries, err := os.ReadDir(filepath.Join(n.cfg.Storage.Dir, "shards"))
+func (n *Node) loadMembers() error {
+	b, err := os.ReadFile(filepath.Join(n.cfg.Storage.Dir, membersFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("node: read %s: %w", membersFile, err)
 	}
-	for _, e := range entries {
-		s, err := strconv.Atoi(e.Name())
-		if err == nil && !slices.Contains(held, s) {
-			n.log.Warn("data for a shard this node no longer holds is left untouched", "shard", s, "dir", e.Name())
-		}
+	if err := json.Unmarshal(b, &n.members); err != nil {
+		return fmt.Errorf("node: %s is damaged: %w", membersFile, err)
 	}
+	return nil
+}
+
+func (n *Node) saveMembers(rec membersRecord) error {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if err := writeFileDurably(filepath.Join(n.cfg.Storage.Dir, membersFile), append(b, '\n')); err != nil {
+		return err
+	}
+	n.mu.Lock()
+	n.members = rec
+	n.mu.Unlock()
+	return nil
+}
+
+func (n *Node) membersRecord() membersRecord {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	rec := n.members
+	rec.Members = slices.Clone(rec.Members)
+	return rec
+}
+
+// openReplica opens (or creates) this node's replica of a group; peers
+// bootstraps a new group, and nil leaves a new replica waiting for the
+// group's leader.
+func (n *Node) openReplica(shard int, peers []string) (*replica.Replica, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return nil, errors.New("node: closed")
+	}
+	if rp := n.replicas[shard]; rp != nil {
+		return rp, nil
+	}
+	shardLog := n.log.With("shard", shard)
+	rp, err := replica.Open(replica.Config{
+		Shard: shard, ID: n.id, Peers: peers, Dir: ShardDir(n.cfg.Storage.Dir, shard),
+		Engine:       storageOptions(n.cfg.Storage, shardLog, n.cache, n.compactions),
+		ElectionTick: n.cfg.Raft.ElectionTicks, HeartbeatTick: n.cfg.Raft.HeartbeatTicks,
+		SessionTTL: n.cfg.Raft.SessionTTL, CompactEntries: n.cfg.Raft.CompactEntries,
+		Sender: n.net, Snapshots: n.net, Log: shardLog,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("node: shard %d: %w", shard, err)
+	}
+	n.replicas[shard] = rp
+	n.created[shard] = time.Now()
+	return rp, nil
+}
+
+// Replica returns this node's replica of a group, or nil.
+func (n *Node) Replica(shard int) *replica.Replica {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.replicas[shard]
+}
+
+func (n *Node) localReplica(shard int) router.Replica {
+	if rp := n.Replica(shard); rp != nil {
+		return rp
+	}
+	return nil
+}
+
+func (n *Node) allReplicas() map[int]*replica.Replica {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make(map[int]*replica.Replica, len(n.replicas))
+	for s, rp := range n.replicas {
+		out[s] = rp
+	}
+	return out
+}
+
+// destroyReplica deletes this node's replica of a group.
+func (n *Node) destroyReplica(shard int) error {
+	n.mu.Lock()
+	rp := n.replicas[shard]
+	delete(n.replicas, shard)
+	delete(n.created, shard)
+	n.mu.Unlock()
+	if rp == nil {
+		return nil
+	}
+	return rp.Destroy()
 }
 
 func (n *Node) closeReplicas() error {
+	n.mu.Lock()
+	n.closed = true
+	reps := n.replicas
+	n.replicas = map[int]*replica.Replica{}
+	n.mu.Unlock()
 	var errs []error
-	for s, rp := range n.replicas {
+	for s, rp := range reps {
 		if err := rp.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("shard %d: %w", s, err))
 		}
@@ -188,14 +321,24 @@ func (n *Node) ID() string { return n.id }
 // DB returns a standalone node's storage engine, or nil in a cluster.
 func (n *Node) DB() *lsm.DB { return n.db }
 
-// Replica returns the shard replica this node holds, or nil.
-func (n *Node) Replica(shard int) *replica.Replica { return n.replicas[shard] }
+// SetRaftFilter makes the node discard, in both directions, the Raft
+// messages of every group for which drop returns true; nil stops it. It
+// is a fault-injection hook for tests (a partition of chosen groups).
+func (n *Node) SetRaftFilter(drop func(shard int) bool) {
+	if drop == nil {
+		n.net.drop.Store(nil)
+		return
+	}
+	n.net.drop.Store(&drop)
+}
+
+// resolve returns a member's internal address.
+func (n *Node) resolve(id string) string { return n.dir.Addr(id) }
 
 // Run serves the public API on public and, in a cluster, the node-to-node
-// API on internal while pinging the configured peers and driving every
-// shard replica's Raft clock. It returns when ctx is cancelled or a server
-// fails, after closing both listeners, every replica and storage engine,
-// and waiting for every goroutine it started.
+// API on internal, and runs the cluster's background work. It returns when
+// ctx is cancelled or a server fails, after closing both listeners, every
+// replica and storage engine, and waiting for every goroutine it started.
 func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 	if !n.cfg.Cluster.Clustered() {
 		admin := server.StaticStatus{DB: n.db, Self: &dkvv1.NodeInfo{
@@ -211,7 +354,7 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := cluster.New(cluster.Config{
+	n.mship = cluster.New(cluster.Config{
 		ClusterName:  n.cfg.Cluster.Name,
 		NodeID:       n.id,
 		Advertise:    n.advertise,
@@ -221,50 +364,43 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 		DownAfter:    n.cfg.Cluster.DownAfter,
 		Placement:    n.fingerprint,
 	}, n.pool, nil, n.log.With("component", "membership"))
-	local := make(map[int]router.Replica, len(n.replicas))
-	for s, rp := range n.replicas {
-		local[s] = rp
+	if m := n.membersRecord().Members; len(m) > 0 {
+		n.mship.SetBootstrapMembers(m)
 	}
-	rt := router.New(router.Config{
-		Self: n.advertise, Shards: n.cfg.Cluster.Shards, Replicas: n.pmap.ReplicaSet,
-		Local: local, Pool: n.pool, Log: n.log.With("component", "router"),
+	n.rt = router.New(router.Config{
+		Self: n.id, Shards: n.cfg.Cluster.Shards, Replicas: n.dir.Voters, Resolve: n.resolve,
+		Local: n.localReplica, Pool: n.pool, Log: n.log.With("component", "router"),
 	})
 	internalSrv := transport.NewServer(transportConfig(n.cfg.Transport))
-	dkvv1.RegisterInternalServiceServer(internalSrv, &internalAPI{
-		ping: cluster.NewPingService(m), router: rt, self: n.advertise, replicas: n.replicas,
-	})
+	dkvv1.RegisterInternalServiceServer(internalSrv, &internalAPI{n: n, ping: cluster.NewPingService(n.mship)})
 	n.log.Info("serving internal API", "addr", internal.Addr().String(), "advertise", n.advertise,
-		"cluster", n.cfg.Cluster.Name, "peers", n.cfg.Cluster.Peers)
+		"cluster", n.cfg.Cluster.Name, "peers", n.cfg.Cluster.Peers, "join", n.cfg.Cluster.Join)
 
 	var wg sync.WaitGroup
 	var internalErr error
-	wg.Add(4)
-	go func() {
-		defer wg.Done()
+	goRun := func(f func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f()
+		}()
+	}
+	goRun(func() {
 		if err := internalSrv.Serve(internal); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			internalErr = fmt.Errorf("internal API: %w", err)
 			cancel() // a node that peers cannot reach must not keep serving clients
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		m.Run(runCtx)
-	}()
-	go func() {
-		defer wg.Done()
-		n.net.run(runCtx)
-	}()
-	go func() {
-		defer wg.Done()
-		n.tick(runCtx)
-	}()
+	})
+	goRun(func() { n.mship.Run(runCtx) })
+	goRun(func() { n.net.run(runCtx) })
+	goRun(func() { n.tick(runCtx) })
+	goRun(func() { n.control(runCtx) })
 
-	admin := &clusterAdmin{m: m, pmap: n.pmap, replicas: n.replicas}
-	runErr := server.New(n.cfg, rt, admin, n.log).Run(runCtx, public)
+	runErr := server.New(n.cfg, n.rt, &clusterAdmin{n: n}, n.log).Run(runCtx, public)
 	cancel()
 	internalSrv.Stop() // in-flight forwards fail; the forwarding node retries
 	wg.Wait()
-	// Close the replicas only after both servers and the ticker have
+	// Close the replicas only after both servers and every loop have
 	// stopped, and the connections only after the replicas, which send
 	// through them.
 	repErr := n.closeReplicas()
@@ -283,77 +419,11 @@ func (n *Node) tick(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, rp := range n.replicas {
+			for _, rp := range n.allReplicas() {
 				rp.Tick()
 			}
 		}
 	}
-}
-
-// internalAPI serves the node-to-node API.
-type internalAPI struct {
-	dkvv1.UnimplementedInternalServiceServer
-	ping     *cluster.PingService
-	router   *router.Router
-	self     string
-	replicas map[int]*replica.Replica
-}
-
-func (a *internalAPI) Ping(ctx context.Context, req *dkvv1.PingRequest) (*dkvv1.PingResponse, error) {
-	return a.ping.Ping(ctx, req)
-}
-
-func (a *internalAPI) Forward(ctx context.Context, req *dkvv1.ForwardRequest) (*dkvv1.ForwardResponse, error) {
-	return a.router.Forward(ctx, req)
-}
-
-// Raft hands each message in the batch to its shard's replica. Messages
-// for a shard this node does not hold, for another node, or of an unknown
-// type are dropped; Raft treats them as lost.
-func (a *internalAPI) Raft(_ context.Context, req *dkvv1.RaftRequest) (*dkvv1.RaftResponse, error) {
-	for _, pm := range req.GetMessages() {
-		rp := a.replicas[int(pm.GetShard())]
-		if rp == nil || pm.GetTo() != a.self || !validMessage(pm) {
-			continue
-		}
-		rp.Step(fromProto(pm))
-	}
-	return &dkvv1.RaftResponse{}, nil
-}
-
-func validMessage(pm *dkvv1.RaftMessage) bool {
-	if pm.GetType() < uint32(raft.MsgPreVote) || pm.GetType() > uint32(raft.MsgHeartbeatResp) {
-		return false
-	}
-	for _, e := range pm.GetEntries() {
-		if e.GetType() > uint32(raft.EntryConfChange) {
-			return false
-		}
-	}
-	return true
-}
-
-// clusterAdmin answers the operator API for a cluster node.
-type clusterAdmin struct {
-	m        *cluster.Membership
-	pmap     *placement.Map
-	replicas map[int]*replica.Replica
-}
-
-func (a *clusterAdmin) Status() *dkvv1.ClusterStatusResponse { return a.m.Status() }
-
-func (a *clusterAdmin) ShardMap() *dkvv1.ShardMapResponse {
-	resp := &dkvv1.ShardMapResponse{ShardCount: uint32(a.pmap.Shards), ReplicationFactor: uint32(a.pmap.RF)}
-	for s := range a.pmap.Shards {
-		info := &dkvv1.ShardInfo{Shard: uint32(s), Replicas: a.pmap.ReplicaSet(s)}
-		if rp, ok := a.replicas[s]; ok {
-			st := rp.Status()
-			info.Local, info.LastSeq = true, st.Applied
-			info.Leader, info.Term, info.Role, info.CommitIndex = st.Leader, st.Term, st.Role.String(), st.Commit
-		}
-		resp.Shards = append(resp.Shards, info)
-	}
-	return resp
 }
 
 // storageOptions maps validated configuration to engine options. cache and

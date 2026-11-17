@@ -1,6 +1,6 @@
 # ADR 0023: Placement with a consistent hash ring keyed by member address
 
-Status: Accepted (Phase 5)
+Status: Accepted (Phase 5); revised in Phase 7
 
 ## Context
 
@@ -64,3 +64,16 @@ N = 7, ±62% at N = 10; measured p95 values are 21%, 28%, 39% and 56%.
   leader balancing addresses this.
 - Changing the peer list changes placement; Phase 5 does not move data, so a
   node no longer holding a shard keeps its directory and logs a warning.
+
+## Revision in Phase 7
+
+- The ring is keyed by **node ID**, not address, and covers the
+  **eligible** nodes: those the meta group records as alive and not being
+  decommissioned. Dead, decommissioning and decommissioned nodes drop out
+  of the wanted placement, and the rebalancer moves replicas to match it
+  one step at a time (ADR 0012).
+- The meta group is placed by the same ring at a point of its own, with
+  `cluster.meta_replicas` voters.
+- Placement no longer derives from the configured peer list after
+  bootstrap; the peer list's fingerprint is only a configuration sanity
+  check between bootstrap peers.

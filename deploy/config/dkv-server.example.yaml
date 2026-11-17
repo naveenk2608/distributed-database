@@ -12,10 +12,17 @@ cluster:
   name: dkv
   # internal_addr: "10.0.0.1:7100"     # node-to-node API
   # advertise_addr: "10.0.0.1:7100"    # needed if internal_addr is 0.0.0.0:PORT
+  # Bootstrap peers: the nodes that create the cluster together (each lists
+  # all of them, itself included). A node added later sets join instead.
   # peers: ["10.0.0.1:7100", "10.0.0.2:7100", "10.0.0.3:7100"]
+  # join: ["10.0.0.1:7100", "10.0.0.2:7100"]
   ping_interval: 1s
   ping_timeout: 500ms
   down_after: 5s                       # silence before a peer is reported down
+  # Fixed when the cluster is bootstrapped:
+  shards: 64
+  replication_factor: 3
+  meta_replicas: 3                     # size of the meta group
 
 transport:
   dial_timeout: 2s
@@ -29,6 +36,19 @@ raft:
   election_ticks: 10                   # timeout drawn from [10, 20) ticks
   heartbeat_ticks: 2
   session_ttl: 1h                      # client deduplication window
+  compact_entries: 10000               # raft log length that triggers compaction
+
+# Failure detection: nodes heartbeat the meta group's leader, which declares
+# a node dead after dead_after of silence and moves its replicas elsewhere.
+liveness:
+  heartbeat_interval: 1s
+  suspect_after: 3s
+  dead_after: 30s
+
+# The rebalancer runs on the meta leader and moves one replica step per
+# group per round.
+rebalance:
+  interval: 1s
 
 storage:
   # Required. Data directory; created if missing. A cluster node keeps one

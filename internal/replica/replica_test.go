@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
@@ -38,20 +41,29 @@ func (l *loopback) Send(_ int, msgs []raft.Message) {
 }
 
 type group struct {
-	t    *testing.T
-	fs   *vfs.MemFS
-	ids  []string
-	net  *loopback
-	stop chan struct{}
-	wg   sync.WaitGroup
+	t       *testing.T
+	fs      *vfs.MemFS
+	fss     map[string]*vfs.MemFS // replicas with a filesystem of their own
+	ids     []string              // every replica ever opened
+	peers   []string              // the bootstrap voters
+	compact int
+	net     *loopback
+	stop    chan struct{}
+	wg      sync.WaitGroup
 }
 
-func newGroup(t *testing.T, n int) *group {
+func newGroup(t *testing.T, n int) *group { return newGroupCompacting(t, n, 0) }
+
+// newGroupCompacting starts n bootstrap replicas that compact their Raft
+// logs every compact entries (0: the default).
+func newGroupCompacting(t *testing.T, n, compact int) *group {
 	t.Helper()
-	g := &group{t: t, fs: vfs.NewMemFS(), net: &loopback{reps: map[string]*Replica{}, down: map[string]bool{}}, stop: make(chan struct{})}
+	g := &group{t: t, fs: vfs.NewMemFS(), fss: map[string]*vfs.MemFS{}, compact: compact,
+		net: &loopback{reps: map[string]*Replica{}, down: map[string]bool{}}, stop: make(chan struct{})}
 	for i := range n {
 		g.ids = append(g.ids, fmt.Sprintf("n%d", i+1))
 	}
+	g.peers = slices.Clone(g.ids)
 	for _, id := range g.ids {
 		g.open(id)
 	}
@@ -83,16 +95,75 @@ func newGroup(t *testing.T, n int) *group {
 	return g
 }
 
+func (g *group) fsOf(id string) *vfs.MemFS {
+	if fs := g.fss[id]; fs != nil {
+		return fs
+	}
+	return g.fs
+}
+
 func (g *group) open(id string) {
-	r, err := Open(Config{Shard: 7, ID: id, Peers: g.ids, Dir: "/data/" + id, FS: g.fs,
-		Engine: lsm.Options{Sync: lsm.SyncNever}, ElectionTick: 10, HeartbeatTick: 2,
-		SessionTTL: time.Hour, Sender: g.net, Log: slog.New(slog.DiscardHandler)})
-	if err != nil {
+	g.t.Helper()
+	if err := g.tryOpen(id); err != nil {
 		g.t.Fatal(err)
+	}
+}
+
+func (g *group) tryOpen(id string) error {
+	var peers []string
+	if slices.Contains(g.peers, id) {
+		peers = g.peers
+	}
+	if !slices.Contains(g.ids, id) {
+		g.ids = append(g.ids, id)
+	}
+	r, err := Open(Config{Shard: 7, ID: id, Peers: peers, Dir: "/data/" + id, FS: g.fsOf(id),
+		Engine: lsm.Options{Sync: lsm.SyncNever}, ElectionTick: 10, HeartbeatTick: 2,
+		SessionTTL: time.Hour, CompactEntries: g.compact, Sender: g.net, Snapshots: g,
+		Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		return err
 	}
 	g.net.mu.Lock()
 	g.net.reps[id] = r
 	g.net.mu.Unlock()
+	return nil
+}
+
+// SendSnapshot streams a checkpoint in process: it copies the files from
+// the sender's filesystem into the receiver's.
+func (g *group) SendSnapshot(ctx context.Context, _ int, m raft.Message, fs vfs.FS, dir string) error {
+	to := g.rep(m.To)
+	if to == nil {
+		return fmt.Errorf("%s is not running", m.To)
+	}
+	dstFS := g.fsOf(m.To)
+	return to.ReceiveSnapshot(ctx, m, func(dst string) error {
+		names, err := fs.List(dir)
+		if err != nil {
+			return err
+		}
+		for _, n := range names {
+			data, err := vfs.ReadFile(fs, filepath.Join(dir, n))
+			if err != nil {
+				return err
+			}
+			f, err := dstFS.Create(filepath.Join(dst, n))
+			if err != nil {
+				return err
+			}
+			if _, err := f.Write(data); err != nil {
+				return err
+			}
+			if err := f.Sync(); err != nil {
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+		}
+		return dstFS.SyncDir(dst)
+	})
 }
 
 func (g *group) close(id string) {
@@ -254,5 +325,39 @@ func TestWritesContinueAfterLeaderStops(t *testing.T) {
 	}
 	if v, _, found, _, err := nl.Get(ctx(t), []byte("before"), false, 0); err != nil || !found || string(v) != "v" {
 		t.Fatalf("write from the old leader's term: %q %v %v", v, found, err)
+	}
+}
+
+// TestTxnIsAtomicAndConditional: a transaction's writes all happen, at one
+// version, only when every condition holds; Scan sees them by prefix.
+func TestTxnIsAtomicAndConditional(t *testing.T) {
+	g := newGroup(t, 3)
+	l := g.leader()
+	w := func(k, v string) *dkvv1.TxnWrite { return &dkvv1.TxnWrite{Key: []byte(k), Value: []byte(v)} }
+	ok, ver, err := l.Txn(ctx(t), &dkvv1.Txn{
+		Conditions: []*dkvv1.TxnCondition{{Key: []byte("n/a"), Version: 0}},
+		Writes:     []*dkvv1.TxnWrite{w("n/a", "1"), w("n/b", "2"), w("d/1", "x")},
+	}, "", 0)
+	if err != nil || !ok {
+		t.Fatalf("first txn: %v %v", ok, err)
+	}
+	// The condition no longer holds: nothing is written.
+	ok, _, err = l.Txn(ctx(t), &dkvv1.Txn{
+		Conditions: []*dkvv1.TxnCondition{{Key: []byte("n/a"), Version: 0}},
+		Writes:     []*dkvv1.TxnWrite{w("n/c", "3")},
+	}, "", 0)
+	if err != nil || ok {
+		t.Fatalf("txn with a stale condition: %v %v", ok, err)
+	}
+	ok, _, err = l.Txn(ctx(t), &dkvv1.Txn{
+		Conditions: []*dkvv1.TxnCondition{{Key: []byte("n/a"), Version: ver}, {Key: []byte("n/b"), Version: ver}},
+		Writes:     []*dkvv1.TxnWrite{{Key: []byte("n/b"), Delete: true}, w("n/a", "9")},
+	}, "", 0)
+	if err != nil || !ok {
+		t.Fatalf("txn with current conditions: %v %v", ok, err)
+	}
+	kvs, err := l.Scan(ctx(t), []byte("n/"), false)
+	if err != nil || len(kvs) != 1 || string(kvs[0].Key) != "n/a" || string(kvs[0].Value) != "9" {
+		t.Fatalf("scan n/: %+v %v", kvs, err)
 	}
 }

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package dkv.v1;
+
+option go_package = "github.com/naveenk2608/distributed-database/gen/dkv/v1;dkvv1";
+
+// The meta group's state: one record per node, one descriptor per shard
+// (and one for the meta group itself), and the cluster settings. They are
+// stored as keys of the meta group's engine and changed only with
+// conditional transactions (docs/adr/0011-cluster-metadata.md).
+
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  // Takes part in placement.
+  NODE_STATE_ALIVE = 1;
+  // Did not heartbeat the meta leader for liveness.dead_after; its
+  // replicas are recreated elsewhere. A heartbeat makes it alive again.
+  NODE_STATE_DEAD = 2;
+  // An operator asked for it to be emptied; placement avoids it.
+  NODE_STATE_DECOMMISSIONING = 3;
+  // Emptied; it holds no replicas.
+  NODE_STATE_DECOMMISSIONED = 4;
+}
+
+message NodeRecord {
+  string node_id = 1;
+  // addr is the node's internal (advertise) address.
+  string addr = 2;
+  NodeState state = 3;
+  int64 joined_unix_nano = 4;
+  int64 state_changed_unix_nano = 5;
+}
+
+// ShardDescriptor caches a group's membership for routing. The group's own
+// Raft membership is authoritative; the rebalancer updates the descriptor
+// after each change commits.
+message ShardDescriptor {
+  // shard is -1 for the meta group.
+  int32 shard = 1;
+  repeated string voters = 2;
+  repeated string learners = 3;
+}
+
+message ClusterSettings {
+  string cluster_name = 1;
+  uint32 shards = 2;
+  uint32 replication_factor = 3;
+  uint32 meta_replicas = 4;
+}

@@ -2,19 +2,26 @@
 // with no goroutines, timers, network or disk I/O.
 //
 // The caller (internal/replica, or the simulator in tests) drives it:
-// Tick advances logical time, Step delivers a message from a peer, Propose
-// and ReadIndex start client operations. After any of these, Ready returns
-// what the outside world must do, in this order:
+// Tick advances logical time, Step delivers a message from a peer, Propose,
+// ProposeConfChange, TransferLeader and ReadIndex start operations. After
+// any of these, Ready returns what the outside world must do, in this
+// order:
 //
-//  1. persist HardState and Entries (fsync) — before anything below, so a
-//     vote or an acknowledgment is never sent and then forgotten;
-//  2. send Messages;
+//  1. install Snapshot, if any, and persist HardState and Entries (fsync
+//     if MustSync) — before anything below, so a vote or an
+//     acknowledgment is never sent and then forgotten;
+//  2. send Messages; a MsgSnap asks the caller to stream a snapshot of
+//     its state machine (see SnapshotAt) and report the outcome with
+//     ReportSnapshot;
 //  3. apply CommittedEntries to the state machine and answer ReadStates;
 //
 // and then call Advance. The design follows etcd/raft (docs/adr/0003):
 // leader election with randomized timeouts, PreVote, CheckQuorum, log
 // replication with conflict hints, committing only entries of the
-// leader's current term by counting, and ReadIndex.
+// leader's current term by counting, ReadIndex, log compaction with
+// snapshots, single-server membership changes with learners (taking
+// effect when appended, as in the Raft dissertation), and leader transfer
+// (docs/adr/0012).
 package raft
 
 import "fmt"
@@ -51,7 +58,7 @@ const (
 	// EntryNormal carries application data; an empty one is the no-op a
 	// new leader appends to commit entries of earlier terms.
 	EntryNormal EntryType = iota
-	// EntryConfChange carries a membership change (Phase 7).
+	// EntryConfChange carries a membership change (ConfChange).
 	EntryConfChange
 )
 
@@ -86,10 +93,17 @@ const (
 	MsgAppResp
 	MsgHeartbeat
 	MsgHeartbeatResp
+	// MsgSnap carries a snapshot's metadata. From the core to the caller
+	// it has none: it asks for a snapshot to be streamed to To. The
+	// receiving side steps it, with Snapshot set, once the data is staged.
+	MsgSnap
+	// MsgTimeoutNow tells a transferee to start an election at once.
+	MsgTimeoutNow
 )
 
 func (t MsgType) String() string {
-	names := [...]string{"", "PreVote", "PreVoteResp", "Vote", "VoteResp", "App", "AppResp", "Heartbeat", "HeartbeatResp"}
+	names := [...]string{"", "PreVote", "PreVoteResp", "Vote", "VoteResp", "App", "AppResp", "Heartbeat", "HeartbeatResp",
+		"Snap", "TimeoutNow"}
 	if int(t) < len(names) && t != 0 {
 		return names[t]
 	}
@@ -116,6 +130,11 @@ type Message struct {
 	HintTerm   uint64
 	// Context identifies the ReadIndex round a heartbeat belongs to.
 	Context uint64
+	// Snapshot is set on a MsgSnap stepped into the receiving node.
+	Snapshot *SnapshotMeta
+	// Transfer marks a MsgVote of a leader transfer, which followers grant
+	// even while they have heard from the leader recently.
+	Transfer bool
 }
 
 // ReadState confirms a ReadIndex request: once the state machine has
@@ -135,6 +154,10 @@ type SoftState struct {
 type Ready struct {
 	// SoftState is non-nil if it changed.
 	SoftState *SoftState
+	// Snapshot, if non-nil, was accepted from the leader: the caller must
+	// install the staged snapshot data as the state machine and persist
+	// the metadata, which replaces the whole log, before anything else.
+	Snapshot *SnapshotMeta
 	// HardState is non-empty if it must be persisted.
 	HardState HardState
 	// Entries must be persisted, replacing any persisted entries at or

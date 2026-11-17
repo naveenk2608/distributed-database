@@ -1,6 +1,6 @@
 # ADR 0021: Persistent node IDs and a static bootstrap peer list
 
-Status: Accepted (Phase 4)
+Status: Accepted (Phase 4); revised in Phase 7
 
 ## Context
 
@@ -56,3 +56,22 @@ address, is never counted as a member. Status is served by
   decisions in the meta group so the cluster agrees.
 - Detection time is bounded by `down_after` after the last answer; the
   in-process gate test measures about 0.99s for a 1s window.
+
+## Revision in Phase 7
+
+- Node IDs are now the Raft member IDs of every group (ADR 0012), and the
+  directory maps them to addresses. A node whose data directory is wiped
+  gets a new ID and therefore rejoins as a new member, never as one that
+  forgot its votes.
+- The bootstrap peer list is used once: a fresh node waits until every
+  bootstrap peer has answered a ping with its ID, then all of them
+  bootstrap the same layout from the sorted IDs (ADR 0011) and record the
+  member IDs in `MEMBERS`. Pings carry those `bootstrap_members`; a fresh
+  node whose peers report members without its ID (a wiped node) joins
+  through them instead of bootstrapping.
+- Nodes not in the bootstrap list join with `cluster.join` (internal
+  addresses of existing nodes): `InternalService.Join` registers a node
+  record in the meta group and returns the members, the nodes and the
+  descriptors.
+- Ping membership stays for status; decisions about failed nodes come
+  from the meta leader (ADR 0013).

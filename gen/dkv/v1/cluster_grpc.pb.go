@@ -19,9 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	InternalService_Ping_FullMethodName    = "/dkv.v1.InternalService/Ping"
-	InternalService_Forward_FullMethodName = "/dkv.v1.InternalService/Forward"
-	InternalService_Raft_FullMethodName    = "/dkv.v1.InternalService/Raft"
+	InternalService_Ping_FullMethodName            = "/dkv.v1.InternalService/Ping"
+	InternalService_Forward_FullMethodName         = "/dkv.v1.InternalService/Forward"
+	InternalService_Raft_FullMethodName            = "/dkv.v1.InternalService/Raft"
+	InternalService_InstallSnapshot_FullMethodName = "/dkv.v1.InternalService/InstallSnapshot"
+	InternalService_NodeStatus_FullMethodName      = "/dkv.v1.InternalService/NodeStatus"
+	InternalService_ChangeReplicas_FullMethodName  = "/dkv.v1.InternalService/ChangeReplicas"
+	InternalService_TransferLeader_FullMethodName  = "/dkv.v1.InternalService/TransferLeader"
+	InternalService_Join_FullMethodName            = "/dkv.v1.InternalService/Join"
+	InternalService_Heartbeat_FullMethodName       = "/dkv.v1.InternalService/Heartbeat"
 )
 
 // InternalServiceClient is the client API for InternalService service.
@@ -29,8 +35,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // InternalService is the node-to-node API, served on each node's internal
-// address (cluster.internal_addr). Clients never call it. Later phases add
-// Raft message batches, snapshot streams and request forwarding.
+// address (cluster.internal_addr). Clients never call it.
 type InternalServiceClient interface {
 	// Ping returns the receiving node's identity. Every node pings each peer
 	// in its bootstrap list to detect failures; a peer in another cluster
@@ -44,6 +49,22 @@ type InternalServiceClient interface {
 	// Raft delivers a batch of Raft messages for any number of shards.
 	// Delivery is best effort: Raft tolerates lost messages.
 	Raft(ctx context.Context, in *RaftRequest, opts ...grpc.CallOption) (*RaftResponse, error)
+	// InstallSnapshot streams a snapshot from a group's leader to a member
+	// that needs it. It returns once the receiver has staged the data.
+	InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[InstallSnapshotRequest, InstallSnapshotResponse], error)
+	// NodeStatus reports every replica the receiving node holds.
+	NodeStatus(ctx context.Context, in *NodeStatusRequest, opts ...grpc.CallOption) (*NodeStatusResponse, error)
+	// ChangeReplicas makes a single-server membership change in a group; the
+	// receiver must lead it, or it answers not_leader.
+	ChangeReplicas(ctx context.Context, in *ChangeReplicasRequest, opts ...grpc.CallOption) (*ChangeReplicasResponse, error)
+	// TransferLeader hands a group's leadership to another voter; the
+	// receiver must lead it, or it answers not_leader.
+	TransferLeader(ctx context.Context, in *TransferLeaderRequest, opts ...grpc.CallOption) (*TransferLeaderResponse, error)
+	// Join registers a new node with the cluster's meta group.
+	Join(ctx context.Context, in *JoinRequest, opts ...grpc.CallOption) (*JoinResponse, error)
+	// Heartbeat tells the meta leader that a node is alive; any other node
+	// answers not_leader.
+	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 }
 
 type internalServiceClient struct {
@@ -84,13 +105,75 @@ func (c *internalServiceClient) Raft(ctx context.Context, in *RaftRequest, opts 
 	return out, nil
 }
 
+func (c *internalServiceClient) InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[InstallSnapshotRequest, InstallSnapshotResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &InternalService_ServiceDesc.Streams[0], InternalService_InstallSnapshot_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[InstallSnapshotRequest, InstallSnapshotResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type InternalService_InstallSnapshotClient = grpc.ClientStreamingClient[InstallSnapshotRequest, InstallSnapshotResponse]
+
+func (c *internalServiceClient) NodeStatus(ctx context.Context, in *NodeStatusRequest, opts ...grpc.CallOption) (*NodeStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeStatusResponse)
+	err := c.cc.Invoke(ctx, InternalService_NodeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *internalServiceClient) ChangeReplicas(ctx context.Context, in *ChangeReplicasRequest, opts ...grpc.CallOption) (*ChangeReplicasResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChangeReplicasResponse)
+	err := c.cc.Invoke(ctx, InternalService_ChangeReplicas_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *internalServiceClient) TransferLeader(ctx context.Context, in *TransferLeaderRequest, opts ...grpc.CallOption) (*TransferLeaderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransferLeaderResponse)
+	err := c.cc.Invoke(ctx, InternalService_TransferLeader_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *internalServiceClient) Join(ctx context.Context, in *JoinRequest, opts ...grpc.CallOption) (*JoinResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinResponse)
+	err := c.cc.Invoke(ctx, InternalService_Join_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *internalServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HeartbeatResponse)
+	err := c.cc.Invoke(ctx, InternalService_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServiceServer is the server API for InternalService service.
 // All implementations must embed UnimplementedInternalServiceServer
 // for forward compatibility.
 //
 // InternalService is the node-to-node API, served on each node's internal
-// address (cluster.internal_addr). Clients never call it. Later phases add
-// Raft message batches, snapshot streams and request forwarding.
+// address (cluster.internal_addr). Clients never call it.
 type InternalServiceServer interface {
 	// Ping returns the receiving node's identity. Every node pings each peer
 	// in its bootstrap list to detect failures; a peer in another cluster
@@ -104,6 +187,22 @@ type InternalServiceServer interface {
 	// Raft delivers a batch of Raft messages for any number of shards.
 	// Delivery is best effort: Raft tolerates lost messages.
 	Raft(context.Context, *RaftRequest) (*RaftResponse, error)
+	// InstallSnapshot streams a snapshot from a group's leader to a member
+	// that needs it. It returns once the receiver has staged the data.
+	InstallSnapshot(grpc.ClientStreamingServer[InstallSnapshotRequest, InstallSnapshotResponse]) error
+	// NodeStatus reports every replica the receiving node holds.
+	NodeStatus(context.Context, *NodeStatusRequest) (*NodeStatusResponse, error)
+	// ChangeReplicas makes a single-server membership change in a group; the
+	// receiver must lead it, or it answers not_leader.
+	ChangeReplicas(context.Context, *ChangeReplicasRequest) (*ChangeReplicasResponse, error)
+	// TransferLeader hands a group's leadership to another voter; the
+	// receiver must lead it, or it answers not_leader.
+	TransferLeader(context.Context, *TransferLeaderRequest) (*TransferLeaderResponse, error)
+	// Join registers a new node with the cluster's meta group.
+	Join(context.Context, *JoinRequest) (*JoinResponse, error)
+	// Heartbeat tells the meta leader that a node is alive; any other node
+	// answers not_leader.
+	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	mustEmbedUnimplementedInternalServiceServer()
 }
 
@@ -122,6 +221,24 @@ func (UnimplementedInternalServiceServer) Forward(context.Context, *ForwardReque
 }
 func (UnimplementedInternalServiceServer) Raft(context.Context, *RaftRequest) (*RaftResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Raft not implemented")
+}
+func (UnimplementedInternalServiceServer) InstallSnapshot(grpc.ClientStreamingServer[InstallSnapshotRequest, InstallSnapshotResponse]) error {
+	return status.Error(codes.Unimplemented, "method InstallSnapshot not implemented")
+}
+func (UnimplementedInternalServiceServer) NodeStatus(context.Context, *NodeStatusRequest) (*NodeStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method NodeStatus not implemented")
+}
+func (UnimplementedInternalServiceServer) ChangeReplicas(context.Context, *ChangeReplicasRequest) (*ChangeReplicasResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ChangeReplicas not implemented")
+}
+func (UnimplementedInternalServiceServer) TransferLeader(context.Context, *TransferLeaderRequest) (*TransferLeaderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransferLeader not implemented")
+}
+func (UnimplementedInternalServiceServer) Join(context.Context, *JoinRequest) (*JoinResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Join not implemented")
+}
+func (UnimplementedInternalServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
 func (UnimplementedInternalServiceServer) mustEmbedUnimplementedInternalServiceServer() {}
 func (UnimplementedInternalServiceServer) testEmbeddedByValue()                         {}
@@ -198,6 +315,103 @@ func _InternalService_Raft_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _InternalService_InstallSnapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(InternalServiceServer).InstallSnapshot(&grpc.GenericServerStream[InstallSnapshotRequest, InstallSnapshotResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type InternalService_InstallSnapshotServer = grpc.ClientStreamingServer[InstallSnapshotRequest, InstallSnapshotResponse]
+
+func _InternalService_NodeStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NodeStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).NodeStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_NodeStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).NodeStatus(ctx, req.(*NodeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InternalService_ChangeReplicas_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChangeReplicasRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).ChangeReplicas(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_ChangeReplicas_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).ChangeReplicas(ctx, req.(*ChangeReplicasRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InternalService_TransferLeader_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransferLeaderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).TransferLeader(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_TransferLeader_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).TransferLeader(ctx, req.(*TransferLeaderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InternalService_Join_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).Join(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_Join_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).Join(ctx, req.(*JoinRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InternalService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServiceServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalService_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServiceServer).Heartbeat(ctx, req.(*HeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // InternalService_ServiceDesc is the grpc.ServiceDesc for InternalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -217,7 +431,33 @@ var InternalService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Raft",
 			Handler:    _InternalService_Raft_Handler,
 		},
+		{
+			MethodName: "NodeStatus",
+			Handler:    _InternalService_NodeStatus_Handler,
+		},
+		{
+			MethodName: "ChangeReplicas",
+			Handler:    _InternalService_ChangeReplicas_Handler,
+		},
+		{
+			MethodName: "TransferLeader",
+			Handler:    _InternalService_TransferLeader_Handler,
+		},
+		{
+			MethodName: "Join",
+			Handler:    _InternalService_Join_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _InternalService_Heartbeat_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "InstallSnapshot",
+			Handler:       _InternalService_InstallSnapshot_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "dkv/v1/cluster.proto",
 }

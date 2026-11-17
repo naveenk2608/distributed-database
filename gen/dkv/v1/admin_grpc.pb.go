@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	AdminService_ClusterStatus_FullMethodName = "/dkv.v1.AdminService/ClusterStatus"
 	AdminService_ShardMap_FullMethodName      = "/dkv.v1.AdminService/ShardMap"
+	AdminService_Decommission_FullMethodName  = "/dkv.v1.AdminService/Decommission"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -36,6 +37,9 @@ type AdminServiceClient interface {
 	// ShardMap returns where every shard is placed, and for the shards the
 	// answering node holds, the state of its local copy.
 	ShardMap(ctx context.Context, in *ShardMapRequest, opts ...grpc.CallOption) (*ShardMapResponse, error)
+	// Decommission asks the cluster to move every replica off a node; the
+	// node is then marked decommissioned and can be shut down.
+	Decommission(ctx context.Context, in *DecommissionRequest, opts ...grpc.CallOption) (*DecommissionResponse, error)
 }
 
 type adminServiceClient struct {
@@ -66,6 +70,16 @@ func (c *adminServiceClient) ShardMap(ctx context.Context, in *ShardMapRequest, 
 	return out, nil
 }
 
+func (c *adminServiceClient) Decommission(ctx context.Context, in *DecommissionRequest, opts ...grpc.CallOption) (*DecommissionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecommissionResponse)
+	err := c.cc.Invoke(ctx, AdminService_Decommission_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -79,6 +93,9 @@ type AdminServiceServer interface {
 	// ShardMap returns where every shard is placed, and for the shards the
 	// answering node holds, the state of its local copy.
 	ShardMap(context.Context, *ShardMapRequest) (*ShardMapResponse, error)
+	// Decommission asks the cluster to move every replica off a node; the
+	// node is then marked decommissioned and can be shut down.
+	Decommission(context.Context, *DecommissionRequest) (*DecommissionResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -94,6 +111,9 @@ func (UnimplementedAdminServiceServer) ClusterStatus(context.Context, *ClusterSt
 }
 func (UnimplementedAdminServiceServer) ShardMap(context.Context, *ShardMapRequest) (*ShardMapResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShardMap not implemented")
+}
+func (UnimplementedAdminServiceServer) Decommission(context.Context, *DecommissionRequest) (*DecommissionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Decommission not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -152,6 +172,24 @@ func _AdminService_ShardMap_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_Decommission_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecommissionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).Decommission(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_Decommission_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).Decommission(ctx, req.(*DecommissionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -166,6 +204,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ShardMap",
 			Handler:    _AdminService_ShardMap_Handler,
+		},
+		{
+			MethodName: "Decommission",
+			Handler:    _AdminService_Decommission_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
