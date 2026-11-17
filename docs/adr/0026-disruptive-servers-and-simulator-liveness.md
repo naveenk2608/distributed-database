@@ -131,4 +131,6 @@ raising everyone's term is PreVote (§9.6), which dkv runs.
 - The transfer bypass means a delayed `MsgTimeoutNow` can make a node that
   has since fallen behind campaign with the lease bypassed. Safety then
   rests on the vote's log check alone, which no lease guards.
+  `TestDelayedTimeoutNowMeetsTheLogCheck` (`internal/sim`) builds exactly
+  this schedule on every run.
 - Results: see docs/PROGRESS.md, Phase 8, "Seed 51674".

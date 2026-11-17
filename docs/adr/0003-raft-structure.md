@@ -117,3 +117,14 @@ Leader Completeness, State Machine Safety and Log Matching over
 compacted logs and installed snapshots, and requires the members of the
 final membership to apply a final proposal. Membership changes are made
 only in schedules with CheckQuorum and PreVote on (ADRs 0012 and 0026).
+
+## Phase 8 follow-up
+
+A schedule now stops at its first violation: past it the state means
+nothing, and a broken core could flood the simulated network until the
+process ran out of memory without reporting (seed 73 with the vote-freshness
+bug planted). Random schedules reach some situations only rarely (that bug
+shows in one schedule in four), so targeted schedules build them directly
+with the simulator's machinery: `TestDelayedTimeoutNowMeetsTheLogCheck`
+delays a leader's `MsgTimeoutNow` until the transferee's log is stale,
+leaving the vote's log check as the only guard.

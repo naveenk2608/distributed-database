@@ -44,7 +44,7 @@ test-short:
 SEEDS ?= 1000
 PREVOTE ?= random
 sim:
-	go test -count=1 -timeout=3h -v -run '^(TestSimulation|TestRegressionSeeds|TestReplayIsIdentical)$$' ./internal/sim \
+	go test -count=1 -timeout=3h -v ./internal/sim \
 		-seeds=$(SEEDS) -prevote=$(PREVOTE)
 
 ## test-integration: in-process multi-node clusters

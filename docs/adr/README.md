@@ -10,7 +10,7 @@ come up during implementation take the next free number from 0016.
 | [0000](0000-scope.md) | Scope: single-key operations with CAS | Accepted |
 | [0001](0001-replication-model.md) | One Raft group per shard | Accepted |
 | [0002](0002-partitioning.md) | Fixed hash shards placed by consistent hashing | Accepted |
-| [0003](0003-raft-structure.md) | Raft as a deterministic core driven by a runner; pre-vote tie-break; per-node message batching | Accepted (extended in Phase 7) |
+| [0003](0003-raft-structure.md) | Raft as a deterministic core driven by a runner; pre-vote tie-break; per-node message batching | Accepted (extended in Phase 7 and in the Phase 8 follow-up) |
 | [0004](0004-engine-per-shard.md) | One storage engine per shard replica, sharing a node-wide block cache and compaction pool | Accepted |
 | [0005](0005-compaction.md) | Size-tiered compaction over time-ordered runs of adjacent tables | Accepted |
 | [0006](0006-manifest-format.md) | Manifest rewritten in full with an atomic rename | Accepted |

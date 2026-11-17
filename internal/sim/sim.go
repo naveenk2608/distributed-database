@@ -10,6 +10,7 @@ package sim
 
 import (
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"io"
 	"math/rand/v2"
@@ -158,6 +159,10 @@ type Sim struct {
 	res      Result
 	nextProp int
 	nextRead uint64
+	hash     hash.Hash64
+	// intercept, if set, sees every message a node sends; returning false
+	// drops it. Targeted schedules use it to hold or lose chosen messages.
+	intercept func(raft.Message) bool
 }
 
 type hashWriter struct {
@@ -174,15 +179,31 @@ func (w hashWriter) event(format string, args ...any) {
 }
 
 // Run executes the schedule for seed with opts (RandomOptions if opts is
-// nil) and returns its result.
+// nil) and returns its result. A schedule stops at its first violation:
+// past it the cluster's state means nothing, and a broken core can then
+// flood the simulated network until memory runs out instead of reporting.
 func Run(seed uint64, opts *Options) Result {
 	rng := seedRand(seed)
 	o := RandomOptions(rng)
 	if opts != nil {
 		o = *opts
 	}
+	s := newSim(seed, rng, o)
+	for s.now = 0; s.now < o.Steps && !s.failed(); s.now++ {
+		s.step()
+		if s.now%10 == 0 {
+			s.checkLogs()
+		}
+	}
+	s.calm()
+	return s.finish()
+}
+
+// newSim starts the nodes of a schedule with options o, events drawn from
+// rng and node timers seeded from seed.
+func newSim(seed uint64, rng *rand.Rand, o Options) *Sim {
 	h := fnv.New64a()
-	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), trace: hashWriter{h: h, out: o.Trace}}
+	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), hash: h, trace: hashWriter{h: h, out: o.Trace}}
 	var voters []string
 	for i := range o.Nodes + o.Spares {
 		id := fmt.Sprintf("n%d", i+1)
@@ -199,16 +220,16 @@ func Run(seed uint64, opts *Options) Result {
 		s.nodes[id] = n
 		s.start(n)
 	}
-	for s.now = 0; s.now < o.Steps; s.now++ {
-		s.step()
-		if s.now%10 == 0 {
-			s.checkLogs()
-		}
-	}
-	s.calm()
+	return s
+}
+
+func (s *Sim) failed() bool { return len(s.check.Violations()) > 0 }
+
+// finish checks the logs one last time and returns the result.
+func (s *Sim) finish() Result {
 	s.checkLogs()
 	s.res.Violations = s.check.Violations()
-	s.res.Trace = h.Sum64()
+	s.res.Trace = s.hash.Sum64()
 	return s.res
 }
 
@@ -392,7 +413,7 @@ func (s *Sim) compact(n *simNode) {
 // membership: the liveness check. Like a client, it proposes again if the
 // proposal is lost to a leader change.
 func (s *Sim) calm() {
-	if s.opts.CalmSteps == 0 {
+	if s.opts.CalmSteps == 0 || s.failed() {
 		return
 	}
 	s.split = false
@@ -410,7 +431,7 @@ func (s *Sim) calm() {
 	var final []byte
 	var members []string
 	proposedAt := 0
-	for ; s.now < end; s.now++ {
+	for ; s.now < end && !s.failed(); s.now++ {
 		if s.now >= end-s.opts.CalmSteps*2/3 && (final == nil || s.now-proposedAt > 50) {
 			if n := s.pick(func(n *simNode) bool { return n.r.State() == raft.StateLeader && n.r.Transferee() == "" }); n != nil {
 				data := fmt.Appendf(nil, "final@%d", s.now)
@@ -424,6 +445,9 @@ func (s *Sim) calm() {
 		if final != nil && s.check.AppliedEverywhere(final, members, s.snapIndexes()) {
 			return
 		}
+	}
+	if s.failed() {
+		return
 	}
 	if final == nil {
 		s.check.violate("Liveness: no leader accepted a proposal in %d calm steps", s.opts.CalmSteps)
@@ -529,7 +553,7 @@ func (s *Sim) processReady() {
 }
 
 func (s *Sim) send(m raft.Message) {
-	if s.rng.Float64() < s.opts.DropRate {
+	if (s.intercept != nil && !s.intercept(m)) || s.rng.Float64() < s.opts.DropRate {
 		s.res.Dropped++
 		if m.Type == raft.MsgSnap {
 			s.nodes[m.From].r.ReportSnapshot(m.To, false)

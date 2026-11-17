@@ -548,9 +548,9 @@ accepted are now in `TestModelRejectsViolations`.
 - Faults are injected where calls are sent; a response lost after the receiver acted is only
   covered by client-side resends and timeouts.
 - Each scenario injects one kind of fault; there is no mixed nemesis yet.
-- Detection is probabilistic: the vote bug above was caught in 2 of 15 runs. The simulator
-  catches it through its Leader Completeness check (Phase 6 mutation table), and the nightly job
-  runs each scenario 10 times.
+- Detection by the chaos scenarios is probabilistic: the vote bug above was caught in 2 of 15
+  runs, and the nightly job runs each scenario 10 times. The simulator's targeted schedule
+  catches it on every run (see "Vote-freshness bug in the simulator").
 - Slow disk is simulated only on fsync latency, and only for replica storage.
 - Not done: an independent second review of the Phase 8 diff against the plan.
 
@@ -644,3 +644,36 @@ alternatives: ADR 0026.
 
   Together the two 100,000-seed runs cover every schedule of the nightly's former
   100,000-seed run with PreVote drawn per seed, seed 51674 included.
+
+### Vote-freshness bug in the simulator
+
+The chaos scenarios caught "votes granted without the log up-to-date check" in only 2 of 15
+runs. Checked here whether the simulator's Leader Completeness check catches it every time.
+The bug was planted again (`handleVote` grants votes and pre-votes without
+`isUpToDate`), outside the repository.
+
+- **Random schedules catch it in one schedule out of four.** Seeds 1–10,000: 2,509 report a
+  violation, the first being Leader Completeness in 2,458, Election Safety in 50 and State
+  Machine Safety in 1; the other 7,491 never put a lagging node in a position to win. The
+  first catching seed is 4, and no 33 consecutive seeds all miss it, so every run of the
+  suite catches it (`make check`: 1,000 seeds, CI: 10,000, nightly: 100,000), but not every
+  schedule does.
+- **A schedule used to run on after its first violation**, and with this bug that ran the
+  test out of memory: seed 73 flooded the simulated network until the process was
+  killed, reporting nothing (on this 3 GB machine after about 9
+  minutes; a `make check` running alongside it failed two timing tests in
+  `test/integration`, which pass when it runs alone). The suite never reached
+  seed 73 because seed 4 failed first, but a replay with `-first-seed` would have. A
+  schedule now stops at its first violation; the 10,000-seed tally above ran under a 1.5 GB
+  address-space limit without trouble.
+- **Targeted schedule** `TestDelayedTimeoutNowMeetsTheLogCheck` (`internal/sim`, PreVote on
+  and off), a schedule an asynchronous network allows: a leader starts a transfer to a
+  caught-up follower and the `MsgTimeoutNow` is delayed past the transfer's timeout; the
+  leader then commits an entry the follower misses (its appends are lost, its heartbeats
+  are not, so it keeps following). When the `MsgTimeoutNow` arrives, the follower campaigns
+  at once with a stale log, no pre-vote and the lease bypassed (ADR 0026); everyone else
+  would grant a transfer vote, so only the log check stops it. The test checks each step of
+  the setup, then requires the calm phase to elect a leader holding the entry and apply a
+  new proposal everywhere. With the bug planted it failed 6 of 6 runs (3 each with PreVote
+  off and on), each time with "Leader Completeness: leader n1 of term 3 lacks committed
+  entry 3 (term 2)"; without it, it passes.
