@@ -291,3 +291,26 @@ func (c *cluster) shardCount() uint32 {
 	}
 	return 0
 }
+
+// termSum adds up, over every shard, the highest Raft term any running
+// node reports for it. It grows with every election, so comparing it
+// before and after a scenario shows whether the faults forced elections.
+func (c *cluster) termSum() uint64 {
+	terms := map[uint32]uint64{}
+	for _, s := range c.services {
+		sm, err := c.shardMap(s)
+		if err != nil {
+			continue
+		}
+		for _, in := range sm.GetShards() {
+			if in.GetLocal() {
+				terms[in.GetShard()] = max(terms[in.GetShard()], in.GetTerm())
+			}
+		}
+	}
+	var sum uint64
+	for _, t := range terms {
+		sum += t
+	}
+	return sum
+}

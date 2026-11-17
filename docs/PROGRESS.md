@@ -10,9 +10,14 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
   Desktop and enable Settings → Resources → WSL integration for this distro. Blocked until
   then: the Phase 4 Compose gate (`make compose-gate`, which runs
   `deploy/compose/gate.sh`). The Dockerfile and Compose file are written; the same check
-  runs with three real `dkv-server` processes in `test/e2e`. Also blocked: running the
-  Phase 8 Docker chaos scenarios locally (`make chaos`; still unavailable on 2026-11-17).
-  The nightly workflow runs them on GitHub's runners, which have Docker.
+  runs with three real `dkv-server` processes in `test/e2e`. The Phase 8 Docker chaos
+  scenarios (`make chaos`) cannot run here either; they run in the nightly workflow on
+  GitHub's runners, and passed there (Phase 8).
+- **A decision on simulator seed 51674** (Phase 8, "First nightly run"): one of 100,000
+  schedules fails the simulator's liveness check, in a configuration dkv never runs
+  (PreVote off). Making it pass means changing what the simulator requires, which the rules
+  leave to you; the options and my recommendation are listed there. Until then the nightly
+  `sim` job fails at that seed.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -455,8 +460,11 @@ the new keys.
 
 ## Phase 8: Fault injection and distributed integration testing
 
-Status: **done except the Docker backend's run**, which needs Docker (see "Needs from you").
-Both gate items passed locally on 2026-11-17 with the in-process backend.
+Status: **done.** Both gate items passed locally on 2026-11-17 with the in-process backend, and
+the Docker backend's scenarios passed on GitHub's runners (nightly run 44050943445). CI run
+44050875076 on main at 51cf806 (`check`, `crash`, `storage-gate`, `sim`) is green. The first
+nightly run found two problems in earlier phases' code, below: one fixed, one waiting on a
+decision.
 
 The full suite also passes on the Phase 8 cluster layer: `go test -p 2 -count=1 ./...` ran all
 31 packages (27 with tests) in 3 m 18 s with no failure. At the default parallelism the run was
@@ -467,7 +475,7 @@ killed for lack of memory (exit 137) on this 3 GB machine; run it here with `-p 
 
 | Gate item | Evidence | Status |
 | --- | --- | --- |
-| Every scenario in the failure matrix passes the linearizability check across repeated runs | `test/linearizability` `TestFailureMatrix` (`make lin LIN_RUNS=5`): 3 nodes, 4 shards plus the meta group, 20 ms ticks, `dead_after` 2 s. Per run, four clients (three pinned to one node each, one using all) issue puts, gets, deletes and compare-and-sets with unique values on 8 keys for 3 s of faults plus recovery; every operation is recorded with its invocation and response time, failed and timed-out ones as unknown outcomes; then every key is read once more and every such read must succeed. Porcupine checks the history against a per-key model that includes versions. One scenario per failure-matrix row (table below); 14 scenarios × 5 runs = 70 runs, all linearizable, in 5 m 33 s. Also run once each under `-race` inside `make check`. `TestPowerLossOfMajorityLosesNothing` (`storage.sync` always and interval): one node partitioned away while writes go on, the power of the other two cut (their replicas on `vfs.MemFS`, so only fsynced data survives), then everything restarted: linearizable, no acknowledged write lost. The Docker backend (`test/chaos`, `make chaos`: SIGKILL, SIGSTOP, iptables, tc netem against Compose) is written and compiles, vets and lints but has not run: no Docker here. The nightly workflow runs it. | Passed (in-process); Docker run pending |
+| Every scenario in the failure matrix passes the linearizability check across repeated runs | `test/linearizability` `TestFailureMatrix` (`make lin LIN_RUNS=5`): 3 nodes, 4 shards plus the meta group, 20 ms ticks, `dead_after` 2 s. Per run, four clients (three pinned to one node each, one using all) issue puts, gets, deletes and compare-and-sets with unique values on 8 keys for 3 s of faults plus recovery; every operation is recorded with its invocation and response time, failed and timed-out ones as unknown outcomes; then every key is read once more and every such read must succeed. Porcupine checks the history against a per-key model that includes versions. One scenario per failure-matrix row (table below); 14 scenarios × 5 runs = 70 runs, all linearizable, in 5 m 33 s. Also run once each under `-race` inside `make check`. `TestPowerLossOfMajorityLosesNothing` (`storage.sync` always and interval): one node partitioned away while writes go on, the power of the other two cut (their replicas on `vfs.MemFS`, so only fsynced data survives), then everything restarted: linearizable, no acknowledged write lost. The Docker backend (`test/chaos`, `make chaos`: SIGKILL, SIGSTOP, iptables, tc netem against a three-node Compose cluster) cannot run here; on GitHub's runners (nightly run 44050943445, `CHAOS_RUNS=2`, 10 s of faults) all 12 of its scenarios × 2 runs = 24 histories were linearizable, 2,573–13,493 operations each. | Passed |
 | A deliberately broken configuration fails the checker | `TestNegativeControlFailsTheChecker`: the same power loss with `storage.sync = never`, which now also skips the Raft log's fsyncs (ADR 0010). The two powered-off nodes come back without the writes they acknowledged; the partitioned node leads with older data; the checker must return Illegal, and does in 5 of 5 runs (seed 42, 1,129–1,788 operations each). | Passed |
 
 | Failure-matrix row | Scenario | Nemesis (3 s of faults) | 5 runs: operations / unknown outcomes / injector |
@@ -525,8 +533,8 @@ accepted are now in `TestModelRejectsViolations`.
   versions, unknown outcomes), the shared `Workload`, the failure matrix, the power-loss tests
   and the negative control. Flags: `-lin-runs`, `-lin-duration`, `-lin-seed`, `-lin-out`
   (Porcupine's HTML visualization of a failing history).
-- **`test/chaos`** (not run, see above): the same workload and checker against a Compose
-  cluster; `deploy/compose/chaos.yml` (8 shards, faster failure handling) and
+- **`test/chaos`** (runs on GitHub, see above): the same workload and checker against a
+  Compose cluster, logging each scenario's growth in Raft terms (elections it forced); `deploy/compose/chaos.yml` (8 shards, faster failure handling) and
   `deploy/docker/nettools.Dockerfile` (iptables and tc, run in a node's network namespace).
 - **Make and CI:** `make lin`, `make chaos`; a nightly workflow (`.github/workflows/nightly.yml`)
   with the failure matrix at 10 runs × 10 s, the Docker chaos scenarios, 100,000 simulation
@@ -536,7 +544,10 @@ accepted are now in `TestModelRejectsViolations`.
 
 ### Known limitations
 
-- The Docker backend has never run (no Docker here); its first run will be the nightly job.
+- The Docker backend runs only on GitHub (no Docker here). Its first run predates the
+  per-scenario Raft-term log line, so it does not yet show that its iptables partitions forced
+  elections (netem visibly cut throughput: about 2,600 operations against 6,000–13,000).
+- Simulator seed 51674 fails the liveness check (see "First nightly run").
 - The in-process backend shares one Go runtime: `PauseTicks` stops only the Raft clock, not
   the node's other goroutines; real process pauses come with SIGSTOP in the Docker backend.
 - Faults are injected where calls are sent; a response lost after the receiver acted is only
@@ -547,3 +558,47 @@ accepted are now in `TestModelRejectsViolations`.
   runs each scenario 10 times.
 - Slow disk is simulated only on fsync latency, and only for replica storage.
 - Not done: an independent second review of the Phase 8 diff against the plan.
+
+### First nightly run
+
+Nightly run 44050943445 (dispatched by hand on 51cf806):
+
+- `chaos`: passed, see the gate table. Per scenario (two runs each): `kill-leader` 8,378 and
+  9,917 operations, 70 and 64 with unknown outcomes; `kill-majority` 8,986 and 13,493;
+  `freeze-leader` (SIGSTOP for 3 s) 6,044 and 6,299; `wipe-node` 11,273 and 10,866;
+  `slow-network` (netem 20 ms ± 15 ms) 2,657 and 2,658; `lossy-network` (10% loss, 5%
+  duplication, 25% reordering) 2,644 and 2,573. All Ok.
+- `crash`: 1,000 kill -9 cycles passed.
+- `fuzz`: `FuzzDecodeBatch` (`internal/storage/lsm`, Phase 2 code) found a batch record whose
+  decode-then-encode round trip changed it: a key length written as `0x80 0x00`, a padded
+  varint for 0, which `binary.Uvarint` accepts. The encoder never writes one, so only
+  corruption could, but accepting it gave one batch two encodings. Fixed in the commit after
+  51cf806 ("Phase 8 follow-up"): the decoder rejects padded lengths. `TestDecodeBatchRejectsPaddedLengths`
+  and the saved failing input (`testdata/fuzz/FuzzDecodeBatch/755a9cdbd06cc1b6`) both fail
+  without the fix and pass with it; 3 more minutes of fuzzing found nothing else.
+- `sim` (100,000 seeds, ten times CI's 10,000): seed 51674 fails the liveness check, "a
+  proposal made during 300 calm steps was not applied by every member". Every other seed
+  passes (1–51,673 on GitHub; 51,675–100,000 here, 6 m 40 s, zero violations). No safety
+  violation. **Open.**
+  - What happens: PreVote off, CheckQuorum on, two voters (n1, n3) after n2 was removed. n2
+    never learned of its removal (it was added back as a learner at step 364, still behind);
+    a partition at step 361 leaves the group without a leader. In the calm phase n2
+    keeps starting elections it cannot win, at ever higher terms. n3's log is behind n1's,
+    so only n1 can win, and the term bumps keep cutting its elections short; n1 wins only
+    at step 646 of 700, too late for the final proposal to reach every member.
+  - This is the disruptive removed server of the Raft thesis, §4.2.3. PreVote (§9.6) is the
+    fix: n2's and n3's pre-votes fail without raising terms. dkv always runs with PreVote
+    and CheckQuorum (`replica.go`). Rerun with PreVote on, the seed passes; with no
+    membership changes, it also passes. Changing an option shifts the random schedule, so
+    neither rerun is an exact counterfactual.
+  - The simulator already exempts CheckQuorum-off schedules from membership changes, for
+    the same reason. Options: (a) exempt PreVote-off schedules too, keeping them for safety
+    without membership changes (recommended: it matches what dkv runs and keeps every
+    safety check); (b) give PreVote-off schedules a longer calm phase, which makes a failure
+    rarer but not impossible; (c) change Raft so voters ignore vote requests from servers
+    that are not voters in their configuration, a core liveness change that would need its
+    own analysis. Each of these changes the simulator's requirement or the Raft core, so it
+    waits for a decision (see "Needs from you").
+- `linearizability` (`make lin LIN_RUNS=10 LIN_DURATION=10s`): all 140 runs linearizable, in
+  26 m 43 s, 1,275–14,692 operations per run; the power-loss test linearizable with `always`
+  and `interval`, and the negative control Illegal.

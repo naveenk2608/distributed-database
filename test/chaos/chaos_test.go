@@ -264,6 +264,7 @@ func TestChaosFailureMatrix(t *testing.T) {
 					t.Fatal(err)
 				}
 				time.Sleep(time.Second)
+				termsBefore := c.termSum()
 				nctx, stopFaults := context.WithTimeout(context.Background(), *duration)
 				sc.nemesis(nctx, w)
 				<-nctx.Done()
@@ -278,7 +279,7 @@ func TestChaosFailureMatrix(t *testing.T) {
 				}
 
 				res, info := h.Check(5 * time.Minute)
-				t.Logf("%s: %s: %s", name, h.Summary(), res)
+				t.Logf("%s: %s: %s; shard terms summed %d -> %d", name, h.Summary(), res, termsBefore, c.termSum())
 				if res != porcupine.Ok {
 					if *outDir != "" {
 						path := filepath.Join(*outDir, "chaos-"+strings.ReplaceAll(name, "/", "_")+".html")

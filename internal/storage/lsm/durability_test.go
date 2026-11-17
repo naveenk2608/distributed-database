@@ -118,6 +118,25 @@ func TestBatchIndexForLargeBatches(t *testing.T) {
 	}
 }
 
+// TestDecodeBatchRejectsPaddedLengths: a length written in more varint
+// bytes than needed (0x80 0x00 for 0) is refused, so every batch has
+// exactly one encoding. Found by FuzzDecodeBatch.
+func TestDecodeBatchRejectsPaddedLengths(t *testing.T) {
+	var b Batch
+	b.Set([]byte("k"), []byte("v"))
+	good := b.encode(nil, 9)
+	if _, _, err := decodeBatch(good); err != nil {
+		t.Fatalf("minimal encoding: %v", err)
+	}
+	// header | kind | klen | "k" | vlen | "v": pad each length in turn.
+	for _, at := range []int{batchHeaderSize + 1, batchHeaderSize + 3} {
+		padded := slices.Concat(good[:at], []byte{good[at] | 0x80, 0x00}, good[at+1:])
+		if _, _, err := decodeBatch(padded); !errors.Is(err, errBadBatch) {
+			t.Errorf("length at byte %d padded: err %v, want errBadBatch", at, err)
+		}
+	}
+}
+
 // workload drives random batches and remembers every batch it attempted,
 // so a test can check what a recovered database must contain. Each batch
 // also writes a unique marker key; the marker's version in the recovered

@@ -149,6 +149,12 @@ func decodeBatch(p []byte) (seq uint64, ops []batchOp, err error) {
 		if k <= 0 {
 			return nil, fmt.Errorf("%w: bad %s length", errBadBatch, what)
 		}
+		// binary.Uvarint also accepts padded encodings (0x80 0x00 for 0);
+		// encode never writes them, so one is corruption, and accepting
+		// it would give one batch two encodings.
+		if k > 1 && rest[k-1] == 0 {
+			return nil, fmt.Errorf("%w: %s length is not minimally encoded", errBadBatch, what)
+		}
 		rest = rest[k:]
 		if n > uint64(len(rest)) {
 			return nil, fmt.Errorf("%w: %s length %d exceeds the %d bytes left", errBadBatch, what, n, len(rest))
