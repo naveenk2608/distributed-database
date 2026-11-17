@@ -7,7 +7,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build check fmt fmt-check vet lint test test-short test-integration sim crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
+.PHONY: all build check fmt fmt-check vet lint test test-short test-integration sim lin chaos crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
 
 all: check build
 
@@ -48,6 +48,19 @@ sim:
 ## test-integration: in-process multi-node clusters
 test-integration:
 	go test -race -count=1 -v ./test/integration/...
+
+## lin: Phase 8 gate: every failure-matrix scenario LIN_RUNS times, each history
+## checked for linearizability, plus the power-loss tests and the negative control
+LIN_RUNS ?= 1
+LIN_DURATION ?= 3s
+LIN_OUT ?= $(CURDIR)/lin-out
+lin:
+	go test -count=1 -v -timeout=0 ./test/linearizability -lin-runs=$(LIN_RUNS) -lin-duration=$(LIN_DURATION) -lin-out=$(LIN_OUT)
+
+## chaos: the failure matrix against a Docker Compose cluster (needs Docker)
+CHAOS_RUNS ?= 1
+chaos:
+	go test -count=1 -v -timeout=0 ./test/chaos -chaos -chaos-runs=$(CHAOS_RUNS) -chaos-out=$(LIN_OUT)
 
 ## crash: kill -9 harness (Phase 2 gate: at least 100 cycles, no race detector)
 CYCLES ?= 150

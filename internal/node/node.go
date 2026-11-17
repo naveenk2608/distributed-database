@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -58,11 +59,30 @@ type membersRecord struct {
 	Joined bool `json:"joined,omitempty"`
 }
 
+// Option adjusts how a node is built; tests use them to inject faults.
+type Option func(*options)
+
+type options struct {
+	faults transport.Faults
+	fs     vfs.FS
+}
+
+// WithFaults makes every call this node sends consult f (fault injection
+// for tests).
+func WithFaults(f transport.Faults) Option { return func(o *options) { o.faults = f } }
+
+// WithFS keeps the node's replicas (engines and Raft logs) on fs instead
+// of the operating system's filesystem; tests use it to simulate power
+// loss. The data directory's other files stay on the real filesystem.
+func WithFS(fs vfs.FS) Option { return func(o *options) { o.fs = fs } }
+
 // Node is one dkv node.
 type Node struct {
-	cfg *config.Config
-	log *slog.Logger
-	id  string
+	cfg  *config.Config
+	log  *slog.Logger
+	id   string
+	opts options
+	fs   vfs.FS // replica storage
 
 	db *lsm.DB // standalone
 
@@ -87,6 +107,8 @@ type Node struct {
 
 	lvMu sync.Mutex
 	lv   *meta.Liveness // while this node's meta replica leads
+
+	ticksPaused atomic.Bool // fault injection: the node's Raft clock stops
 }
 
 // ShardDir returns the directory of a group replica under the data dir.
@@ -100,9 +122,16 @@ func ShardDir(dataDir string, shard int) string {
 // Open opens (and recovers) the storage engines and Raft logs and loads
 // the node ID, creating it on first start. It does not listen; a node
 // whose data is damaged therefore never accepts a connection.
-func Open(cfg *config.Config, log *slog.Logger) (*Node, error) {
+func Open(cfg *config.Config, log *slog.Logger, opts ...Option) (*Node, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.fs == nil {
+		o.fs = vfs.Default
+	}
 	if cfg.Cluster.Clustered() {
-		return openCluster(cfg, log)
+		return openCluster(cfg, log, o)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.Storage.Dir, markerFile)); err == nil {
 		return nil, fmt.Errorf("node: %s belongs to a cluster; start it with that cluster's settings", cfg.Storage.Dir)
@@ -119,7 +148,7 @@ func Open(cfg *config.Config, log *slog.Logger) (*Node, error) {
 	return &Node{cfg: cfg, log: log.With("node_id", id), id: id, db: db}, nil
 }
 
-func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
+func openCluster(cfg *config.Config, log *slog.Logger, o options) (_ *Node, err error) {
 	dir := cfg.Storage.Dir
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("node: create %s: %w", dir, err)
@@ -128,7 +157,7 @@ func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("node: lock %s: %w", dir, err)
 	}
-	n := &Node{cfg: cfg, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{}}
+	n := &Node{cfg: cfg, opts: o, fs: o.fs, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{}}
 	defer func() {
 		if err != nil {
 			_ = n.closeReplicas() // the open error is the one worth reporting
@@ -159,7 +188,7 @@ func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
 	}
 	n.dir.Learn(n.id, n.advertise)
 
-	n.pool = transport.NewPool(transportConfig(cfg.Transport))
+	n.pool = transport.NewPool(n.transportConfig())
 	// A Raft batch that takes longer than an election timeout to deliver
 	// is useless anyway; give up on it then.
 	n.net = newRaftNet(n.pool, n.dir, time.Duration(cfg.Raft.ElectionTicks)*cfg.Raft.TickInterval, n.log.With("component", "raftnet"))
@@ -167,16 +196,16 @@ func openCluster(cfg *config.Config, log *slog.Logger) (_ *Node, err error) {
 	n.compactions = lsm.NewCompactionPool(cfg.Storage.CompactionConcurrency)
 
 	// Reopen every replica this node has on disk.
-	entries, err := os.ReadDir(filepath.Join(dir, "shards"))
+	names, err := n.fs.List(filepath.Join(dir, "shards"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("node: list shards: %w", err)
 	}
-	for _, e := range entries {
+	for _, name := range names {
 		shard := meta.Shard
-		if e.Name() != "meta" {
-			s, err := strconv.Atoi(e.Name())
+		if name != "meta" {
+			s, err := strconv.Atoi(name)
 			if err != nil || s < 0 || s >= cfg.Cluster.Shards {
-				n.log.Warn("ignoring an unknown directory under shards", "dir", e.Name())
+				n.log.Warn("ignoring an unknown entry under shards", "name", name)
 				continue
 			}
 			shard = s
@@ -240,7 +269,8 @@ func (n *Node) openReplica(shard int, peers []string) (*replica.Replica, error) 
 	}
 	shardLog := n.log.With("shard", shard)
 	rp, err := replica.Open(replica.Config{
-		Shard: shard, ID: n.id, Peers: peers, Dir: ShardDir(n.cfg.Storage.Dir, shard),
+		Shard: shard, ID: n.id, Peers: peers, Dir: ShardDir(n.cfg.Storage.Dir, shard), FS: n.fs,
+		UnsafeNoSync: n.cfg.Storage.Sync == "never",
 		Engine:       storageOptions(n.cfg.Storage, shardLog, n.cache, n.compactions),
 		ElectionTick: n.cfg.Raft.ElectionTicks, HeartbeatTick: n.cfg.Raft.HeartbeatTicks,
 		SessionTTL: n.cfg.Raft.SessionTTL, CompactEntries: n.cfg.Raft.CompactEntries,
@@ -321,6 +351,11 @@ func (n *Node) ID() string { return n.id }
 // DB returns a standalone node's storage engine, or nil in a cluster.
 func (n *Node) DB() *lsm.DB { return n.db }
 
+// PauseTicks stops (or restarts) this node's Raft clock, as a long
+// process pause would: no timeouts fire, so a leader cannot notice that it
+// lost its quorum. It is a fault-injection hook for tests.
+func (n *Node) PauseTicks(paused bool) { n.ticksPaused.Store(paused) }
+
 // SetRaftFilter makes the node discard, in both directions, the Raft
 // messages of every group for which drop returns true; nil stops it. It
 // is a fault-injection hook for tests (a partition of chosen groups).
@@ -371,7 +406,7 @@ func (n *Node) Run(ctx context.Context, public, internal net.Listener) error {
 		Self: n.id, Shards: n.cfg.Cluster.Shards, Replicas: n.dir.Voters, Resolve: n.resolve,
 		Local: n.localReplica, Pool: n.pool, Log: n.log.With("component", "router"),
 	})
-	internalSrv := transport.NewServer(transportConfig(n.cfg.Transport))
+	internalSrv := transport.NewServer(n.transportConfig())
 	dkvv1.RegisterInternalServiceServer(internalSrv, &internalAPI{n: n, ping: cluster.NewPingService(n.mship)})
 	n.log.Info("serving internal API", "addr", internal.Addr().String(), "advertise", n.advertise,
 		"cluster", n.cfg.Cluster.Name, "peers", n.cfg.Cluster.Peers, "join", n.cfg.Cluster.Join)
@@ -419,6 +454,9 @@ func (n *Node) tick(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if n.ticksPaused.Load() {
+				continue
+			}
 			for _, rp := range n.allReplicas() {
 				rp.Tick()
 			}
@@ -447,10 +485,13 @@ func storageOptions(c config.Storage, log *slog.Logger, cache *sstable.Cache, po
 	return opts
 }
 
-func transportConfig(c config.Transport) transport.Config {
+func (n *Node) transportConfig() transport.Config {
+	c := n.cfg.Transport
 	return transport.Config{
 		DialTimeout:      c.DialTimeout,
 		KeepaliveTime:    c.KeepaliveTime,
 		KeepaliveTimeout: c.KeepaliveTimeout,
+		Self:             n.advertise,
+		Faults:           n.opts.faults,
 	}
 }

@@ -1,0 +1,101 @@
+name: Nightly
+
+# The long versions of the test layers (docs/PLAN.md, "Test layers"): the
+# failure matrix repeated with longer faults, the Docker chaos scenarios,
+# 100,000 simulation seeds, more kill -9 cycles and longer fuzzing. The
+# short versions run on every push in ci.yml.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linearizability:
+    # Phase 8 gate at length: every failure-matrix scenario ten times with
+    # ten seconds of faults, plus the power-loss test and the negative
+    # control.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: failure matrix
+        run: make lin LIN_RUNS=10 LIN_DURATION=10s
+
+      - name: keep visualizations of failing histories
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lin-out
+          path: lin-out/
+          if-no-files-found: ignore
+
+  chaos:
+    # The failure matrix against a Docker Compose cluster: SIGKILL,
+    # SIGSTOP, iptables partitions and tc netem.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: chaos scenarios
+        run: make chaos CHAOS_RUNS=2
+
+      - name: keep visualizations of failing histories
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-out
+          path: lin-out/
+          if-no-files-found: ignore
+
+  sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: simulation
+        run: make sim SEEDS=100000
+
+  crash:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: kill -9 cycles
+        run: make crash CYCLES=1000
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: fuzz targets
+        run: make fuzz FUZZTIME=5m

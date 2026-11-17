@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 func readAll(t *testing.T, fsys FS, name string) []byte {
@@ -346,5 +347,48 @@ func TestRemoveAllAndWriteFileDurably(t *testing.T) {
 	}
 	if b, err := ReadFile(m.CrashImage(nil), "/a/x"); err != nil || string(b) != "new" {
 		t.Fatalf("after crash: %q %v", b, err)
+	}
+}
+
+func TestSlowDelaysEverySync(t *testing.T) {
+	const delay = 20 * time.Millisecond
+	mem := NewMemFS()
+	fsys := Slow(mem, delay)
+	timed := func(what string, op func() error) {
+		t.Helper()
+		start := time.Now()
+		if err := op(); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if d := time.Since(start); d < delay {
+			t.Errorf("%s took %v, want at least %v", what, d, delay)
+		}
+	}
+	if err := fsys.MkdirAll("d"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := fsys.Create("d/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	timed("file sync", f.Sync)
+	timed("directory sync", func() error { return fsys.SyncDir("d") })
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g, err := fsys.OpenReadWrite("d/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timed("sync of a reopened file", g.Sync)
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// What the slow disk synced is durable on the one underneath.
+	if got := readAll(t, mem.CrashImage(nil), "d/a"); string(got) != "x" {
+		t.Errorf("after a crash: %q, want %q", got, "x")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"time"
 )
 
 // RemoveAll deletes path and everything under it. A missing path is not
@@ -76,4 +77,44 @@ func ReadFile(fsys FS, name string) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// Slow wraps fsys so that every file and directory sync takes at least
+// delay longer: a slow disk, for fault-injection tests.
+func Slow(fsys FS, delay time.Duration) FS { return slowFS{FS: fsys, delay: delay} }
+
+type slowFS struct {
+	FS
+	delay time.Duration
+}
+
+type slowFile struct {
+	File
+	delay time.Duration
+}
+
+func (s slowFS) Create(name string) (File, error) {
+	f, err := s.FS.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return slowFile{File: f, delay: s.delay}, nil
+}
+
+func (s slowFS) OpenReadWrite(name string) (File, error) {
+	f, err := s.FS.OpenReadWrite(name)
+	if err != nil {
+		return nil, err
+	}
+	return slowFile{File: f, delay: s.delay}, nil
+}
+
+func (s slowFS) SyncDir(dir string) error {
+	time.Sleep(s.delay)
+	return s.FS.SyncDir(dir)
+}
+
+func (f slowFile) Sync() error {
+	time.Sleep(f.delay)
+	return f.File.Sync()
 }

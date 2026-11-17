@@ -96,7 +96,11 @@ type Config struct {
 	// Snapshots streams snapshots to followers that need them; nil means
 	// none can be sent.
 	Snapshots SnapshotSender
-	Log       *slog.Logger
+	// UnsafeNoSync skips the Raft log's fsyncs: a power loss can then lose
+	// votes and acknowledged entries, breaking Raft's guarantees. Only for
+	// measuring what fsync costs (storage.sync = never).
+	UnsafeNoSync bool
+	Log          *slog.Logger
 }
 
 // NotLeaderError is returned when this replica cannot serve a request
@@ -574,7 +578,7 @@ func (rp *Replica) handleReady() error {
 				return fmt.Errorf("install snapshot at %d: %w", rd.Snapshot.Index, err)
 			}
 		}
-		if err := rp.rlog.Save(rd.HardState, rd.Entries, rd.MustSync); err != nil {
+		if err := rp.rlog.Save(rd.HardState, rd.Entries, rd.MustSync && !rp.cfg.UnsafeNoSync); err != nil {
 			return fmt.Errorf("persist raft log: %w", err)
 		}
 		// 2. Send; a snapshot request is served from a checkpoint.

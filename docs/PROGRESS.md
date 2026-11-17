@@ -10,7 +10,9 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
   Desktop and enable Settings → Resources → WSL integration for this distro. Blocked until
   then: the Phase 4 Compose gate (`make compose-gate`, which runs
   `deploy/compose/gate.sh`). The Dockerfile and Compose file are written; the same check
-  runs with three real `dkv-server` processes in `test/e2e`.
+  runs with three real `dkv-server` processes in `test/e2e`. Also blocked: running the
+  Phase 8 Docker chaos scenarios locally (`make chaos`; still unavailable on 2026-11-17).
+  The nightly workflow runs them on GitHub's runners, which have Docker.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -344,7 +346,8 @@ and stale reads.
 
 ## Phase 7: Snapshots, failure detection, membership changes and recovery
 
-Status: **done.** All four gate items passed locally on 2026-11-17.
+Status: **done.** All four gate items passed locally on 2026-11-17; CI run 44023535159 on main
+at aae1e71 (`check`, `crash`, `storage-gate`, `sim`) is green.
 
 ### Gate
 
@@ -449,3 +452,98 @@ the new keys.
 - The Docker Compose gate is still blocked (see "Needs from you").
 - Not done: an independent second review of the Phase 7 diff against the plan.
 
+
+## Phase 8: Fault injection and distributed integration testing
+
+Status: **done except the Docker backend's run**, which needs Docker (see "Needs from you").
+Both gate items passed locally on 2026-11-17 with the in-process backend.
+
+The full suite also passes on the Phase 8 cluster layer: `go test -p 2 -count=1 ./...` ran all
+31 packages (27 with tests) in 3 m 18 s with no failure. At the default parallelism the run was
+killed for lack of memory (exit 137) on this 3 GB machine; run it here with `-p 2`
+(`GOFLAGS=-p=2 make check`).
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| Every scenario in the failure matrix passes the linearizability check across repeated runs | `test/linearizability` `TestFailureMatrix` (`make lin LIN_RUNS=5`): 3 nodes, 4 shards plus the meta group, 20 ms ticks, `dead_after` 2 s. Per run, four clients (three pinned to one node each, one using all) issue puts, gets, deletes and compare-and-sets with unique values on 8 keys for 3 s of faults plus recovery; every operation is recorded with its invocation and response time, failed and timed-out ones as unknown outcomes; then every key is read once more and every such read must succeed. Porcupine checks the history against a per-key model that includes versions. One scenario per failure-matrix row (table below); 14 scenarios × 5 runs = 70 runs, all linearizable, in 5 m 33 s. Also run once each under `-race` inside `make check`. `TestPowerLossOfMajorityLosesNothing` (`storage.sync` always and interval): one node partitioned away while writes go on, the power of the other two cut (their replicas on `vfs.MemFS`, so only fsynced data survives), then everything restarted: linearizable, no acknowledged write lost. The Docker backend (`test/chaos`, `make chaos`: SIGKILL, SIGSTOP, iptables, tc netem against Compose) is written and compiles, vets and lints but has not run: no Docker here. The nightly workflow runs it. | Passed (in-process); Docker run pending |
+| A deliberately broken configuration fails the checker | `TestNegativeControlFailsTheChecker`: the same power loss with `storage.sync = never`, which now also skips the Raft log's fsyncs (ADR 0010). The two powered-off nodes come back without the writes they acknowledged; the partitioned node leads with older data; the checker must return Illegal, and does in 5 of 5 runs (seed 42, 1,129–1,788 operations each). | Passed |
+
+| Failure-matrix row | Scenario | Nemesis (3 s of faults) | 5 runs: operations / unknown outcomes / injector |
+| --- | --- | --- | --- |
+| Kill a shard leader | `kill-leader` | stop a random shard's leader, restart it 600 ms later, repeat | 2,419–3,283 / 17–22 |
+| Kill a minority | `kill-minority` | stop a random node for 1 s, repeat | 1,799–3,528 / 17–35 |
+| Kill a majority | `kill-majority` | stop two nodes; stale reads from the survivor must answer; restart after 1 s | 633–2,247 / 36–45 |
+| Isolate the leader in a minority | `isolate-leader` | cut a random shard's leader off from both peers for 1 s, repeat | 881–2,464 / 2–3 / 491–811 calls blocked |
+| (same, leader cannot notice) | `paused-leader` | as above, with the leader's Raft clock stopped for 1.5 s | 1,230–1,790 / 2–3 / 520–785 blocked |
+| Flapping or one-way partitions | `random-partitions`, `flapping-one-way` | random two-sided splits for 700 ms; random one-way blocks every 150 ms, healed a third of the time | 1,749–2,324 / 2 / 711–979 blocked; 693–2,126 / 1–5 / 495–823 blocked |
+| Restart a node | `rolling-restart` | stop and restart each node in turn | 2,146–3,215 / 19–21 |
+| Wipe a node's disk | `wipe-node` | stop a node, delete its data, restart it (new ID, snapshots) | 3,144–4,939 / 6–8 |
+| Slow disk or high network latency | `slow-disk`, `slow-network` | 30 ms more per fsync on one node; 2–27 ms per call | 395–2,137 / 0; 1,067–1,324 / 0 / 1,456–1,502 delayed |
+| Lost, duplicated or reordered messages | `lossy-network` | 10% loss, 10% duplication, 0–10 ms jitter on every call | 1,259–1,569 / 0 / 277–318 lost, 289–339 duplicated |
+| Meta group loses quorum | `meta-quorum-loss` | every node drops the meta group's Raft traffic | 3,573–4,763 / 0 |
+| Client retries after a timeout | `client-retries` | clients send a third of their writes twice, discarding the first answer | 2,548–3,381 / 0 |
+| Power loss of a majority | `TestPowerLossOfMajorityLosesNothing` | see the gate table | `always` and `interval`: 5 of 5 runs each linearizable |
+
+A run's operations vary with which node a fault hits (slow disk costs throughput only when
+the slow node leads or is needed for a quorum). Every one of the 70 runs found the history
+linearizable and every final read succeeded.
+
+Mutation checks (each deliberate bug applied alone; the named scenarios run three times each):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| ReadIndex answers at once, without the heartbeat round that confirms leadership | `paused-leader` (2 of 3 runs Illegal); `isolate-leader` did not catch it (0 of 3), as expected: the isolated leader steps down by CheckQuorum before a new leader can commit |
+| Retried writes applied again (session table not consulted) | `client-retries` and `lossy-network`, 6 of 6 runs Illegal |
+| Votes granted without the log up-to-date check | `kill-leader` and `rolling-restart` (1 of 3 runs each); `kill-minority`, `isolate-leader` and `random-partitions` 0 of 3: caught, but rarely per run |
+| Raft log not fsynced under `storage.sync = always` | `TestPowerLossOfMajorityLosesNothing` (both subtests): the restarted nodes refuse to open ("state machine applied 124, beyond last persisted entry 0"), before the checker runs |
+
+The checker's model was tightened during the phase: compare-and-set on an absent key can apply
+only when it expects version 0, and after a write with an unknown outcome the key's previous
+version stays a lower bound for every later version. Five new histories the old model wrongly
+accepted are now in `TestModelRejectsViolations`.
+
+### Implemented and tested
+
+- **`internal/fault`** (ADR 0025): the in-process fault injector, a `transport.Faults`: a
+  partition table of directed links (two-sided partitions, isolating one node, one-way blocks),
+  per-link and default loss, duplication, delay and jitter from a seeded generator, `Heal`,
+  counters; random two-sided splits. Tests: partition and block rules, loss and duplication
+  rates, delay bounds, and a real gRPC call through the transport being blocked, delayed and
+  duplicated.
+- **`internal/transport`:** client interceptors that ask `Config.Faults` about every unary and
+  streaming call between nodes (drop as `Unavailable`, delay, send a unary call twice).
+- **`internal/node`:** `WithFaults`, `WithFS` (replica storage on any `vfs.FS`), `PauseTicks`
+  (stops the node's Raft clock); `storage.sync = never` passes `UnsafeNoSync` to replicas.
+- **`internal/replica`:** `Config.UnsafeNoSync` skips the Raft log's fsyncs.
+- **`internal/storage/vfs`:** `Slow`, a filesystem whose file and directory syncs take longer
+  (`TestSlowDelaysEverySync`).
+- **`internal/node/nodetest`:** `StartWith` and `Options` (faults, per-node `MemFS`, a filesystem
+  wrapper), `PowerLoss` (crash a member's `MemFS` and keep only its durable image).
+- **`test/linearizability`:** the history recorder, the Porcupine model (per-key partitions,
+  versions, unknown outcomes), the shared `Workload`, the failure matrix, the power-loss tests
+  and the negative control. Flags: `-lin-runs`, `-lin-duration`, `-lin-seed`, `-lin-out`
+  (Porcupine's HTML visualization of a failing history).
+- **`test/chaos`** (not run, see above): the same workload and checker against a Compose
+  cluster; `deploy/compose/chaos.yml` (8 shards, faster failure handling) and
+  `deploy/docker/nettools.Dockerfile` (iptables and tc, run in a node's network namespace).
+- **Make and CI:** `make lin`, `make chaos`; a nightly workflow (`.github/workflows/nightly.yml`)
+  with the failure matrix at 10 runs × 10 s, the Docker chaos scenarios, 100,000 simulation
+  seeds, 1,000 kill -9 cycles and 5 minutes per fuzz target. Every push runs the failure matrix
+  once under `-race` as part of `make check`.
+- **Docs:** ADR 0025; ADR 0010 revised (`sync = never` skips both logs' fsyncs).
+
+### Known limitations
+
+- The Docker backend has never run (no Docker here); its first run will be the nightly job.
+- The in-process backend shares one Go runtime: `PauseTicks` stops only the Raft clock, not
+  the node's other goroutines; real process pauses come with SIGSTOP in the Docker backend.
+- Faults are injected where calls are sent; a response lost after the receiver acted is only
+  covered by client-side resends and timeouts.
+- Each scenario injects one kind of fault; there is no mixed nemesis yet.
+- Detection is probabilistic: the vote bug above was caught in 2 of 15 runs. The simulator
+  catches it through its Leader Completeness check (Phase 6 mutation table), and the nightly job
+  runs each scenario 10 times.
+- Slow disk is simulated only on fsync latency, and only for replica storage.
+- Not done: an independent second review of the Phase 8 diff against the plan.

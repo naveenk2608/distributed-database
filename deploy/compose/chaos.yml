@@ -1,0 +1,17 @@
+# Chaos settings layered over docker-compose.yml: few shards, faster
+# failure handling and short Raft logs, so that the failure-matrix
+# scenarios of test/chaos (make chaos) see elections, re-replication and
+# snapshot installs within seconds.
+#
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/chaos.yml up -d --build
+services:
+  n1:
+    environment: &chaos
+      DKV_CLUSTER_SHARDS: "8"
+      DKV_RAFT_COMPACT_ENTRIES: "200"
+      DKV_LIVENESS_DEAD_AFTER: "5s"
+      DKV_LOG_LEVEL: "warn"
+  n2:
+    environment: *chaos
+  n3:
+    environment: *chaos

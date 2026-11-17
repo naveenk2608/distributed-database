@@ -11,6 +11,7 @@
 package transport
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -18,8 +19,10 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 )
 
 // Config configures both ends of the transport.
@@ -37,6 +40,27 @@ type Config struct {
 	KeepaliveTimeout time.Duration
 	// MaxMessageBytes bounds one message in either direction. 0 means 64 MiB.
 	MaxMessageBytes int
+	// Self and Faults inject network faults (tests only): every call from
+	// Self to a peer first asks Faults what happens to it.
+	Self   string
+	Faults Faults
+}
+
+// Faults decides what happens to one call between two nodes, named by
+// their internal addresses. It is the fault-injection seam for tests.
+type Faults interface {
+	Decide(from, to, method string) Fault
+}
+
+// Fault is the fate of one call.
+type Fault struct {
+	// Drop fails the call with Unavailable, as if the network lost it.
+	Drop bool
+	// Delay holds the call back before sending it.
+	Delay time.Duration
+	// Duplicate sends a unary call twice; the caller sees the second
+	// answer.
+	Duplicate bool
 }
 
 func (c Config) withDefaults() Config {
@@ -113,12 +137,60 @@ func (p *Pool) Conn(addr string) (*grpc.ClientConn, error) {
 			grpc.MaxCallRecvMsgSize(p.cfg.MaxMessageBytes),
 			grpc.MaxCallSendMsgSize(p.cfg.MaxMessageBytes),
 		),
+		grpc.WithChainUnaryInterceptor(p.unaryFaults(addr)),
+		grpc.WithChainStreamInterceptor(p.streamFaults(addr)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("transport: connection to %s: %w", addr, err)
 	}
 	p.conns[addr] = c
 	return c, nil
+}
+
+// apply waits out an injected delay and reports whether to drop the call.
+func (p *Pool) apply(ctx context.Context, f Fault) error {
+	if f.Delay > 0 {
+		t := time.NewTimer(f.Delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return status.FromContextError(ctx.Err()).Err()
+		case <-t.C:
+		}
+	}
+	if f.Drop {
+		return status.Error(codes.Unavailable, "transport: dropped by an injected fault")
+	}
+	return nil
+}
+
+func (p *Pool) unaryFaults(addr string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if p.cfg.Faults == nil {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+		f := p.cfg.Faults.Decide(p.cfg.Self, addr, method)
+		if err := p.apply(ctx, f); err != nil {
+			return err
+		}
+		if f.Duplicate {
+			_ = invoker(ctx, method, req, reply, cc, opts...) // the first copy's answer is lost
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+func (p *Pool) streamFaults(addr string) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		if p.cfg.Faults != nil {
+			f := p.cfg.Faults.Decide(p.cfg.Self, addr, method)
+			f.Duplicate = false // a stream cannot be replayed
+			if err := p.apply(ctx, f); err != nil {
+				return nil, err
+			}
+		}
+		return streamer(ctx, desc, cc, method, opts...)
+	}
 }
 
 // Close closes every connection. Later calls to Conn return ErrClosed.

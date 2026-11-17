@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"os"
 	"sync"
@@ -20,6 +21,8 @@ import (
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/node"
+	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
+	"github.com/naveenk2608/distributed-database/internal/transport"
 )
 
 // testLogger discards node logs unless NODETEST_LOG is set, in which case
@@ -38,6 +41,19 @@ type Cluster struct {
 	Members []*Member
 	// configure is applied to every node, including ones added later.
 	configure func(i int, c *config.Config)
+	opts      Options
+}
+
+// Options extend a cluster for fault-injection tests.
+type Options struct {
+	// Faults, if set, is consulted on every call between nodes.
+	Faults transport.Faults
+	// MemFS keeps each node's replicas on its own in-memory filesystem,
+	// which PowerLoss can crash.
+	MemFS bool
+	// WrapFS, if set, wraps member i's replica filesystem (for example in
+	// a slow disk).
+	WrapFS func(i int, fs vfs.FS) vfs.FS
 }
 
 // Member is one node of a Cluster.
@@ -50,6 +66,7 @@ type Member struct {
 	mu     sync.Mutex
 	nodeID string
 	node   *node.Node
+	fs     *vfs.MemFS // with Options.MemFS
 	cancel context.CancelFunc
 	done   chan error
 }
@@ -80,12 +97,18 @@ func testConfig(t testing.TB) config.Config {
 // load of idle Raft groups low; configure may change any of them.
 func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluster {
 	t.Helper()
+	return StartWith(t, n, Options{}, configure)
+}
+
+// StartWith is Start with fault-injection options.
+func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *config.Config)) *Cluster {
+	t.Helper()
 	publics, internals := listenN(t, n), listenN(t, n)
 	var peers []string
 	for _, l := range internals {
 		peers = append(peers, l.Addr().String())
 	}
-	c := &Cluster{t: t, configure: configure}
+	c := &Cluster{t: t, configure: configure, opts: opts}
 	for i := range n {
 		cfg := testConfig(t)
 		cfg.Server.GRPCAddr = publics[i].Addr().String()
@@ -98,8 +121,11 @@ func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluste
 			t.Fatalf("nodetest: node %d: %v", i, err)
 		}
 		m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr}
+		if opts.MemFS {
+			m.fs = vfs.NewMemFS()
+		}
 		c.Members = append(c.Members, m)
-		m.start(t, publics[i], internals[i])
+		m.start(t, publics[i], internals[i], opts)
 	}
 	t.Cleanup(func() {
 		for i := range c.Members {
@@ -139,10 +165,29 @@ func listenAgain(t testing.TB, addr string) net.Listener {
 	}
 }
 
-func (m *Member) start(t testing.TB, public, internal net.Listener) {
+func (m *Member) start(t testing.TB, public, internal net.Listener, opts Options) {
 	t.Helper()
 	cfg := m.Config
-	n, err := node.Open(&cfg, testLogger().With("node", m.Index))
+	var nopts []node.Option
+	if opts.Faults != nil {
+		nopts = append(nopts, node.WithFaults(opts.Faults))
+	}
+	m.mu.Lock()
+	var fs vfs.FS
+	if m.fs != nil {
+		fs = m.fs
+	}
+	m.mu.Unlock()
+	if opts.WrapFS != nil {
+		if fs == nil {
+			fs = vfs.Default
+		}
+		fs = opts.WrapFS(m.Index, fs)
+	}
+	if fs != nil {
+		nopts = append(nopts, node.WithFS(fs))
+	}
+	n, err := node.Open(&cfg, testLogger().With("node", m.Index), nopts...)
 	if err != nil {
 		_ = public.Close()
 		_ = internal.Close()
@@ -185,9 +230,29 @@ func (c *Cluster) Add() int {
 		c.t.Fatalf("nodetest: node %d: %v", i, err)
 	}
 	m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr}
+	if c.opts.MemFS {
+		m.fs = vfs.NewMemFS()
+	}
 	c.Members = append(c.Members, m)
-	m.start(c.t, pub, in)
+	m.start(c.t, pub, in, c.opts)
 	return i
+}
+
+// PowerLoss stops member i as a power cut would: its in-memory filesystem
+// (Options.MemFS) crashes first, so nothing more reaches it, and the
+// member keeps only what had been made durable. Restart brings it back on
+// that state.
+func (c *Cluster) PowerLoss(i int, rng *rand.Rand) {
+	c.t.Helper()
+	m := c.Members[i]
+	if m.fs == nil {
+		c.t.Fatal("nodetest: PowerLoss needs Options.MemFS")
+	}
+	m.fs.Crash()
+	c.stop(i, false)
+	m.mu.Lock()
+	m.fs = m.fs.CrashImage(rng)
+	m.mu.Unlock()
 }
 
 // Wipe deletes a stopped member's data, as if its disk were replaced; on
@@ -201,6 +266,9 @@ func (c *Cluster) Wipe(i int) {
 	dir := m.Config.Storage.Dir
 	if err := os.RemoveAll(dir); err != nil {
 		c.t.Fatal(err)
+	}
+	if m.fs != nil {
+		m.fs = vfs.NewMemFS()
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		c.t.Fatal(err)
@@ -260,7 +328,9 @@ func (m *Member) Running() bool {
 // Stop stops member i and waits until it has released its ports and data
 // directory. Peers see it vanish like a crashed process. Stopping a stopped
 // member does nothing.
-func (c *Cluster) Stop(i int) {
+func (c *Cluster) Stop(i int) { c.stop(i, true) }
+
+func (c *Cluster) stop(i int, check bool) {
 	m := c.Members[i]
 	m.mu.Lock()
 	cancel, done := m.cancel, m.done
@@ -270,7 +340,7 @@ func (c *Cluster) Stop(i int) {
 		return
 	}
 	cancel()
-	if err := <-done; err != nil {
+	if err := <-done; err != nil && check {
 		c.t.Errorf("nodetest: node %d exited with: %v", i, err)
 	}
 }
@@ -283,7 +353,7 @@ func (c *Cluster) Restart(i int) {
 	if m.Running() {
 		c.t.Fatalf("nodetest: node %d is running", i)
 	}
-	m.start(c.t, listenAgain(c.t, m.PublicAddr), listenAgain(c.t, m.InternalAddr))
+	m.start(c.t, listenAgain(c.t, m.PublicAddr), listenAgain(c.t, m.InternalAddr), c.opts)
 }
 
 // Status asks member i for its view of the cluster.

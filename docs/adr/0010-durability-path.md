@@ -1,6 +1,6 @@
 # ADR 0010: Durability path for replicas
 
-Status: Accepted for Phases 6–7 (two logs); to be revisited in Phase 10
+Status: Accepted for Phases 6–8 (two logs); to be revisited in Phase 10
 
 ## Context
 
@@ -72,3 +72,27 @@ path in Phase 10.
   restart finishes an install a crash interrupted. A test crashes the
   receiver's filesystem after each of the 61 operations of receiving and
   installing a snapshot and always recovers and catches up.
+
+## Revision in Phase 8
+
+- **`storage.sync = never` now also skips the Raft log's fsyncs** in a
+  cluster (`replica.Config.UnsafeNoSync`). Before, it affected only the
+  engine WAL, and the Raft log kept every acknowledged write safe, so the
+  setting could not show what fsync costs a replica, which is what the
+  benchmark matrix compares it for. It also gives the Phase 8 negative
+  control a real bug to find: a power loss of a majority then destroys
+  acknowledged writes and votes, and the linearizability checker must
+  reject the history (`test/linearizability`
+  `TestNegativeControlFailsTheChecker`). The example configuration and
+  the setting's documentation say that `never` breaks Raft's guarantees.
+- Alternatives: a separate `raft.unsafe_no_sync` key (two settings to
+  keep consistent, and a benchmark of `never` that still pays for half
+  the fsyncs), or keeping `never` engine-only and breaking durability for
+  the negative control by a test-only hook (proves the checker works, but
+  leaves `never` meaning something other than "no fsync").
+- The Phase 6 consequence above is now tested:
+  `TestPowerLossOfMajorityLosesNothing` cuts the power of the two nodes
+  holding every acknowledged write (a `vfs.MemFS` crash image keeps only
+  what was fsynced) while the third is partitioned away, with
+  `storage.sync` `always` and `interval`, and every acknowledged write
+  survives.

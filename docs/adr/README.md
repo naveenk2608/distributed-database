@@ -17,7 +17,7 @@ come up during implementation take the next free number from 0016.
 | [0007](0007-read-consistency.md) | ReadIndex reads by default, stale reads opt-in, lease reads later | Accepted |
 | [0008](0008-idempotency.md) | Client sessions in replicated state; a pool of sessions per client | Accepted |
 | [0009](0009-conflict-resolution.md) | Log order plus compare-and-set; version = log index | Accepted |
-| [0010](0010-durability-path.md) | Raft log plus engine WAL; commit index not fsynced; log compaction and snapshot install | Accepted (revised in Phase 7; revisit in Phase 10) |
+| [0010](0010-durability-path.md) | Raft log plus engine WAL; commit index not fsynced; log compaction and snapshot install; `sync = never` skips both logs' fsyncs | Accepted (revised in Phases 7 and 8; revisit in Phase 10) |
 | [0011](0011-cluster-metadata.md) | Meta Raft group inside dkv; conditional transactions; directory polling | Accepted |
 | [0012](0012-membership-changes.md) | Single-server changes with learners, applied on append; node IDs as members; leader transfer; rebalancer steps | Accepted |
 | [0013](0013-failure-detection.md) | Heartbeats to the meta leader as soft state; only decisions replicated | Accepted |
@@ -30,3 +30,4 @@ come up during implementation take the next free number from 0016.
 | [0022](0022-internal-transport.md) | Internal gRPC transport: separate port, one connection per peer, fail fast, keepalives | Accepted |
 | [0023](0023-placement.md) | Placement on a consistent hash ring (by node ID over eligible nodes since Phase 7); stated balance tolerance | Accepted (revised in Phase 7) |
 | [0024](0024-routing.md) | Routing with one-hop forwarding, NotOwner hints and jittered retries | Accepted (revised in Phases 6 and 7) |
+| [0025](0025-fault-injection-and-linearizability-checking.md) | Fault injection at the transport seam (in-process) and through the docker CLI; histories checked by Porcupine with versions in the model | Accepted |
