@@ -98,7 +98,7 @@ compose-down:
 
 ## compose-gate: Phase 4 gate in Compose (needs Docker)
 compose-gate:
-	deploy/compose/gate.sh
+	bash deploy/compose/gate.sh
 
 ## web: install the dashboard's dependencies and build it into web/dist (needs Node 22)
 web:
@@ -111,7 +111,7 @@ web-test:
 ## dashboard-gate: Phase 9 gate in Compose with a browser (needs Docker, jq, and
 ## cd web && npx playwright install chromium)
 dashboard-gate:
-	deploy/compose/dashboard-gate.sh
+	bash deploy/compose/dashboard-gate.sh
 
 ## proto: lint the protobuf API and regenerate gen/
 proto:
