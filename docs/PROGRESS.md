@@ -4,16 +4,11 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
 
 ## Needs from you
 
-- **Docker.** Docker Desktop is installed on Windows but its engine is not running, and
-  this WSL distro has no Docker integration (`docker` says "could not be found in this
-  WSL 2 distro"; `docker.exe` cannot reach `dockerDesktopLinuxEngine`). Please start Docker
-  Desktop and enable Settings → Resources → WSL integration for this distro. Blocked until
-  then: the Phase 4 Compose gate (`make compose-gate`, which runs
-  `deploy/compose/gate.sh`). The Dockerfile and Compose file are written; the same check
-  runs with three real `dkv-server` processes in `test/e2e`. The Phase 8 Docker chaos
-  scenarios (`make chaos`) and the Phase 9 dashboard gate (`make dashboard-gate`) cannot run
-  here either; they run in the nightly workflow on GitHub's runners, which since Phase 9 also
-  runs the Phase 4 Compose gate (`compose` job).
+Nothing is blocked. Docker is still unavailable in this WSL distro (Docker Desktop's engine
+is not running and WSL integration is off), so every Docker gate runs on GitHub's runners
+instead: the Phase 4 Compose gate, the Phase 8 chaos scenarios and the Phase 9 dashboard gate
+(`docker-gates.yml` and the nightly workflow), and all three pass there. To run them here too,
+start Docker Desktop and enable Settings → Resources → WSL integration for this distro.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -147,16 +142,16 @@ Microbenchmarks (`make bench`, i3-1115G4, `t.TempDir()` on tmpfs, so fsync is fr
 
 ## Phase 4: Multi-node communication and cluster formation
 
-Status: **done except the Docker Compose half of gate item 1**, which needs Docker (see
-"Needs from you"). Everything else passed locally on 2026-11-16; CI run 43932653619 on main
-at 2e82939 (`check`, `crash`, `storage-gate`) is green.
+Status: **done.** Everything but the Compose half of gate item 1 passed locally on
+2026-11-16 (CI run 43932653619 on main at 2e82939); the Compose half passed on GitHub's
+runners on 2026-11-17, once the nightly workflow ran it (Phase 9).
 
 ### Gate
 
 | Gate item | Evidence | Status |
 | --- | --- | --- |
 | Three nodes form a cluster from config, in-process | `test/integration` `TestThreeNodesFormACluster` (`make test-integration`): `nodetest.Start` runs three full nodes on ephemeral loopback ports with separate data directories and one bootstrap peer list; every node reports all three UP, with the node ID each actually has, itself marked as self. Formed in 29 ms. | Passed |
-| Three nodes form a cluster from config, in Compose | `deploy/compose/docker-compose.yml` (three nodes configured only through `DKV_*` variables) and `deploy/compose/gate.sh` (`make compose-gate`) are written. Not run: Docker is unavailable here. The exact Compose environment was smoke-tested with the real binary outside Docker (the node recognized itself by its advertise address and reported unresolvable peers DOWN after the window). As a stand-in, `test/e2e` `TestThreeProcessesFormACluster` runs three real `dkv-server` processes from one peer list and checks with `dkvctl status` that each sees all three UP. | **Blocked (Docker)** |
+| Three nodes form a cluster from config, in Compose | `deploy/compose/docker-compose.yml` (three nodes configured only through `DKV_*` variables) and `deploy/compose/gate.sh` (`make compose-gate`) ran in GitHub's `docker-gates` workflow (run 44182276412 at acbc8fb, and 44181512051): three containers formed a cluster from their `DKV_*` variables, and after SIGKILL of n3 both survivors reported it DOWN 3.07 s (and 2.49 s) later, within the 3 s window plus the script's 2 s of polling slack. Docker is unavailable here. The exact Compose environment was smoke-tested with the real binary outside Docker (the node recognized itself by its advertise address and reported unresolvable peers DOWN after the window). As a stand-in, `test/e2e` `TestThreeProcessesFormACluster` runs three real `dkv-server` processes from one peer list and checks with `dkvctl status` that each sees all three UP. | Passed |
 | Status reports a killed peer as down within the configured window | `test/integration` `TestKilledPeerIsReportedDownWithinWindow`: with `down_after` 1 s and 100 ms pings, both survivors report the stopped node DOWN 994–996 ms after it stopped; the test requires between window − interval − 50 ms and window + 300 ms, and that the survivors stay UP. `internal/cluster` `TestDownWindowIsExact` (fake clock) checks UP at exactly the window and DOWN 1 ns later. `test/e2e` `TestThreeProcessesFormACluster` SIGKILLs a real process: reported DOWN 3.2 s after the kill with a 2 s window, measured through repeated `dkvctl` runs, each a separate race-built process. | Passed (in-process and real processes; Compose blocked) |
 | Transport tests cover timeouts and reconnects | `internal/transport`: `TestDeadlineIsEnforced` (peer accepts the call and never answers), `TestSilentPeerTimesOut` (TCP accepted, no HTTP/2), `TestUnreachablePeerFailsFast` (closed port → `Unavailable` at once), `TestReconnectAfterPeerRestart` (calls fail while the peer is down; the same pooled connection recovers 66 ms after the peer returns on the same address), `TestPoolSharesOneConnectionPerPeer`. | Passed |
 
@@ -342,7 +337,7 @@ and stale reads.
   deduplicate retries. No lease reads.
 - Failover times were measured on a WSL2 machine under the race detector, in process and
   with three local processes; not on separate machines.
-- The Docker Compose gate is still blocked (see "Needs from you").
+- The Docker Compose gate was blocked here; it passes on GitHub's runners since Phase 9.
 - Not done: an independent second review of the Phase 6 diff against the plan.
 
 ## Phase 7: Snapshots, failure detection, membership changes and recovery
@@ -450,7 +445,7 @@ the new keys.
 - Only the meta leader knows which nodes are suspect; other nodes' status does not show it.
 - Leader balancing stops when no single transfer within a group narrows the gap by two or
   more; the leader count per node can differ by two.
-- The Docker Compose gate is still blocked (see "Needs from you").
+- The Docker Compose gate was blocked here; it passes on GitHub's runners since Phase 9.
 - Not done: an independent second review of the Phase 7 diff against the plan.
 
 
@@ -799,17 +794,23 @@ Mutation checks of the new assertions (each change alone, then reverted):
 
 ## Phase 9: CLI and developer dashboard
 
-Status: **gate passed in process; the Compose half of the gate runs on GitHub** (no Docker
-here; see "Gate" for its first run). All tests below pass locally (`make check`, `make
-web-test`, `go test -race ./test/dashboard -count=3`).
+Status: **done.** The gate passed in process here and in Compose with Chromium on GitHub's
+runners. All tests below pass locally (`make check`, `make web-test`, `go test -race
+./test/dashboard -count=3`). CI run 44176239353 on main at 96513f9 is green in all 8 jobs,
+including `console-postgres` (the PostgreSQL store tests ran there and passed) and `web`.
+Nightly run 44176237922 at 96513f9 passed its 7 other jobs; its two Docker gates did not
+start (the scripts had no executable bit; fixed in 826cd68). Docker gates run 44181512051
+passed the Phase 4 gate and the kill and event checks of this one, then stopped at an
+ambiguous link name in the browser test (fixed in acbc8fb); run 44182276412 at acbc8fb
+passed both gates in full.
 
 ### Gate
 
 | Gate item | Evidence | Status |
 | --- | --- | --- |
-| Killing a node in Compose appears on the dashboard within one poll interval, with election and re-replication events in the right order | In process, `test/dashboard` `TestDashboardGate`: 4 nodes (RF 3, 4 shards and the meta group), `dead_after` 2 s, a real `dkv-console` polling every 250 ms (timeout 200 ms), checked only through the console's API. The node leading shard 0 is stopped; the console's server-sent stream, which the dashboard follows, showed it down 220–232 ms later in 4 runs (1 plain, 3 under `-race`; the test allows interval + timeout + 250 ms = 700 ms), with no number left on it. The merged events then show, in time order, a new leader for one of its shards (191–226 ms after the stop), the meta leader's `node_dead` verdict (1.96–2.55 s) and the first `replica_added` (2.16–2.73 s). In Compose, `make dashboard-gate` (`deploy/compose/dashboard-gate.sh`, `web/e2e/dashboard.spec.ts`): 4 nodes, the console and PostgreSQL; Chromium on the real dashboard sees the SIGKILLed leader's card turn "down" within one poll interval (1 s) + timeout (800 ms) + 1 s, then the events page lists the same three events in order. Runs in the nightly workflow's `dashboard` job. | Passed in process; Compose pending its first run |
+| Killing a node in Compose appears on the dashboard within one poll interval, with election and re-replication events in the right order | In process, `test/dashboard` `TestDashboardGate`: 4 nodes (RF 3, 4 shards and the meta group), `dead_after` 2 s, a real `dkv-console` polling every 250 ms (timeout 200 ms), checked only through the console's API. The node leading shard 0 is stopped; the console's server-sent stream, which the dashboard follows, showed it down 220–232 ms later in 4 runs (1 plain, 3 under `-race`; the test allows interval + timeout + 250 ms = 700 ms), with no number left on it. The merged events then show, in time order, a new leader for one of its shards (191–226 ms after the stop), the meta leader's `node_dead` verdict (1.96–2.55 s) and the first `replica_added` (2.16–2.73 s). In Compose, `make dashboard-gate` (`deploy/compose/dashboard-gate.sh`, `web/e2e/dashboard.spec.ts`): 4 nodes, the console and PostgreSQL; Chromium on the real dashboard sees the SIGKILLed leader's card turn "down" within one poll interval (1 s) + timeout (800 ms) + 1 s, then the events page lists the same three events in order. Docker gates run 44182276412: n1 (the leader of shard 0) SIGKILLed, shown down on the dashboard 383 ms later (limit 2.8 s); new leader, `node_dead` 7 s later and `replica_added` 0.9 s after that, in order (run 44181512051: 372 ms, same order). Runs nightly (`docker-gates.yml`). | Passed |
 | Every number on screen comes from a real node metric | The console derives every value from a node's own fields or from two snapshots of its counters (ADR 0015). `TestDashboardGate` ("numbers come from the nodes"): with the cluster idle and two direct reads of every node agreeing, the console's view of each node equals that node's `/v1/stats` field for field (each replica's shard, role, term, commit, applied, last index, tables, table and memtable bytes; the node's leaders, storage sums and cache capacity); a node that does not answer shows none. `internal/console` `TestDelta`, `TestPercentiles`, `TestShardViews` pin the derivations (rates per second from counter differences, percentiles interpolated in the histogram's buckets, lag from the leader's progress). The dashboard computes nothing but formatting, a cache hit rate and the sum of the nodes' samples per poll round: `web/src/pages.test.tsx` renders every page from JSON captured from a real console (`DKV_DASHBOARD_FIXTURE`) and checks each value shown against the fixture. | Passed |
-| Stopping the console has no effect on the database | Nodes never contact the console; it pulls from their read-only admin API (ADR 0014). `TestDashboardGate`: writes through every node continue with no failure while the console stops: 489 and 476 writes in the second before and after (161–184 and 181–199 under `-race`). In Compose the gate stops the console, writes 50 keys through a live node, restarts it, and requires the history saved in PostgreSQL before the stop to be shown again. | Passed in process; Compose pending its first run |
+| Stopping the console has no effect on the database | Nodes never contact the console; it pulls from their read-only admin API (ADR 0014). `TestDashboardGate`: writes through every node continue with no failure while the console stops: 489 and 476 writes in the second before and after (161–184 and 181–199 under `-race`). In Compose the gate stops the console, writes 50 keys through a live node, restarts it, and requires the history saved in PostgreSQL before the stop to be shown again: in run 44182276412, 50 writes through n2 succeeded with the console stopped, and the restarted console showed 13 samples of n2 saved before the stop. | Passed |
 
 Mutation checks (each change applied alone, then reverted):
 
