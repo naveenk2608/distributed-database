@@ -116,4 +116,4 @@ transfers, compactions and snapshot installs to its schedules, checks
 Leader Completeness, State Machine Safety and Log Matching over
 compacted logs and installed snapshots, and requires the members of the
 final membership to apply a final proposal. Membership changes are made
-only in schedules with CheckQuorum on (ADR 0012).
+only in schedules with CheckQuorum and PreVote on (ADRs 0012 and 0026).

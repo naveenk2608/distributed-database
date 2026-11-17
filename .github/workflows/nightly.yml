@@ -62,6 +62,14 @@ jobs:
           if-no-files-found: ignore
 
   sim:
+    # 100,000 schedules with PreVote forced on (dkv's configuration) and
+    # 100,000 with it off. A seed's other options do not depend on PreVote,
+    # so the two together cover every schedule of a run with PreVote drawn
+    # per seed, which is what ci.yml runs.
+    strategy:
+      fail-fast: false
+      matrix:
+        prevote: ['on', 'off']
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -72,7 +80,7 @@ jobs:
           go-version-file: go.mod
 
       - name: simulation
-        run: make sim SEEDS=100000
+        run: make sim SEEDS=100000 PREVOTE=${{ matrix.prevote }}
 
   crash:
     runs-on: ubuntu-latest

@@ -13,11 +13,6 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
   runs with three real `dkv-server` processes in `test/e2e`. The Phase 8 Docker chaos
   scenarios (`make chaos`) cannot run here either; they run in the nightly workflow on
   GitHub's runners, and passed there (Phase 8).
-- **A decision on simulator seed 51674** (Phase 8, "First nightly run"): one of 100,000
-  schedules fails the simulator's liveness check, in a configuration dkv never runs
-  (PreVote off). Making it pass means changing what the simulator requires, which the rules
-  leave to you; the options and my recommendation are listed there. Until then the nightly
-  `sim` job fails at that seed.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -463,8 +458,7 @@ the new keys.
 Status: **done.** Both gate items passed locally on 2026-11-17 with the in-process backend, and
 the Docker backend's scenarios passed on GitHub's runners (nightly run 44050943445). CI run
 44050875076 on main at 51cf806 (`check`, `crash`, `storage-gate`, `sim`) is green. The first
-nightly run found two problems in earlier phases' code, below: one fixed, one waiting on a
-decision.
+nightly run found two problems, below; the Phase 8 follow-up commits resolve both.
 
 The full suite also passes on the Phase 8 cluster layer: `go test -p 2 -count=1 ./...` ran all
 31 packages (27 with tests) in 3 m 18 s with no failure. At the default parallelism the run was
@@ -547,7 +541,8 @@ accepted are now in `TestModelRejectsViolations`.
 - The Docker backend runs only on GitHub (no Docker here). Its first run predates the
   per-scenario Raft-term log line, so it does not yet show that its iptables partitions forced
   elections (netem visibly cut throughput: about 2,600 operations against 6,000–13,000).
-- Simulator seed 51674 fails the liveness check (see "First nightly run").
+- Simulated schedules with PreVote or CheckQuorum off make no membership changes (ADR 0026).
+  dkv always runs with both on.
 - The in-process backend shares one Go runtime: `PauseTicks` stops only the Raft clock, not
   the node's other goroutines; real process pauses come with SIGSTOP in the Docker backend.
 - Faults are injected where calls are sent; a response lost after the receiver acted is only
@@ -576,29 +571,76 @@ Nightly run 44050943445 (dispatched by hand on 51cf806):
   51cf806 ("Phase 8 follow-up"): the decoder rejects padded lengths. `TestDecodeBatchRejectsPaddedLengths`
   and the saved failing input (`testdata/fuzz/FuzzDecodeBatch/755a9cdbd06cc1b6`) both fail
   without the fix and pass with it; 3 more minutes of fuzzing found nothing else.
-- `sim` (100,000 seeds, ten times CI's 10,000): seed 51674 fails the liveness check, "a
+- `sim` (100,000 seeds, ten times CI's 10,000): seed 51674 failed the liveness check, "a
   proposal made during 300 calm steps was not applied by every member". Every other seed
-  passes (1–51,673 on GitHub; 51,675–100,000 here, 6 m 40 s, zero violations). No safety
-  violation. **Open.**
-  - What happens: PreVote off, CheckQuorum on, two voters (n1, n3) after n2 was removed. n2
-    never learned of its removal (it was added back as a learner at step 364, still behind);
-    a partition at step 361 leaves the group without a leader. In the calm phase n2
-    keeps starting elections it cannot win, at ever higher terms. n3's log is behind n1's,
-    so only n1 can win, and the term bumps keep cutting its elections short; n1 wins only
-    at step 646 of 700, too late for the final proposal to reach every member.
-  - This is the disruptive removed server of the Raft thesis, §4.2.3. PreVote (§9.6) is the
-    fix: n2's and n3's pre-votes fail without raising terms. dkv always runs with PreVote
-    and CheckQuorum (`replica.go`). Rerun with PreVote on, the seed passes; with no
-    membership changes, it also passes. Changing an option shifts the random schedule, so
-    neither rerun is an exact counterfactual.
-  - The simulator already exempts CheckQuorum-off schedules from membership changes, for
-    the same reason. Options: (a) exempt PreVote-off schedules too, keeping them for safety
-    without membership changes (recommended: it matches what dkv runs and keeps every
-    safety check); (b) give PreVote-off schedules a longer calm phase, which makes a failure
-    rarer but not impossible; (c) change Raft so voters ignore vote requests from servers
-    that are not voters in their configuration, a core liveness change that would need its
-    own analysis. Each of these changes the simulator's requirement or the Raft core, so it
-    waits for a decision (see "Needs from you").
+  passed (1–51,673 on GitHub; 51,675–100,000 here, 6 m 40 s, zero violations), and no seed
+  violated a safety check. Resolved: see "Seed 51674" below. The cause given here at first
+  (the removed server n2 cutting elections short) was wrong.
 - `linearizability` (`make lin LIN_RUNS=10 LIN_DURATION=10s`): all 140 runs linearizable, in
   26 m 43 s, 1,275–14,692 operations per run; the power-loss test linearizable with `always`
   and `interval`, and the negative control Illegal.
+
+### Seed 51674
+
+Decision (2026-11-17): fix the cause in the Raft core with the disruptive-server rule of
+the Raft dissertation, §4.2.3, unless the core already has it; otherwise stop simulating
+membership changes in PreVote-off schedules, keeping every safety check. Details and
+alternatives: ADR 0026.
+
+- **The core already has the rule**, since Phase 6: with CheckQuorum on, a node that heard
+  from a leader within the minimum election timeout drops a higher-term `MsgVote` (no term
+  change, no vote, no reply) and refuses a `MsgPreVote` (which never changes its term); a
+  leader's `MsgTimeoutNow` starts a campaign whose `MsgVote`s carry `Transfer`, which skips
+  the check. So the core is unchanged and the fallback applies.
+- **What really happened**, from a replay recording every node's term, role and leader at
+  every step: no vote ever changed the term of a node inside its lease (0 of the 12 term
+  increases a vote caused). n2 deposed the leader once, at step 368, by answering its
+  heartbeat with a higher term (Raft's stale-leader notification, not a vote). In the calm
+  phase there was no leader until step 646, so no lease applied. The voters were n1 and n3;
+  n3's log was behind, so it could never win, but without PreVote each of its timeouts
+  raised n1's term (all six vote requests that raised n1's term in the calm phase came from
+  n3), and the two split the vote six times when they timed out within one message delay of
+  each other. n2 changed nothing in the calm phase. PreVote (§9.6), which dkv runs, is what
+  stops a server that cannot win from raising terms; §4.2.3 protects a working leader and
+  could not have helped.
+- **New tests** (`internal/raft`): `TestLeaseIgnoresDisruptiveVotes` and
+  `TestTransferCampaignBypassesLease`, each with PreVote on and off (ADR 0026 lists what
+  they check). Mutation check, each change applied alone to the core:
+
+  | Deliberate bug | Caught by |
+  | --- | --- |
+  | Higher-term votes never ignored (no lease for votes) | `TestLeaseIgnoresDisruptiveVotes`, `TestTransferCampaignBypassesLease` |
+  | Every higher-term vote ignored unless a transfer, lease or not | `TestLeaseIgnoresDisruptiveVotes` and 19 other tests |
+  | The lease applies with CheckQuorum off | `TestLeaseIgnoresDisruptiveVotes`, `TestFigure8`, `TestMustSync` and 3 more |
+  | The lease lasts one tick longer than the minimum election timeout | `TestLeaseIgnoresDisruptiveVotes` only |
+  | Votes marked `Transfer` still subject to the lease | `TestTransferCampaignBypassesLease`, `TestLeaderTransfer` |
+  | A `MsgTimeoutNow` campaign does not mark its votes | `TestTransferCampaignBypassesLease`, `TestLeaderTransfer` |
+  | A `MsgTimeoutNow` from any node, not only the leader, starts a campaign | `TestTransferCampaignBypassesLease` only |
+  | Pre-votes granted inside the lease | `TestLeaseIgnoresDisruptiveVotes`, `TestPreCandidateAsksAgainAfterLease` |
+
+- **Simulator** (`internal/sim`): PreVote-off schedules make no membership changes, like
+  CheckQuorum-off ones before (`limitMembershipChanges`). `-prevote=on|off` (`make sim
+  PREVOTE=…`) forces PreVote for a whole run; a seed's other options do not depend on it.
+  Seed 51674 is a permanent regression seed (`TestRegressionSeeds`, in `make sim` and
+  `make check`): as drawn and with PreVote forced on (membership changes kept) it passes
+  every check; its original schedule still fails only the liveness check, with no safety
+  violation. `make sim` now sets a 3-hour test timeout: 100,000 seeds take longer than
+  the default 10 minutes on this machine (GitHub's runners did the first 51,673 in about
+  3 minutes). The nightly `sim` job runs 100,000 seeds with PreVote on and
+  100,000 with it off, which together cover every schedule of a run that draws PreVote per
+  seed.
+- **Runs** on this machine, all with zero violations:
+  - `make sim` (seeds 1–1,000, PreVote drawn per seed): 6.6 s; 946 membership changes,
+    1,842 leader transfers, 1,093 snapshots installed; `TestRegressionSeeds` and
+    `TestReplayIsIdentical` pass.
+  - PreVote on, seeds 1–100,000: 16 m 0 s; 345,716 leaders elected, 329,739 crashes,
+    222,312 partitions, 125,680 membership changes, 184,983 leader transfers, 115,643
+    snapshots installed, 3,119,203 reads confirmed, 334 million messages delivered and
+    35.8 million dropped.
+  - PreVote off, seeds 1–100,000: 14 m 58 s; 396,427 leaders elected, 330,010 crashes,
+    222,421 partitions, no membership changes, 189,355 leader transfers, 112,215
+    snapshots installed, 3,010,829 reads confirmed, 311 million messages delivered and
+    33.7 million dropped.
+
+  Together the two 100,000-seed runs cover every schedule of the nightly's former
+  100,000-seed run with PreVote drawn per seed, seed 51674 included.

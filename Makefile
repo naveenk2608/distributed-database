@@ -40,10 +40,12 @@ test:
 test-short:
 	go test -race -count=1 -short ./...
 
-## sim: deterministic Raft simulation (Phase 6 gate: SEEDS=10000)
+## sim: deterministic Raft simulation (Phase 6 gate: SEEDS=10000); PREVOTE=on or off forces PreVote
 SEEDS ?= 1000
+PREVOTE ?= random
 sim:
-	go test -count=1 -v -run '^(TestSimulation|TestReplayIsIdentical)$$' ./internal/sim -seeds=$(SEEDS)
+	go test -count=1 -timeout=3h -v -run '^(TestSimulation|TestRegressionSeeds|TestReplayIsIdentical)$$' ./internal/sim \
+		-seeds=$(SEEDS) -prevote=$(PREVOTE)
 
 ## test-integration: in-process multi-node clusters
 test-integration:

@@ -54,9 +54,18 @@ type Options struct {
 	Trace io.Writer
 }
 
-// RandomOptions draws a schedule's shape from rng.
+// RandomOptions draws a schedule's shape from rng, without membership
+// changes where liveness cannot be required with them (see
+// limitMembershipChanges).
 func RandomOptions(rng *rand.Rand) Options {
-	o := Options{
+	o := randomShape(rng)
+	o.limitMembershipChanges()
+	return o
+}
+
+// randomShape draws every option from rng.
+func randomShape(rng *rand.Rand) Options {
+	return Options{
 		Nodes:            []int{3, 3, 5}[rng.IntN(3)],
 		Spares:           rng.IntN(3),
 		Steps:            400,
@@ -77,15 +86,29 @@ func RandomOptions(rng *rand.Rand) Options {
 		MaxEntriesPerMsg: []int{1, 2, 8}[rng.IntN(3)],
 		CalmSteps:        300,
 	}
-	if !o.CheckQuorum {
-		// Without the CheckQuorum lease a removed server that never
-		// learns of its removal keeps forcing elections (Raft thesis
-		// §4.2.3), so liveness cannot be required; dkv always enables
-		// CheckQuorum.
+}
+
+// limitMembershipChanges turns membership changes off unless both
+// CheckQuorum and PreVote are on, as they always are in dkv
+// (docs/adr/0026). Schedules without them still run every safety check.
+//
+//   - Without CheckQuorum there is no lease: a removed server that never
+//     learns of its removal keeps winning pre-votes, or votes, and forcing
+//     elections (Raft thesis §4.2.3).
+//   - Without PreVote, a server that cannot win an election (a removed
+//     one, or a voter whose log is behind) still raises everyone's term
+//     each time it times out. Membership changes can leave two voters of
+//     which only one can win; each term bump then cuts that one's election
+//     short, and no calm phase of fixed length is sure to elect a leader
+//     (seed 51674).
+func (o *Options) limitMembershipChanges() {
+	if !o.CheckQuorum || !o.PreVote {
 		o.ConfRate = 0
 	}
-	return o
 }
+
+// seedRand is the generator a schedule's options and events come from.
+func seedRand(seed uint64) *rand.Rand { return rand.New(rand.NewPCG(seed, 0x5ee1)) }
 
 type envelope struct {
 	at  int
@@ -153,7 +176,7 @@ func (w hashWriter) event(format string, args ...any) {
 // Run executes the schedule for seed with opts (RandomOptions if opts is
 // nil) and returns its result.
 func Run(seed uint64, opts *Options) Result {
-	rng := rand.New(rand.NewPCG(seed, 0x5ee1))
+	rng := seedRand(seed)
 	o := RandomOptions(rng)
 	if opts != nil {
 		o = *opts

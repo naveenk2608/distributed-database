@@ -78,7 +78,9 @@ depends on a replica that has no data yet.
   measurements a new node took its share within about a second in tests
   with 200 ms rebalance rounds, with writes continuing throughout.
 - The simulator exercises random add, promote and remove changes, leader
-  transfers and snapshots in every schedule with CheckQuorum on. Without
-  the CheckQuorum lease a removed server that never learns of its removal
-  can keep forcing elections (dissertation §4.2.3), so those schedules
-  make no membership changes; dkv always enables CheckQuorum.
+  transfers and snapshots in every schedule with CheckQuorum and PreVote
+  on, as dkv runs. Without the CheckQuorum lease a removed server that
+  never learns of its removal can keep forcing elections (dissertation
+  §4.2.3); without PreVote, a voter that cannot win keeps raising terms,
+  which can keep a two-voter group leaderless (ADR 0026). Schedules
+  without either make no membership changes.

@@ -582,3 +582,151 @@ func TestPreCandidateAsksAgainAfterLease(t *testing.T) {
 		t.Fatalf("leaders %v; want s2 without another timeout", l)
 	}
 }
+
+// voteFrom is a vote request from a candidate whose log matches r's last
+// entry, so only the lease can make r refuse it.
+func voteFrom(r *Raft, from string, t MsgType, term uint64) Message {
+	return Message{Type: t, From: from, To: r.id, Term: term, Index: r.LastIndex(), LogTerm: r.log.lastTerm()}
+}
+
+// TestLeaseIgnoresDisruptiveVotes: with CheckQuorum on, a node that heard
+// from a leader within the minimum election timeout ignores a vote request
+// of a higher term: its term and vote stay as they were and it sends
+// nothing. It refuses a pre-vote, also without changing its term (Raft
+// thesis §4.2.3). This holds for followers and for the leader itself. Once
+// the lease has run out, or with CheckQuorum off, the same request raises
+// the term and wins the vote.
+func TestLeaseIgnoresDisruptiveVotes(t *testing.T) {
+	for _, pre := range []bool{false, true} {
+		setup := func(t *testing.T, checkQuorum bool) *network {
+			nw := newNetwork(t, 3, func(c *Config) { c.PreVote, c.CheckQuorum = pre, checkQuorum })
+			nw.campaign("s1")
+			nw.propose("s1", "a") // s2 and s3 hear from the leader
+			return nw
+		}
+		t.Run(fmt.Sprintf("prevote=%v/inside the lease", pre), func(t *testing.T) {
+			nw := setup(t, true)
+			for _, id := range []string{"s1", "s2"} { // the leader, a follower
+				r := nw.nodes[id]
+				hs, soft := r.hardState(), r.softState()
+				for _, typ := range []MsgType{MsgVote, MsgPreVote} {
+					if err := r.Step(voteFrom(r, "s3", typ, hs.Term+5)); err != nil {
+						t.Fatal(err)
+					}
+					if r.hardState() != hs || r.softState() != soft {
+						t.Fatalf("%s: %v changed %+v %+v to %+v %+v", id, typ, hs, soft, r.hardState(), r.softState())
+					}
+					switch {
+					case typ == MsgVote && len(r.msgs) != 0:
+						t.Fatalf("%s answered a vote request inside its lease: %+v", id, r.msgs)
+					case typ == MsgPreVote && (len(r.msgs) != 1 || r.msgs[0].Type != MsgPreVoteResp || !r.msgs[0].Reject):
+						t.Fatalf("%s: pre-vote inside the lease answered with %+v; want one refusal", id, r.msgs)
+					}
+					r.msgs = nil
+				}
+			}
+		})
+		t.Run(fmt.Sprintf("prevote=%v/lease expired", pre), func(t *testing.T) {
+			nw := setup(t, true)
+			r := nw.nodes["s2"]
+			r.randomTimeout = 2*nw.cfg.ElectionTick - 1 // stay a follower while the lease runs out
+			term := r.Term()
+			for range nw.cfg.ElectionTick - 1 {
+				r.Tick()
+			}
+			if err := r.Step(voteFrom(r, "s3", MsgVote, term+5)); err != nil {
+				t.Fatal(err)
+			}
+			if r.Term() != term || len(r.msgs) != 0 {
+				t.Fatalf("one tick before the lease ends: term %d -> %d, sent %+v", term, r.Term(), r.msgs)
+			}
+			r.Tick() // the minimum election timeout has passed
+			if err := r.Step(voteFrom(r, "s3", MsgVote, term+5)); err != nil {
+				t.Fatal(err)
+			}
+			if r.Term() != term+5 || r.hardState().Vote != "s3" {
+				t.Fatalf("after the lease: term %d vote %q; want term %d, vote for s3", r.Term(), r.hardState().Vote, term+5)
+			}
+		})
+		t.Run(fmt.Sprintf("prevote=%v/checkquorum off", pre), func(t *testing.T) {
+			nw := setup(t, false)
+			r := nw.nodes["s2"]
+			term := r.Term()
+			if err := r.Step(voteFrom(r, "s3", MsgVote, term+5)); err != nil {
+				t.Fatal(err)
+			}
+			if r.Term() != term+5 || r.hardState().Vote != "s3" {
+				t.Fatalf("without CheckQuorum: term %d vote %q; want term %d, vote for s3", r.Term(), r.hardState().Vote, term+5)
+			}
+		})
+	}
+}
+
+// TestTransferCampaignBypassesLease: the campaign a leader starts with
+// TimeoutNow skips the pre-vote and marks its vote requests, and nodes
+// inside their lease grant them, so the transfer completes at once. The
+// mark is what gets it through: the same requests unmarked are ignored. A
+// campaign started by a timeout is not marked, and a TimeoutNow from
+// anyone but the leader starts nothing.
+func TestTransferCampaignBypassesLease(t *testing.T) {
+	for _, pre := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prevote=%v", pre), func(t *testing.T) {
+			setup := func() (*network, uint64) {
+				nw := newNetwork(t, 3, func(c *Config) { c.PreVote, c.CheckQuorum = pre, true })
+				nw.campaign("s1")
+				nw.propose("s1", "a")
+				return nw, nw.nodes["s1"].Term()
+			}
+			timeoutNow := func(from string, term uint64) Message {
+				return Message{Type: MsgTimeoutNow, From: from, To: "s2", Term: term}
+			}
+
+			nw, term := setup()
+			s2 := nw.nodes["s2"]
+			if err := s2.Step(timeoutNow("s3", term)); err != nil {
+				t.Fatal(err)
+			}
+			if s2.State() != StateFollower || len(s2.msgs) != 0 {
+				t.Fatalf("TimeoutNow from a follower: s2 is %v and sent %+v", s2.State(), s2.msgs)
+			}
+			if err := s2.Step(timeoutNow("s1", term)); err != nil {
+				t.Fatal(err)
+			}
+			if s2.State() != StateCandidate || s2.Term() != term+1 || len(s2.msgs) != 2 {
+				t.Fatalf("after the leader's TimeoutNow: s2 is %v at term %d, sent %+v", s2.State(), s2.Term(), s2.msgs)
+			}
+			for _, m := range s2.msgs {
+				if m.Type != MsgVote || !m.Transfer {
+					t.Fatalf("transfer campaign sent %v with Transfer=%v; want marked MsgVote", m.Type, m.Transfer)
+				}
+			}
+			nw.settle()
+			if l := nw.leaders(); !slices.Equal(l, []string{"s2"}) || s2.Term() != term+1 {
+				t.Fatalf("transfer campaign: leaders %v, s2 term %d", l, s2.Term())
+			}
+
+			nw, term = setup()
+			nw.edit = func(m Message) Message { m.Transfer = false; return m }
+			if err := nw.nodes["s2"].Step(timeoutNow("s1", term)); err != nil {
+				t.Fatal(err)
+			}
+			nw.settle()
+			if l := nw.leaders(); !slices.Equal(l, []string{"s1"}) || nw.nodes["s1"].Term() != term || nw.nodes["s3"].Term() != term {
+				t.Fatalf("unmarked votes inside the lease: leaders %v, s1 term %d, s3 term %d; want s1 leading term %d",
+					l, nw.nodes["s1"].Term(), nw.nodes["s3"].Term(), term)
+			}
+
+			nw, _ = setup()
+			s3 := nw.nodes["s3"]
+			s3.hup() // an election timeout
+			if len(s3.msgs) == 0 {
+				t.Fatal("timeout campaign sent nothing")
+			}
+			for _, m := range s3.msgs {
+				if m.Transfer {
+					t.Fatalf("timeout campaign marked its %v as a transfer", m.Type)
+				}
+			}
+		})
+	}
+}
