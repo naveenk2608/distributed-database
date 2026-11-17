@@ -266,6 +266,28 @@ func (h *History) Ops() []porcupine.Operation {
 	return out
 }
 
+// Mark returns the history's clock, for KnownBetween.
+func (h *History) Mark() int64 { return h.now() }
+
+// KnownBetween counts the operations with a known outcome whose response
+// arrived between two marks: reads, and writes (puts, deletes and
+// compare-and-sets).
+func (h *History) KnownBetween(from, to int64) (reads, writes int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, op := range h.ops {
+		if op.Output.(Output).Unknown || op.Return < from || op.Return > to {
+			continue
+		}
+		if op.Input.(Input).Kind == Get {
+			reads++
+		} else {
+			writes++
+		}
+	}
+	return reads, writes
+}
+
 // Summary counts operations by kind and outcome.
 func (h *History) Summary() string {
 	h.mu.Lock()

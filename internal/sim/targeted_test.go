@@ -93,12 +93,39 @@ func TestDelayedTimeoutNowMeetsTheLogCheck(t *testing.T) {
 					l.id, l.r.State(), b.id, b.r.LastIndex(), x, b.r.Leader(), b.r.Term(), held[0].Term)
 			}
 
-			s.intercept = nil
+			// Record the campaign: b's requests and the answers to them.
+			var votes, answers []raft.Message
+			s.intercept = func(m raft.Message) bool {
+				switch {
+				case m.From == b.id && (m.Type == raft.MsgVote || m.Type == raft.MsgPreVote):
+					votes = append(votes, m)
+				case m.To == b.id && (m.Type == raft.MsgVoteResp || m.Type == raft.MsgPreVoteResp):
+					answers = append(answers, m)
+				}
+				return true
+			}
 			s.inflight = append(s.inflight, envelope{at: s.now, msg: held[0]})
 			s.step()
 			s.now++
 			if b.r.Term() != term+1 || b.r.State() == raft.StateFollower {
 				t.Fatalf("%s did not campaign on the delayed TimeoutNow: %v at term %d", b.id, b.r.State(), b.r.Term())
+			}
+			s.step() // deliver the requests; the answers are sent
+			s.now++
+			s.intercept = nil
+			if len(votes) != 2 {
+				t.Fatalf("%s sent %d vote requests; want one to each other voter", b.id, len(votes))
+			}
+			for _, m := range votes {
+				if m.Type != raft.MsgVote || !m.Transfer {
+					t.Fatalf("%s sent %v with Transfer=%v; want transfer-marked MsgVote only, no pre-vote", b.id, m.Type, m.Transfer)
+				}
+			}
+			// Both voters are inside their lease; an unmarked request would
+			// go unanswered. A refusal means the lease was bypassed and the
+			// log check said no.
+			if len(answers) != 2 || !answers[0].Reject || !answers[1].Reject || answers[0].From == answers[1].From {
+				t.Fatalf("answers to %s's transfer votes: %+v; want a refusal from each other voter", b.id, answers)
 			}
 
 			s.calm() // no fault: a leader with x must be elected and a new proposal applied everywhere

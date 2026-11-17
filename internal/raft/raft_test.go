@@ -730,3 +730,66 @@ func TestTransferCampaignBypassesLease(t *testing.T) {
 		})
 	}
 }
+
+// TestNoLeaseWithoutALeader: a node that has heard from no leader has no
+// lease to protect, so even with CheckQuorum on it grants a higher-term
+// vote at once. Otherwise a group that lost its leader could not elect
+// another.
+func TestNoLeaseWithoutALeader(t *testing.T) {
+	nw := newNetwork(t, 3, func(c *Config) { c.CheckQuorum = true })
+	r := nw.nodes["s2"]
+	if r.Leader() != "" {
+		t.Fatalf("setup: s2 already follows %q", r.Leader())
+	}
+	term := r.Term()
+	if err := r.Step(voteFrom(r, "s3", MsgVote, term+1)); err != nil {
+		t.Fatal(err)
+	}
+	if r.Term() != term+1 || r.hardState().Vote != "s3" || len(r.msgs) != 1 || r.msgs[0].Reject {
+		t.Fatalf("leaderless follower: term %d vote %q sent %+v; want term %d, vote and grant for s3",
+			r.Term(), r.hardState().Vote, r.msgs, term+1)
+	}
+}
+
+// TestPreVoteKeepsTermStableUnderOneWayPartition: the leader's messages to
+// s3 are lost but s3's own still arrive. s3 hears no leader and times out
+// again and again; its pre-votes reach the leader and s2, both inside
+// their lease, and fail, so no node's term moves, and s1 still leads once
+// the link heals. Without PreVote, s3 would raise its own term at every
+// timeout and, once healed, its answer to the leader's next append would
+// depose it (Raft thesis §9.6).
+func TestPreVoteKeepsTermStableUnderOneWayPartition(t *testing.T) {
+	nw := newNetwork(t, 3, func(c *Config) { c.PreVote, c.CheckQuorum = true, true })
+	nw.campaign("s1")
+	nw.propose("s1", "a")
+	term := nw.nodes["s1"].Term()
+	tickAll := func(n int) {
+		for range n {
+			for _, id := range nw.ids {
+				nw.nodes[id].Tick()
+			}
+			nw.settle()
+		}
+	}
+	campaigns := 0
+	nw.drop = func(m Message) bool {
+		if m.From == "s3" && (m.Type == MsgPreVote || m.Type == MsgVote) {
+			campaigns++
+		}
+		return m.From == "s1" && m.To == "s3"
+	}
+	tickAll(10 * nw.cfg.ElectionTick)
+	if campaigns == 0 {
+		t.Fatal("setup: s3 never campaigned")
+	}
+	nw.drop = nil
+	tickAll(2 * nw.cfg.ElectionTick)
+	for _, id := range nw.ids {
+		if got := nw.nodes[id].Term(); got != term {
+			t.Fatalf("%s is at term %d after a one-way partition; want %d", id, got, term)
+		}
+	}
+	if l := nw.leaders(); !slices.Equal(l, []string{"s1"}) {
+		t.Fatalf("leaders %v after the partition healed; want s1", l)
+	}
+}

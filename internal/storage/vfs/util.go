@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -116,5 +117,45 @@ func (s slowFS) SyncDir(dir string) error {
 
 func (f slowFile) Sync() error {
 	time.Sleep(f.delay)
+	return f.File.Sync()
+}
+
+// CountSyncs wraps fsys so that every file and directory sync adds one to
+// n, for tests that check what reaches the disk.
+func CountSyncs(fsys FS, n *atomic.Int64) FS { return countingFS{FS: fsys, n: n} }
+
+type countingFS struct {
+	FS
+	n *atomic.Int64
+}
+
+type countingFile struct {
+	File
+	n *atomic.Int64
+}
+
+func (c countingFS) Create(name string) (File, error) {
+	f, err := c.FS.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return countingFile{File: f, n: c.n}, nil
+}
+
+func (c countingFS) OpenReadWrite(name string) (File, error) {
+	f, err := c.FS.OpenReadWrite(name)
+	if err != nil {
+		return nil, err
+	}
+	return countingFile{File: f, n: c.n}, nil
+}
+
+func (c countingFS) SyncDir(dir string) error {
+	c.n.Add(1)
+	return c.FS.SyncDir(dir)
+}
+
+func (f countingFile) Sync() error {
+	f.n.Add(1)
 	return f.File.Sync()
 }

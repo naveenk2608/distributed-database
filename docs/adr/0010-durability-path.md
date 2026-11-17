@@ -75,8 +75,12 @@ path in Phase 10.
 
 ## Revision in Phase 8
 
-- **`storage.sync = never` now also skips the Raft log's fsyncs** in a
-  cluster (`replica.Config.UnsafeNoSync`). Before, it affected only the
+- **`storage.sync = never` now also skips the fsync of every Raft log
+  write** (new entries, the term and the vote) in a cluster
+  (`replica.Config.UnsafeNoSync`); log compaction, snapshot installs and
+  segment rotation still sync, and are not on the write path
+  (`TestUnsafeNoSyncSkipsWriteSyncs`, added in the Phase 8 follow-up,
+  pins this). Before, it affected only the
   engine WAL, and the Raft log kept every acknowledged write safe, so the
   setting could not show what fsync costs a replica, which is what the
   benchmark matrix compares it for. It also gives the Phase 8 negative

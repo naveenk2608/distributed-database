@@ -96,9 +96,11 @@ type Config struct {
 	// Snapshots streams snapshots to followers that need them; nil means
 	// none can be sent.
 	Snapshots SnapshotSender
-	// UnsafeNoSync skips the Raft log's fsyncs: a power loss can then lose
-	// votes and acknowledged entries, breaking Raft's guarantees. Only for
-	// measuring what fsync costs (storage.sync = never).
+	// UnsafeNoSync skips the fsync of every Raft log write (new entries,
+	// the term and the vote); log compaction, snapshot installs and segment
+	// rotation still sync. A power loss can then lose votes and
+	// acknowledged entries, breaking Raft's guarantees. Only for measuring
+	// what fsync costs (storage.sync = never).
 	UnsafeNoSync bool
 	Log          *slog.Logger
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -359,5 +360,70 @@ func TestTxnIsAtomicAndConditional(t *testing.T) {
 	kvs, err := l.Scan(ctx(t), []byte("n/"), false)
 	if err != nil || len(kvs) != 1 || string(kvs[0].Key) != "n/a" || string(kvs[0].Value) != "9" {
 		t.Fatalf("scan n/: %+v %v", kvs, err)
+	}
+}
+
+// TestUnsafeNoSyncSkipsWriteSyncs: with UnsafeNoSync (storage.sync =
+// never) a replica's writes reach the Raft log without a single fsync;
+// without it every write is fsynced before it is acknowledged. The engine
+// runs with SyncNever in both, so every counted sync is the Raft log's.
+func TestUnsafeNoSyncSkipsWriteSyncs(t *testing.T) {
+	for _, unsafe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unsafe=%v", unsafe), func(t *testing.T) {
+			var syncs atomic.Int64
+			net := &loopback{reps: map[string]*Replica{}, down: map[string]bool{}}
+			r, err := Open(Config{Shard: 7, ID: "n1", Peers: []string{"n1"}, Dir: "/data/n1",
+				FS: vfs.CountSyncs(vfs.NewMemFS(), &syncs), Engine: lsm.Options{Sync: lsm.SyncNever},
+				ElectionTick: 10, HeartbeatTick: 2, SessionTTL: time.Hour, Sender: net,
+				UnsafeNoSync: unsafe, Log: slog.New(slog.DiscardHandler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				tk := time.NewTicker(2 * time.Millisecond)
+				defer tk.Stop()
+				for {
+					select {
+					case <-stop:
+						return
+					case <-tk.C:
+						r.Tick()
+					}
+				}
+			}()
+			defer func() {
+				close(stop)
+				wg.Wait()
+				if err := r.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			for deadline := time.Now().Add(10 * time.Second); r.Status().Role != raft.StateLeader; time.Sleep(5 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("the single replica did not elect itself")
+				}
+			}
+			if _, err := r.Put(ctx(t), []byte("k"), []byte("v0"), "c1", 1); err != nil {
+				t.Fatal(err)
+			}
+			before := syncs.Load()
+			const writes = 20
+			for i := range writes {
+				if _, err := r.Put(ctx(t), []byte("k"), fmt.Appendf(nil, "v%d", i+1), "c1", uint64(i+2)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			n := syncs.Load() - before
+			switch {
+			case unsafe && n != 0:
+				t.Fatalf("%d syncs for %d acknowledged writes with UnsafeNoSync; want none", n, writes)
+			case !unsafe && n < writes:
+				t.Fatalf("%d syncs for %d acknowledged writes; want one at least per write", n, writes)
+			}
+		})
 	}
 }

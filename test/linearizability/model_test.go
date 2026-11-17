@@ -50,6 +50,11 @@ func TestModelAcceptsLinearizableHistories(t *testing.T) {
 			{1, 2, get("a"), Output{}}, // before the put took effect
 			{3, 4, get("a"), found("x", 5)},
 		},
+		"unknown read constrains nothing": {
+			{0, 1, put("a", "x"), ver(5)},
+			{2, end, get("a"), Output{Unknown: true, Found: true, Value: "nonsense", Version: 99}},
+			{3, 4, get("a"), found("x", 5)},
+		},
 		"unknown put may have happened": {
 			{0, end, put("a", "x"), unknown},
 			{5, 6, get("a"), Output{}},
@@ -146,5 +151,25 @@ func TestModelRejectsViolations(t *testing.T) {
 		if got := check(h); got != porcupine.Illegal {
 			t.Errorf("%s: %v, want illegal", name, got)
 		}
+	}
+}
+
+// TestHistoryMovesUnknownOutcomesToTheEnd: an operation whose outcome is
+// unknown may take effect at any time after its call, so Ops returns it
+// after every known response; known operations keep their times.
+func TestHistoryMovesUnknownOutcomesToTheEnd(t *testing.T) {
+	h := NewHistory()
+	h.Begin(0, put("a", "x"))(unknown)
+	h.Begin(1, get("a"))(found("x", 5))
+	ops := h.Ops()
+	if len(ops) != 2 {
+		t.Fatalf("%d operations", len(ops))
+	}
+	known, unk := ops[1], ops[0]
+	if !unk.Output.(Output).Unknown || unk.Return <= known.Return || unk.Return <= unk.Call {
+		t.Fatalf("unknown put returns at %d, the known get at %d; want the put after it", unk.Return, known.Return)
+	}
+	if known.Return < known.Call {
+		t.Fatalf("known get returns at %d before its call at %d", known.Return, known.Call)
 	}
 }

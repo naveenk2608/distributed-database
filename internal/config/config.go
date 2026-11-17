@@ -148,8 +148,9 @@ type Storage struct {
 	// Sync is the WAL sync policy: always (fsync before acknowledging, the
 	// default), interval (fsync every SyncInterval; can lose the last
 	// interval's acknowledged writes on power loss) or never (benchmarks
-	// only). In a cluster, never also skips the Raft log's fsyncs, which
-	// lets a power loss break Raft's guarantees.
+	// only). In a cluster, never also skips the fsync of every Raft log
+	// write (entries, term and vote), which lets a power loss break Raft's
+	// guarantees.
 	Sync string `yaml:"sync"`
 	// SyncInterval is the fsync period when Sync is interval.
 	SyncInterval time.Duration `yaml:"sync_interval"`

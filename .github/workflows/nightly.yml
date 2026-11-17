@@ -5,10 +5,15 @@ name: Nightly
 # 100,000 simulation seeds, more kill -9 cycles and longer fuzzing. The
 # short versions run on every push in ci.yml.
 
+# It also runs when a phase tag is pushed, so every phase gate has a chaos
+# run on record (docs/PLAN.md: "nightly and at each phase gate").
+
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+  push:
+    tags: ["phase-*"]
 
 permissions:
   contents: read

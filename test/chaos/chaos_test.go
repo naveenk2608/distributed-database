@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,12 +47,28 @@ const (
 	workers = 4
 )
 
-func sleep(ctx context.Context, d time.Duration) {
+func sleep(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
+		return false
 	case <-t.C:
+		return true
+	}
+}
+
+// requireNewTerms checks that every shard in old has moved past its term
+// there: its leader was killed, frozen or cut off long enough (well over
+// the 0.5-1 s election timeout) that the others must have elected a new
+// one. This is what shows the fault took effect.
+func (w *world) requireNewTerms(fault string, old map[uint32]uint64) {
+	w.t.Helper()
+	now := w.c.leaders()
+	for shard, term := range old {
+		if now[shard].term <= term {
+			w.t.Errorf("%s: shard %d is still at term %d: no election", fault, shard, term)
+		}
 	}
 }
 
@@ -112,8 +129,11 @@ var scenarios = []scenario{
 	{name: "kill-leader", nemesis: func(ctx context.Context, w *world) {
 		for ctx.Err() == nil {
 			if s := w.randomLeader(); s != "" {
+				led := w.c.ledBy(s)
 				w.c.kill(s)
-				sleep(ctx, 2*time.Second)
+				if sleep(ctx, 2*time.Second) {
+					w.requireNewTerms("leader "+s+" killed for 2 s", led)
+				}
 				w.c.start(s)
 			}
 			sleep(ctx, 2*time.Second)
@@ -163,8 +183,11 @@ var scenarios = []scenario{
 		// resumes it must not answer from its stale state.
 		for ctx.Err() == nil {
 			if s := w.randomLeader(); s != "" {
+				led := w.c.ledBy(s)
 				w.c.freeze(s, true)
-				sleep(ctx, 3*time.Second)
+				if sleep(ctx, 3*time.Second) {
+					w.requireNewTerms("leader "+s+" frozen for 3 s", led)
+				}
 				w.c.freeze(s, false)
 			}
 			sleep(ctx, 2*time.Second)
@@ -179,8 +202,11 @@ var scenarios = []scenario{
 						rest = append(rest, o)
 					}
 				}
+				led := w.c.ledBy(s)
 				w.c.partition([]string{s}, rest)
-				sleep(ctx, 3*time.Second)
+				if sleep(ctx, 3*time.Second) {
+					w.requireNewTerms("leader "+s+" isolated by iptables for 3 s", led)
+				}
 				w.c.heal()
 			}
 			sleep(ctx, time.Second)
@@ -191,8 +217,22 @@ var scenarios = []scenario{
 			nodes := append([]string(nil), w.c.services...)
 			w.rng.Shuffle(len(nodes), func(a, b int) { nodes[a], nodes[b] = nodes[b], nodes[a] })
 			k := 1 + w.rng.IntN(len(nodes)-1)
+			minority := nodes[:k]
+			if 2*k > len(nodes) {
+				minority = nodes[k:]
+			}
+			// Shards led from the minority side must elect a new leader on
+			// the majority side.
+			cut := map[uint32]uint64{}
+			for shard, l := range w.c.leaders() {
+				if slices.Contains(minority, l.service) {
+					cut[shard] = l.term
+				}
+			}
 			w.c.partition(nodes[:k], nodes[k:])
-			sleep(ctx, 2*time.Second)
+			if sleep(ctx, 2*time.Second) {
+				w.requireNewTerms(fmt.Sprintf("iptables partition %v | %v", nodes[:k], nodes[k:]), cut)
+			}
 			w.c.heal()
 			sleep(ctx, time.Second)
 		}

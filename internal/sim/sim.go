@@ -188,8 +188,13 @@ func Run(seed uint64, opts *Options) Result {
 	if opts != nil {
 		o = *opts
 	}
-	s := newSim(seed, rng, o)
-	for s.now = 0; s.now < o.Steps && !s.failed(); s.now++ {
+	return newSim(seed, rng, o).run()
+}
+
+// run executes the schedule's faulty steps and its calm phase, stopping at
+// the first violation.
+func (s *Sim) run() Result {
+	for s.now = 0; s.now < s.opts.Steps && !s.failed(); s.now++ {
 		s.step()
 		if s.now%10 == 0 {
 			s.checkLogs()

@@ -292,25 +292,63 @@ func (c *cluster) shardCount() uint32 {
 	return 0
 }
 
-// termSum adds up, over every shard, the highest Raft term any running
-// node reports for it. It grows with every election, so comparing it
-// before and after a scenario shows whether the faults forced elections.
-func (c *cluster) termSum() uint64 {
-	terms := map[uint32]uint64{}
+// leader is the service leading a shard, and its term.
+type leader struct {
+	service string
+	term    uint64
+}
+
+// leaders returns, per shard, the highest term any reachable node (not
+// killed, not frozen) reports, and the service that claims leadership at
+// that term ("" if none does).
+func (c *cluster) leaders() map[uint32]leader {
+	out := map[uint32]leader{}
 	for _, s := range c.services {
+		c.mu.Lock()
+		down := c.stopped[s] || c.frozen[s]
+		c.mu.Unlock()
+		if down {
+			continue
+		}
 		sm, err := c.shardMap(s)
 		if err != nil {
 			continue
 		}
 		for _, in := range sm.GetShards() {
-			if in.GetLocal() {
-				terms[in.GetShard()] = max(terms[in.GetShard()], in.GetTerm())
+			if !in.GetLocal() {
+				continue
 			}
+			cur := out[in.GetShard()]
+			if in.GetTerm() > cur.term {
+				cur = leader{term: in.GetTerm()}
+			}
+			if in.GetTerm() == cur.term && in.GetRole() == "leader" {
+				cur.service = s
+			}
+			out[in.GetShard()] = cur
 		}
 	}
+	return out
+}
+
+// ledBy returns the terms of the shards service leads.
+func (c *cluster) ledBy(service string) map[uint32]uint64 {
+	out := map[uint32]uint64{}
+	for shard, l := range c.leaders() {
+		if l.service == service {
+			out[shard] = l.term
+		}
+	}
+	return out
+}
+
+// termSum adds up, over every shard, the highest Raft term any reachable
+// node reports for it. With PreVote it grows only when an election starts
+// (a leadership transfer is one).
+func (c *cluster) termSum() uint64 {
 	var sum uint64
-	for _, t := range terms {
-		sum += t
+	for _, l := range c.leaders() {
+		sum += l.term
 	}
 	return sum
 }

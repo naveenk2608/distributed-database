@@ -76,3 +76,18 @@ jobs:
 
       - name: simulation
         run: make sim SEEDS=10000
+
+  fuzz:
+    # Every fuzz target for 10 seconds (docs/PLAN.md, "Test layers": short
+    # fuzzing on every commit); the nightly workflow fuzzes 5 minutes each.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: fuzz targets
+        run: make fuzz FUZZTIME=10s

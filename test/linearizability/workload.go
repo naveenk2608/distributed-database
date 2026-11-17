@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -30,6 +31,8 @@ type Workload struct {
 	// OpTimeout bounds one operation, retries included; 0 means 1.5 s.
 	OpTimeout time.Duration
 	History   *History
+	// Duplicated counts the writes sent twice.
+	Duplicated atomic.Int64
 }
 
 func (wl *Workload) opTimeout() time.Duration {
@@ -69,6 +72,7 @@ func (wl *Workload) Start(ctx context.Context, seed uint64) (wait func(), err er
 				twice := method != "/dkv.v1.KVService/Get" && rng.IntN(3) == 0
 				mu.Unlock()
 				if twice {
+					wl.Duplicated.Add(1)
 					_ = invoker(ctx, method, req, reply, cc, o...) // its answer is lost
 				}
 				return invoker(ctx, method, req, reply, cc, o...)

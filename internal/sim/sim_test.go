@@ -3,9 +3,12 @@ package sim
 import (
 	"flag"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/naveenk2608/distributed-database/internal/raft"
 )
 
 var (
@@ -14,24 +17,34 @@ var (
 	preVote   = flag.String("prevote", "random", "PreVote in every schedule: random (drawn per seed), on or off")
 )
 
-// scheduleOptions returns the options seed's schedule runs with: drawn
-// from the seed's generator as Run draws them, with PreVote forced as
-// -prevote says, and membership changes limited for the result. With
-// -prevote=random they are exactly what Run(seed, nil) uses.
+// scheduleOptions returns the options seed's schedule runs with under
+// -prevote.
 func scheduleOptions(t testing.TB, seed uint64) Options {
 	t.Helper()
+	o, err := optionsFor(seed, *preVote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// optionsFor draws seed's options from the seed's generator as Run draws
+// them, forces PreVote as mode ("random", "on" or "off") says, and limits
+// membership changes for the result. With mode "random" they are exactly
+// what Run(seed, nil) uses (TestForcedPreVoteChangesNothingElse).
+func optionsFor(seed uint64, mode string) (Options, error) {
 	o := randomShape(seedRand(seed))
-	switch *preVote {
+	switch mode {
 	case "random":
 	case "on":
 		o.PreVote = true
 	case "off":
 		o.PreVote = false
 	default:
-		t.Fatalf("-prevote=%q: want random, on or off", *preVote)
+		return o, fmt.Errorf("-prevote=%q: want random, on or off", mode)
 	}
 	o.limitMembershipChanges()
-	return o
+	return o, nil
 }
 
 // TestSimulation is the Phase 6 gate's simulator check: many seeded
@@ -73,8 +86,10 @@ func TestSimulation(t *testing.T) {
 		n, *firstSeed, *firstSeed+uint64(n)-1, *preVote, time.Since(start).Round(time.Millisecond),
 		total.Leaders, total.Commits, total.Crashes, total.Partitions, total.Reads,
 		total.ConfChanges, total.Transfers, total.Compactions, total.Snapshots, total.Delivered, total.Dropped)
-	if total.Leaders == 0 || total.Commits == 0 || total.Reads == 0 || total.Transfers == 0 || total.Snapshots == 0 ||
-		(membershipChanges && total.ConfChanges == 0) {
+	// A replay of one seed (the failure message's hint) may well install no
+	// snapshot; across 100 schedules or more, every kind of event happens.
+	if n >= 100 && (total.Leaders == 0 || total.Commits == 0 || total.Reads == 0 || total.Transfers == 0 ||
+		total.Snapshots == 0 || (membershipChanges && total.ConfChanges == 0)) {
 		t.Error("the schedules did no meaningful work")
 	}
 }
@@ -89,10 +104,12 @@ func TestSimulation(t *testing.T) {
 var regressionSeeds = []uint64{51674}
 
 // TestRegressionSeeds runs each regression seed three ways. As drawn
-// today and with PreVote forced on (dkv's configuration, membership
-// changes kept), it must pass every check. As originally drawn, before
-// PreVote-off schedules stopped changing membership, it may fail only the
-// liveness check: no safety violation, ever.
+// today and with PreVote forced on (dkv's configuration), it must pass
+// every check, and the PreVote-on run must still change membership. As
+// originally drawn, before PreVote-off schedules stopped changing
+// membership, it must still fail the liveness check and nothing else: if
+// it passes, a change to how options or events are drawn has turned the
+// seed into a different schedule, and the regression test into nothing.
 func TestRegressionSeeds(t *testing.T) {
 	for _, seed := range regressionSeeds {
 		drawn := randomShape(seedRand(seed))
@@ -101,9 +118,9 @@ func TestRegressionSeeds(t *testing.T) {
 		preVoteOn.PreVote = true
 		preVoteOn.limitMembershipChanges()
 		for _, tc := range []struct {
-			name         string
-			o            Options
-			livenessOnly bool
+			name     string
+			o        Options
+			original bool
 		}{
 			{"as drawn", limited, false},
 			{"prevote on", preVoteOn, false},
@@ -112,13 +129,86 @@ func TestRegressionSeeds(t *testing.T) {
 			t.Run(fmt.Sprintf("%d/%s", seed, tc.name), func(t *testing.T) {
 				res := Run(seed, &tc.o)
 				for _, v := range res.Violations {
-					if !tc.livenessOnly || !strings.HasPrefix(v, "Liveness:") {
+					if !tc.original || !strings.HasPrefix(v, "Liveness:") {
 						t.Fatalf("%s\nlast events:\n%s", v, traceTail(seed, tc.o, 80))
 					}
-					t.Logf("allowed: %s", v)
+					t.Logf("expected: %s", v)
+				}
+				switch {
+				case tc.original && len(res.Violations) == 0:
+					t.Fatal("the original schedule no longer fails the liveness check: it is not the schedule that failed any more")
+				case tc.o.ConfRate > 0 && res.ConfChanges == 0:
+					t.Fatal("no membership change happened: the schedule no longer exercises what failed")
 				}
 			})
 		}
+	}
+}
+
+// TestMembershipChangesNeedPreVoteAndCheckQuorum: no schedule drawn for
+// seeds 1 to 10,000 changes membership unless both PreVote and
+// CheckQuorum are on, and with both on, some do.
+func TestMembershipChangesNeedPreVoteAndCheckQuorum(t *testing.T) {
+	changing := 0
+	for seed := range uint64(10000) {
+		o := RandomOptions(seedRand(seed + 1))
+		if o.ConfRate > 0 {
+			if !o.PreVote || !o.CheckQuorum {
+				t.Fatalf("seed %d: membership changes with PreVote %v, CheckQuorum %v", seed+1, o.PreVote, o.CheckQuorum)
+			}
+			changing++
+		}
+	}
+	if changing == 0 {
+		t.Fatal("no schedule changes membership")
+	}
+}
+
+// TestForcedPreVoteChangesNothingElse: -prevote=random gives exactly
+// Run(seed, nil), and forcing PreVote on or off changes no option but
+// PreVote and, through limitMembershipChanges, ConfRate.
+func TestForcedPreVoteChangesNothingElse(t *testing.T) {
+	for seed := uint64(1); seed <= 2000; seed++ {
+		random, _ := optionsFor(seed, "random")
+		on, _ := optionsFor(seed, "on")
+		off, _ := optionsFor(seed, "off")
+		if want := RandomOptions(seedRand(seed)); !reflect.DeepEqual(random, want) {
+			t.Fatalf("seed %d: -prevote=random gives %+v; Run uses %+v", seed, random, want)
+		}
+		off.PreVote, off.ConfRate = on.PreVote, on.ConfRate
+		if !reflect.DeepEqual(on, off) {
+			t.Fatalf("seed %d: forcing PreVote changed other options: %+v vs %+v", seed, on, off)
+		}
+		if seed <= 20 {
+			if a, b := Run(seed, nil), Run(seed, &random); a.Trace != b.Trace {
+				t.Fatalf("seed %d: Run with -prevote=random options differs from Run(seed, nil)", seed)
+			}
+		}
+	}
+	if _, err := optionsFor(1, "sometimes"); err == nil {
+		t.Fatal("a bad -prevote value was accepted")
+	}
+}
+
+// TestScheduleStopsAtFirstViolation: once a check fails, the schedule
+// takes no further step and the calm phase does not run, so the first
+// violation is the only one reported.
+func TestScheduleStopsAtFirstViolation(t *testing.T) {
+	o := RandomOptions(seedRand(7))
+	s := newSim(7, seedRand(7), o)
+	const at = 50
+	s.intercept = func(raft.Message) bool {
+		if s.now == at && !s.failed() {
+			s.check.violate("planted at step %d", s.now)
+		}
+		return true
+	}
+	res := s.run()
+	if len(res.Violations) != 1 || res.Violations[0] != fmt.Sprintf("planted at step %d", at) {
+		t.Fatalf("violations %q; want only the planted one", res.Violations)
+	}
+	if s.now != at+1 {
+		t.Fatalf("the schedule ran on to step %d after a violation at step %d", s.now, at)
 	}
 }
 

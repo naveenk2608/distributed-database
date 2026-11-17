@@ -470,7 +470,7 @@ killed for lack of memory (exit 137) on this 3 GB machine; run it here with `-p 
 | Gate item | Evidence | Status |
 | --- | --- | --- |
 | Every scenario in the failure matrix passes the linearizability check across repeated runs | `test/linearizability` `TestFailureMatrix` (`make lin LIN_RUNS=5`): 3 nodes, 4 shards plus the meta group, 20 ms ticks, `dead_after` 2 s. Per run, four clients (three pinned to one node each, one using all) issue puts, gets, deletes and compare-and-sets with unique values on 8 keys for 3 s of faults plus recovery; every operation is recorded with its invocation and response time, failed and timed-out ones as unknown outcomes; then every key is read once more and every such read must succeed. Porcupine checks the history against a per-key model that includes versions. One scenario per failure-matrix row (table below); 14 scenarios × 5 runs = 70 runs, all linearizable, in 5 m 33 s. Also run once each under `-race` inside `make check`. `TestPowerLossOfMajorityLosesNothing` (`storage.sync` always and interval): one node partitioned away while writes go on, the power of the other two cut (their replicas on `vfs.MemFS`, so only fsynced data survives), then everything restarted: linearizable, no acknowledged write lost. The Docker backend (`test/chaos`, `make chaos`: SIGKILL, SIGSTOP, iptables, tc netem against a three-node Compose cluster) cannot run here; on GitHub's runners (nightly run 44050943445, `CHAOS_RUNS=2`, 10 s of faults) all 12 of its scenarios × 2 runs = 24 histories were linearizable, 2,573–13,493 operations each. | Passed |
-| A deliberately broken configuration fails the checker | `TestNegativeControlFailsTheChecker`: the same power loss with `storage.sync = never`, which now also skips the Raft log's fsyncs (ADR 0010). The two powered-off nodes come back without the writes they acknowledged; the partitioned node leads with older data; the checker must return Illegal, and does in 5 of 5 runs (seed 42, 1,129–1,788 operations each). | Passed |
+| A deliberately broken configuration fails the checker | `TestNegativeControlFailsTheChecker`: the same power loss with `storage.sync = never`, which now also skips the fsync of every Raft log write (ADR 0010). The two powered-off nodes come back without the writes they acknowledged; the partitioned node leads with older data; the checker must return Illegal, and does in 5 of 5 runs (seed 42, 1,129–1,788 operations each). | Passed |
 
 | Failure-matrix row | Scenario | Nemesis (3 s of faults) | 5 runs: operations / unknown outcomes / injector |
 | --- | --- | --- | --- |
@@ -518,7 +518,9 @@ accepted are now in `TestModelRejectsViolations`.
   streaming call between nodes (drop as `Unavailable`, delay, send a unary call twice).
 - **`internal/node`:** `WithFaults`, `WithFS` (replica storage on any `vfs.FS`), `PauseTicks`
   (stops the node's Raft clock); `storage.sync = never` passes `UnsafeNoSync` to replicas.
-- **`internal/replica`:** `Config.UnsafeNoSync` skips the Raft log's fsyncs.
+- **`internal/replica`:** `Config.UnsafeNoSync` skips the fsync of every Raft log write
+  (entries, term and vote); log compaction, snapshot installs and segment rotation still sync
+  (`TestUnsafeNoSyncSkipsWriteSyncs`, added in the follow-up).
 - **`internal/storage/vfs`:** `Slow`, a filesystem whose file and directory syncs take longer
   (`TestSlowDelaysEverySync`).
 - **`internal/node/nodetest`:** `StartWith` and `Options` (faults, per-node `MemFS`, a filesystem
@@ -528,19 +530,21 @@ accepted are now in `TestModelRejectsViolations`.
   and the negative control. Flags: `-lin-runs`, `-lin-duration`, `-lin-seed`, `-lin-out`
   (Porcupine's HTML visualization of a failing history).
 - **`test/chaos`** (runs on GitHub, see above): the same workload and checker against a
-  Compose cluster, logging each scenario's growth in Raft terms (elections it forced); `deploy/compose/chaos.yml` (8 shards, faster failure handling) and
+  Compose cluster, logging each scenario's growth in Raft terms and, since the follow-up,
+  asserting that the shards of a killed, frozen or cut-off leader elected a new one; `deploy/compose/chaos.yml` (8 shards, faster failure handling) and
   `deploy/docker/nettools.Dockerfile` (iptables and tc, run in a node's network namespace).
 - **Make and CI:** `make lin`, `make chaos`; a nightly workflow (`.github/workflows/nightly.yml`)
   with the failure matrix at 10 runs × 10 s, the Docker chaos scenarios, 100,000 simulation
   seeds, 1,000 kill -9 cycles and 5 minutes per fuzz target. Every push runs the failure matrix
   once under `-race` as part of `make check`.
-- **Docs:** ADR 0025; ADR 0010 revised (`sync = never` skips both logs' fsyncs).
+- **Docs:** ADR 0025; ADR 0010 revised (`sync = never` skips both logs' write fsyncs).
 
 ### Known limitations
 
-- The Docker backend runs only on GitHub (no Docker here). Its first run predates the
-  per-scenario Raft-term log line, so it does not yet show that its iptables partitions forced
-  elections (netem visibly cut throughput: about 2,600 operations against 6,000–13,000).
+- The Docker backend runs only on GitHub (no Docker here). Its iptables partitions do force
+  elections (see "Nightly rerun"), and since the follow-up the kill, freeze, isolate and
+  partition scenarios assert it; its wipe-node, rolling-restart and flapping scenarios assert
+  only linearizability (the in-process backend asserts their effects).
 - Simulated schedules with PreVote or CheckQuorum off make no membership changes (ADR 0026).
   dkv always runs with both on.
 - The in-process backend shares one Go runtime: `PauseTicks` stops only the Raft clock, not
@@ -551,8 +555,25 @@ accepted are now in `TestModelRejectsViolations`.
 - Detection by the chaos scenarios is probabilistic: the vote bug above was caught in 2 of 15
   runs, and the nightly job runs each scenario 10 times. The simulator's targeted schedule
   catches it on every run (see "Vote-freshness bug in the simulator").
-- Slow disk is simulated only on fsync latency, and only for replica storage.
-- Not done: an independent second review of the Phase 8 diff against the plan.
+- Slow disk is simulated only on fsync latency, and only for replica storage. The scenario
+  checks that syncs reach the slow filesystem, not that throughput drops.
+- Raft messages are never reordered at the integrated level: a node sends one batch at a
+  time to each peer, and netem's reordering sits under TCP, which restores the order. Only
+  the simulator reorders them.
+- A power loss in `nodetest` crashes replica storage only; the node ID, member record and
+  bootstrap marker stay on the real filesystem.
+- `client-retries` sends its duplicate after the first call has returned, never while it is
+  still in flight.
+- The negative control does not assert which node leads after the restart, and runs one
+  seed (`go test -count=5 -run TestNegativeControlFailsTheChecker ./test/linearizability`
+  repeats it; `make lin` runs it once).
+- Reviewed: see "Review of phase-7..HEAD".
+- Observed once, not reproduced: `test/integration` `TestAnyNodeAcceptsAnyKey` (Phase 5) failed
+  in one full `make check` on this machine, a linearizable Get timing out after 10 s (RF 2,
+  under `-race`, beside `test/e2e`'s three server processes). It then passed 6 of 6 runs on
+  its own (13–33 s) and the next full `make check`; CI has never seen it fail. Possibly CPU
+  starvation stalling a two-voter group, possibly a rare liveness bug: if it recurs, it
+  needs a trace.
 
 ### First nightly run
 
@@ -677,3 +698,100 @@ The bug was planted again (`handleVote` grants votes and pre-votes without
   new proposal everywhere. With the bug planted it failed 6 of 6 runs (3 each with PreVote
   off and on), each time with "Leader Completeness: leader n1 of term 3 lacks committed
   entry 3 (term 2)"; without it, it passes.
+
+### Nightly rerun
+
+Nightly run 44150994040 (dispatched on 0cd55b6): all six jobs passed. `linearizability`: 140
+runs linearizable, the power-loss test Ok with `always` and `interval`, the negative control
+Illegal. `chaos`: 24 histories linearizable. `sim`: 100,000 seeds with PreVote on and 100,000
+with it off, no violation. `crash`: 1,000 kill -9 cycles. `fuzz`: 5 minutes per target.
+
+The chaos job's new per-scenario line shows that the iptables partitions forced elections.
+Summed terms of the 8 data shards before and after each run:
+
+| Scenario | Run 0 | Run 1 |
+| --- | --- | --- |
+| `isolate-leader` (iptables) | 17 → 31 | 17 → 30 |
+| `random-partitions` (iptables) | 17 → 25 | 17 → 28 |
+| `flapping-one-way` (iptables) | 17 → 23 | 17 → 24 |
+| `kill-leader` | 17 → 33 | 16 → 29 |
+| `freeze-leader` | 17 → 27 | 17 → 29 |
+| `client-retries` (no fault) | 18 → 20 | 16 → 19 |
+
+Terms also rise without faults (2 to 3 per run), from the rebalancer's leadership transfers,
+so the Docker scenarios now check the faulted leader's own shards instead (see below).
+
+### Review of phase-7..HEAD
+
+A second agent reviewed the Phase 8 commits against docs/PLAN.md and listed 25 claims that
+no test asserted, or asserted only in part. The most serious: the failure matrix could pass
+vacuously. Every scenario asserted linearizability, a settled cluster and successful final
+reads, and nothing else: with CheckQuorum turned off, `isolate-leader` stayed linearizable.
+Closed in the follow-up commit (ADR 0025 revision):
+
+| Gap | Now asserted by |
+| --- | --- |
+| Faults never shown to take effect; no availability floor | `TestFailureMatrix`: each scenario checks its evidence (table below): elections for kills, isolation, pauses and restarts; injector counters for partitions, delays, loss and duplication; at least 10 reads and 10 writes completed during the faults where the matrix promises service |
+| Kill a majority: linearizable reads and writes fail fast | `kill-majority`: a Get and a Put on the survivor fail within their 1 s deadline |
+| Isolated leader steps down; paused leader is replaced | `isolate-leader`: the node leads nothing after 1 s cut off; `paused-leader`: its shards have a newer leader after 1.5 s |
+| PreVote keeps terms stable under one-way partitions | `flapping-one-way`: at most 1.5 elections per shard per second; `raft` `TestPreVoteKeepsTermStableUnderOneWayPartition` |
+| A restarted node catches up | `rolling-restart`: every replica applies its leader's commit index |
+| A wiped node rejoins as a new node through snapshots | `wipe-node`: new node ID, voter of every shard, snapshots installed. This exposed that the scenario never needed a snapshot: it wiped before any log was compacted. It now compacts every 20 entries and wipes once every log is compacted |
+| Meta quorum loss | `meta-quorum-loss`: the meta group has no leader 2 s after its traffic is cut; data reads and writes continue |
+| Client retries happen | `client-retries`: the workload counts duplicated writes |
+| The slow disk is in node 0's path | `slow-disk`: syncs reach the slow filesystem (`vfs.CountSyncs`, tested by `TestCountSyncs`) |
+| Docker term growth only logged | `test/chaos`: at the end of each kill, freeze, isolation and partition, every shard led from the faulted side has a newer term |
+| "`sync = never` skips the Raft log's fsyncs" | Wording corrected (it skips the fsync of every Raft log write; compaction and snapshot installs still sync); `replica` `TestUnsafeNoSyncSkipsWriteSyncs` |
+| Stream fault interceptor; a delay cut short by the caller | `fault` `TestTransportAppliesFaults` (streams blocked and delayed, never duplicated; a 1-minute delay ends at a 100 ms deadline) |
+| Injector: per-link precedence and loss, nodes outside a partition, `Heal`, `Stats` | `fault` `TestLinkSettingsAndStats` |
+| `PauseTicks` | `node` `TestPausedLeaderCannotNoticeLostQuorum` |
+| No lease without a known leader | `raft` `TestNoLeaseWithoutALeader` |
+| Regression seed 51674 could drift into a different schedule | `TestRegressionSeeds`: the original schedule must still fail the liveness check; the PreVote-on run must still change membership |
+| Targeted schedule's precondition | `TestDelayedTimeoutNowMeetsTheLogCheck`: only transfer-marked votes, no pre-vote; both other voters answer with a refusal |
+| A schedule stops at its first violation | `TestScheduleStopsAtFirstViolation` |
+| PreVote-off exemption and `-prevote` held by construction only | `TestMembershipChangesNeedPreVoteAndCheckQuorum` (seeds 1–10,000), `TestForcedPreVoteChangesNothingElse` |
+| The failure message's single-seed replay hint failed on "no meaningful work" | That sanity check applies from 100 seeds |
+| An unknown read constrains nothing; unknown outcomes return last | Model case "unknown read constrains nothing"; `TestHistoryMovesUnknownOutcomesToTheEnd` |
+| No fuzzing per commit; chaos not run at phase gates | CI `fuzz` job (10 s per target); the nightly workflow also runs on `phase-*` tags |
+
+The items not closed are under "Known limitations" above: Raft messages not reordered at the
+integrated level, power loss limited to replica storage, no retry while the first call is in
+flight, slow-disk throughput not asserted, Docker wipe-node, rolling-restart and flapping
+asserting only linearizability, and the negative control's single seed. The numbers quoted
+in this file come from one-off runs; the replay analysis of seed 51674 used a recorder that is
+not in the repository.
+
+Evidence from the final run (`go test -run TestFailureMatrix ./test/linearizability
+-lin-runs=3`, 42 runs in 197 s, all passing): reads and writes with known outcomes that
+returned during the 3 s of faults, and the growth of the summed terms of the 4 data shards.
+
+| Scenario | Reads | Writes | Elections |
+| --- | --- | --- | --- |
+| `kill-leader` | 382–646 | 609–990 | 6–8 |
+| `kill-minority` | 448–560 | 657–792 | 4–5 |
+| `kill-majority` | 1–3 | 0–5 | 5–6 |
+| `isolate-leader` | 527–786 | 809–1,100 | 6–7 |
+| `paused-leader` | 148–328 | 227–520 | 4–5 |
+| `random-partitions` | 486–685 | 699–863 | 4–8 |
+| `flapping-one-way` | 319–425 | 511–650 | 1–3 |
+| `rolling-restart` | 320–571 | 500–853 | 6–7 |
+| `wipe-node` | 554–890 | 903–1,297 | 3–5 |
+| `slow-network` | 93–99 | 123–127 | 0–1 |
+| `slow-disk` | 95–330 | 162–476 | 0 |
+| `lossy-network` | 149–181 | 244–250 | 0 |
+| `meta-quorum-loss` | 1,145–1,263 | 1,678–1,770 | 0–1 |
+| `client-retries` | 765–1,027 | 1,224–1,523 | 0 |
+
+Under the race detector, the scenarios with an availability floor completed at least 40
+reads and 60 writes (3 runs each). The flapping bound (18 for 4 shards and 3 s) was set from
+5 runs each way: growth 1 to 11 with PreVote (0 to 10 under the race detector), 21 to 34 with
+PreVote turned off in `internal/replica`.
+
+Mutation checks of the new assertions (each change alone, then reverted):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| CheckQuorum off in replicas | `isolate-leader`: "node 0 still leads shards map[0:2] after 1 s cut off from its quorum" (the history stayed linearizable) |
+| The injector ignores blocks | `random-partitions`, `flapping-one-way`: "blocked no call" |
+| PreVote off in replicas | `flapping-one-way` term growth 21–34, above the bound of 18 |
+| PreVote off in the one-way partition unit test | `TestPreVoteKeepsTermStableUnderOneWayPartition`: "s1 is at term 9 after a one-way partition; want 2" |

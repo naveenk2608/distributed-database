@@ -58,8 +58,8 @@ storage:
   # shares one fsync between concurrent writes). interval: fsync every
   # sync_interval; a power loss can lose that interval's acknowledged writes
   # in standalone mode. never: for measuring fsync cost only; in a cluster it
-  # also skips the Raft log's fsyncs, so a power loss can lose acknowledged
-  # writes. With always or interval the Raft log is fsynced before an entry
+  # also skips the fsync of every Raft log write (entries, term and vote), so
+  # a power loss can lose acknowledged writes. With always or interval the Raft log is fsynced before an entry
   # is acknowledged, so the engine can replay what it lost from it.
   sync: always
   sync_interval: 10ms

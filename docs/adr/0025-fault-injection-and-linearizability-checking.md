@@ -64,8 +64,8 @@ containers.
 - The history is partitioned by key, which keeps checking fast; a check
   that does not finish within 60 s counts as a failure (Porcupine's
   `Unknown`), never as a pass.
-- **Negative control**: `storage.sync = never` now also skips the Raft
-  log's fsyncs (ADR 0010, revised). Cutting the power of the two nodes
+- **Negative control**: `storage.sync = never` now also skips the fsync
+  of every Raft log write (ADR 0010, revised). Cutting the power of the two nodes
   that hold every acknowledged write while the third is partitioned away
   must then produce a history the checker rejects. If it ever passes, the
   checker (or the fault) has stopped working.
@@ -138,3 +138,51 @@ containers.
   have a known outcome.
 - `storage.sync = never` in a cluster now trades Raft's guarantees for
   speed, not just the engine's; the example configuration says so.
+
+## Revision in the Phase 8 follow-up
+
+A review of the Phase 8 commits found that the gate could pass
+vacuously: every scenario asserted only that the history was
+linearizable, that the cluster settled and that the final reads
+succeeded. A scenario whose faults did nothing, or that left the cluster
+unable to serve anything, passed. With CheckQuorum turned off, for
+example, `isolate-leader` stayed linearizable.
+
+**Decision.** Every scenario also shows that its faults took effect, and
+where the failure matrix promises availability, that the cluster served:
+
+- From each in-process run the test keeps *evidence*: the injector's
+  counters, the summed terms of the data shards before and after, and the
+  reads and writes with a known outcome that returned while the faults
+  lasted. Each scenario states what must hold: elections for kills,
+  isolation, pauses and restarts; blocked, delayed, lost or duplicated
+  calls for the network faults; at least 10 reads and 10 writes for the
+  rows where service continues; at most 1.5 elections per shard per second
+  under flapping one-way partitions (PreVote on: 0 to 11 in 3 s on 4
+  shards; PreVote off: 21 to 34).
+- Effects that can only be seen while the fault lasts are checked inside
+  the nemesis: an isolated leader has stepped down after 1 s; a paused
+  leader's shards have a leader at a newer term after 1.5 s; the meta
+  group has no leader 2 s after its traffic is cut; with a majority down,
+  linearizable reads and writes fail within their deadline.
+- After recovery: every replica applies its leader's commit index
+  (`rolling-restart`); the wiped node is a voter of every shard under a new
+  ID and installed snapshots (`wipe-node`, which now waits until every log
+  is compacted before wiping).
+- The Docker backend checks, at the end of each kill, freeze, isolation
+  or partition, that every shard led from the faulted side has a newer
+  term.
+
+**Alternatives.** A minimum on the summed term growth alone, as the
+first Docker log line suggested: leadership transfers by the rebalancer
+raise terms without faults (2 to 3 in 10 s), so a threshold either misses
+weak faults or flakes; checking the faulted leader's own shards does not
+depend on that baseline. Checking a fixed number of operations instead of
+operations during the faults: a run whose faults stopped everything
+still completes many operations before and after them.
+
+**Consequences.** The floors and the flapping bound are measured, not
+derived, and are set well inside the measured ranges, including under the
+race detector; a much slower machine could need them revisited. Faults
+that are only logged, not asserted, are listed under the Phase 8 known
+limitations in docs/PROGRESS.md.

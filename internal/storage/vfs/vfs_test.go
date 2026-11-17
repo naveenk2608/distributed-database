@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -390,5 +391,44 @@ func TestSlowDelaysEverySync(t *testing.T) {
 	// What the slow disk synced is durable on the one underneath.
 	if got := readAll(t, mem.CrashImage(nil), "d/a"); string(got) != "x" {
 		t.Errorf("after a crash: %q, want %q", got, "x")
+	}
+}
+
+// TestCountSyncs: file syncs through Create and OpenReadWrite, and
+// directory syncs, are each counted once; other operations are not.
+func TestCountSyncs(t *testing.T) {
+	var n atomic.Int64
+	fsys := CountSyncs(NewMemFS(), &n)
+	if err := fsys.MkdirAll("d"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := fsys.Create("d/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g, err := fsys.OpenReadWrite("d/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.SyncDir("d"); err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Load(); got != 3 {
+		t.Fatalf("counted %d syncs; want 3", got)
 	}
 }
