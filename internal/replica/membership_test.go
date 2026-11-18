@@ -154,7 +154,7 @@ func TestCrashDuringSnapshotInstall(t *testing.T) {
 	for k := int64(0); ; k++ {
 		id := fmt.Sprintf("j%d", k)
 		fs := vfs.NewMemFS()
-		g.fss[id] = fs
+		g.setFS(id, fs)
 		g.open(id)
 		fs.CrashAfter(k)
 		changeMembership(t, l, raft.ConfAddLearner, id)
@@ -166,7 +166,7 @@ func TestCrashDuringSnapshotInstall(t *testing.T) {
 		}
 		g.discard(id)
 		if crashed {
-			g.fss[id] = fs.CrashImage(nil)
+			g.setFS(id, fs.CrashImage(nil))
 			if err := g.tryOpen(id); err != nil {
 				t.Fatalf("crash after %d operations: reopen: %v", k, err)
 			}
@@ -226,8 +226,11 @@ func TestReplicaEvents(t *testing.T) {
 			t.Fatalf("replica_added events %+v; want n4 at one index", added)
 		}
 	}
-	if ev := g.eventsOf(obs.EventSnapshotInstalled); len(ev) == 0 || ev[0].rep != "n4" || ev[0].Index == 0 {
-		t.Fatalf("snapshot_installed events %+v; want n4's", ev)
+	// The learner caught up by snapshot and must say so. A voter that fell
+	// behind the leader's compaction point may have installed one too.
+	snaps := g.eventsOf(obs.EventSnapshotInstalled)
+	if !slices.ContainsFunc(snaps, func(e seenEvent) bool { return e.rep == "n4" && e.Node == "n4" && e.Index > 0 }) {
+		t.Fatalf("snapshot_installed events %+v; want one from n4", snaps)
 	}
 
 	changeMembership(t, l, raft.ConfPromote, "n4")

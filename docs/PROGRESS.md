@@ -1029,6 +1029,23 @@ Verification of the Raft change beyond unit tests:
   serve writes).
 - A `dkv-bench` binary built at the repository root by a bare `go build` had been committed
   on the work branch; it is removed and root-level binaries are ignored.
+- `replica` test harness: its replicas ticked every 2 ms with an election timeout of 10
+  ticks, so under `-race` and the load of `make check` a pause of 20 ms let CheckQuorum
+  depose a healthy leader in the middle of a test that had just picked it
+  (`TestReplicaEvents`: "not the leader of shard 7; try n2", twice in about 100 runs). The
+  harness now uses 25 ticks (50 ms); no assertion changed, and the package passed 40 runs
+  under two-way load, `TestReplicaEvents` and `TestLearnerCatchesUpBySnapshot` 100 runs each.
+  This may also explain the replica test failure recorded below; that cannot be confirmed.
+- `replica` `TestReplicaEvents` (Phase 9) required the first `snapshot_installed` event to be
+  the learner's; a voter that falls behind the leader's compaction point also installs one,
+  as it should. It now requires the learner's event among them.
+- A data race in the `replica` test harness (`TestCrashDuringSnapshotInstall`, Phase 7): the
+  test replaced a replica's filesystem in a map that a snapshot send read concurrently. The
+  map is now guarded.
+- `integration` `TestAddedNodeTakesItsShare` (a Phase 7 gate check) failed once in `make
+  check`: one write took 5.2 s against its 2 s bound, with the median write at 187 ms
+  (about 4 ms when the test runs alone), so the machine was saturated. It passed 3 of 3
+  runs alone (slowest write 66–99 ms) and is unchanged.
 
 ### Known limitations
 
@@ -1038,4 +1055,5 @@ Verification of the Raft change beyond unit tests:
   replica.
 - One `replica` durability test failed once during this phase in a full `make check`
   run whose output was not kept; it did not fail again in 45 runs of the package's
-  durability tests and 9 full runs of the package. The cause is unknown.
+  durability tests and 9 full runs of the package. The cause is unknown (the harness's
+  election timeout, fixed above, is a candidate).

@@ -45,6 +45,7 @@ func (l *loopback) Send(_ int, msgs []raft.Message) {
 type group struct {
 	t       *testing.T
 	fs      *vfs.MemFS
+	fsMu    sync.Mutex            // guards fss: snapshot sends read it
 	fss     map[string]*vfs.MemFS // replicas with a filesystem of their own
 	ids     []string              // every replica ever opened
 	peers   []string              // the bootstrap voters
@@ -119,7 +120,16 @@ func newGroupCompacting(t *testing.T, n, compact int) *group {
 	return g
 }
 
+// setFS gives replica id a filesystem of its own.
+func (g *group) setFS(id string, fs *vfs.MemFS) {
+	g.fsMu.Lock()
+	defer g.fsMu.Unlock()
+	g.fss[id] = fs
+}
+
 func (g *group) fsOf(id string) *vfs.MemFS {
+	g.fsMu.Lock()
+	defer g.fsMu.Unlock()
 	if fs := g.fss[id]; fs != nil {
 		return fs
 	}
@@ -143,7 +153,7 @@ func (g *group) tryOpen(id string) error {
 	}
 	r, err := Open(Config{Shard: 7, ID: id, Peers: peers, Dir: "/data/" + id, FS: g.fsOf(id),
 		// No engine log, as in production: the Raft log is the only one.
-		Engine: lsm.Options{DisableWAL: true}, ElectionTick: 10, HeartbeatTick: 2,
+		Engine: lsm.Options{DisableWAL: true}, ElectionTick: 25, HeartbeatTick: 2,
 		SessionTTL: time.Hour, CompactEntries: g.compact, Sender: g.net, Snapshots: g,
 		OnEvent: func(e obs.Event) {
 			g.evMu.Lock()
@@ -454,7 +464,7 @@ func TestUnsafeNoSyncSkipsWriteSyncs(t *testing.T) {
 			net := &loopback{reps: map[string]*Replica{}, down: map[string]bool{}}
 			r, err := Open(Config{Shard: 7, ID: "n1", Peers: []string{"n1"}, Dir: "/data/n1",
 				FS: vfs.CountSyncs(vfs.NewMemFS(), &syncs), Engine: lsm.Options{Sync: lsm.SyncNever},
-				ElectionTick: 10, HeartbeatTick: 2, SessionTTL: time.Hour, Sender: net,
+				ElectionTick: 25, HeartbeatTick: 2, SessionTTL: time.Hour, Sender: net,
 				UnsafeNoSync: unsafe, Log: slog.New(slog.DiscardHandler)})
 			if err != nil {
 				t.Fatal(err)
