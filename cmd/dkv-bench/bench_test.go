@@ -13,6 +13,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/server/servertest"
 )
@@ -160,5 +161,44 @@ func TestStat(t *testing.T) {
 	}
 	if got := stat(nil, "%.0f"); got != "–" {
 		t.Fatalf("stat of none = %q", got)
+	}
+}
+
+// TestServerDeltaCountsEveryLog: write amplification counts the Raft logs
+// as well as the engines' logs, flushes and compactions, over the measured
+// window only, and skips a node that restarted in between.
+func TestServerDeltaCountsEveryLog(t *testing.T) {
+	stats := func(started int64, user, raftLog, wal, flush int64) *dkvv1.StatsResponse {
+		return &dkvv1.StatsResponse{StartedUnixNano: started, Replicas: []*dkvv1.ReplicaStats{{
+			RaftLogBytes: raftLog,
+			Engine:       &dkvv1.EngineStats{UserBytes: user, WalBytes: wal, FlushBytes: flush},
+		}}}
+	}
+	before := map[string]*dkvv1.StatsResponse{"a": stats(1, 100, 500, 0, 0), "b": stats(1, 0, 0, 0, 0), "c": stats(1, 0, 0, 0, 0)}
+	after := map[string]*dkvv1.StatsResponse{
+		"a": stats(1, 1100, 1700, 0, 300),  // 1000 user bytes; 1200 to the Raft log, 300 flushed
+		"b": stats(1, 1000, 1000, 100, 0),  // 1000 user bytes; 1000 to the Raft log, 100 to the engine's log
+		"c": stats(2, 9999, 9999, 9999, 0), // restarted: not counted
+	}
+	s := serverDelta(before, after, &runConfig{Records: 10, ValueSize: 10})
+	if s.UserBytes != 2000 || s.RaftLogBytes != 2200 || s.EngineWALBytes != 100 || s.FlushBytes != 300 {
+		t.Fatalf("deltas %+v", s)
+	}
+	if want := 2600.0 / 2000; s.WriteAmplification != want {
+		t.Fatalf("write amplification %v; want %v", s.WriteAmplification, want)
+	}
+}
+
+// TestDescribeLeavesOutReadsForWrites: a write-only experiment has no read
+// consistency to report.
+func TestDescribeLeavesOutReadsForWrites(t *testing.T) {
+	runs := []*result{{Config: &runConfig{Workload: "W", Dist: "uniform", Consistency: "linearizable"}}}
+	same, varies := describe(runs)
+	if strings.Contains(strings.Join(same, ", "), "reads") || len(varies) != 0 {
+		t.Fatalf("same %v, varies %v", same, varies)
+	}
+	runs[0].Config.Workload = "A"
+	if same, _ := describe(runs); !slices.Contains(same, "linearizable reads") {
+		t.Fatalf("workload A: %v", same)
 	}
 }

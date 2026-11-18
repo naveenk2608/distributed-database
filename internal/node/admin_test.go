@@ -130,7 +130,7 @@ func TestAdminHTTPAPI(t *testing.T) {
 		}
 	}
 	var commits, syncs uint64
-	var userBytes int64
+	var userBytes, raftLogBytes int64
 	for _, m := range c.Members {
 		var st dkvv1.StatsResponse
 		getJSON(t, "http://"+m.AdminAddr+"/v1/stats", &st)
@@ -144,13 +144,15 @@ func TestAdminHTTPAPI(t *testing.T) {
 		}
 		for _, r := range st.GetReplicas() {
 			userBytes += r.GetEngine().GetUserBytes()
+			raftLogBytes += r.GetRaftLogBytes()
 			if r.GetEngine().GetWalBytes() != 0 {
 				t.Fatalf("replica %d wrote %d bytes to an engine log on the single-log path", r.GetRaft().GetShard(), r.GetEngine().GetWalBytes())
 			}
 		}
 	}
-	if commits < puts || syncs == 0 || userBytes == 0 {
-		t.Fatalf("internal latencies: %d commits for %d puts, %d raft log syncs; %d user bytes", commits, puts, syncs, userBytes)
+	if commits < puts || syncs == 0 || userBytes == 0 || raftLogBytes < userBytes {
+		t.Fatalf("internal latencies: %d commits for %d puts, %d raft log syncs; %d user bytes, %d Raft log bytes",
+			commits, puts, syncs, userBytes, raftLogBytes)
 	}
 	for _, shard := range []int32{0, 1, meta.Shard} {
 		if !elected[shard] {

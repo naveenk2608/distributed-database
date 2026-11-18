@@ -923,7 +923,7 @@ the gate evidence that depends on them come in the following commit.
 | --- | --- | --- |
 | `make bench-local` reproduces the local results from a clean clone | `bench/run-local.sh`: builds the binaries, and for each run starts a fresh cluster of `dkv-server` processes on this machine (data on a real disk; it refuses tmpfs, where fsync is free), preloads it, runs `dkv-bench`, stops it, and regenerates `docs/benchmarks.md` from the result files. | Pending: the matrix |
 | The report lists hardware, configuration, git SHA, methodology and raw data | Each result file holds the run's configuration and labels, the machine (CPU model and count, memory, OS, kernel), the build's git revision and whether it had uncommitted changes, the Go version, the raw HDR latency histogram, per-operation percentiles, an optional per-second time series, and the nodes' own numbers over the measured window (Raft-log fsync and commit latencies, bytes written by users, to engine logs and to SSTables). The report gives the medians with their ranges over the runs, the machine and build of every run, and for each experiment what it measures and the settings its variants share and vary. `cmd/dkv-bench` `TestBenchAgainstAServer` runs a closed and an open loop against a real node and checks the counts, the read share, the time series, the histogram total, the server-side numbers, the machine and revision, and the report generated from the files. | Pending: the matrix |
-| Before-and-after numbers for each optimization | The "Optimizations" experiment runs the Phase 9 build (from the `phase-9` tag), this build with the engine's log kept, and this build's default, so each of the two optimizations below is measured on its own. | Pending: the matrix |
+| Before-and-after numbers for each optimization | The "Optimizations" experiment runs the Phase 9 build (from the `phase-9` tag), this build with the engine's log kept, and this build's default, so each of the two cluster optimizations below is measured on its own; the "Standalone write path" experiment runs a standalone Phase 9 node against this build's. | Pending: the matrix |
 | The AWS cluster is created and destroyed with one command each | `make aws-up` (`deploy/aws/up.sh`: builds linux/amd64 binaries, `terraform apply`, prints the addresses) and `make aws-down` (`terraform destroy`). CI's `terraform` job checks formatting and runs `init` and `validate` against the AWS provider. Not applied: you asked me not to run `terraform apply`, and it needs AWS credentials. | Scripts written and validated; not run |
 
 ### Optimizations
@@ -933,7 +933,8 @@ ext4 disk) with the new opt-in pprof endpoint gave 516 ops/s with a commit laten
 at the median and a Raft-log fsync of 11.5 ms: 29% of CPU time in system calls and no hot
 spot in user code. The cluster was waiting on its disk, and each write waited on four fsyncs
 in a row: the leader's Raft log, then its engine's log, then the followers' Raft logs and
-engine logs. Two changes, each with an ADR revision:
+engine logs. Two changes, each with an ADR revision, and a third that the first benchmark
+matrix exposed:
 
 - **The Raft log is a replica's only write-ahead log** (ADR 0010). Replica engines run
   without a log (`lsm.Options.DisableWAL`): applied entries stay in the memtable until a
@@ -950,6 +951,16 @@ engine logs. Two changes, each with an ADR revision:
   changes the term or vote holds everything back, and votes and acknowledgments still wait
   for the state they promise. Tests: `raft` `TestLeaderCountsItselfOnlyOncePersisted`; the
   simulator sends a leader's appends before it persists and can crash it in between.
+- **A standalone node's writes share fsyncs** (`internal/kvstore`). The first run of the
+  matrix showed a standalone node slower than a three-node cluster on the same disk (586
+  against 1,277 ops/s, workload A) and preloading at about 400 writes a second from 32
+  clients. The store held its write lock through each `Apply`, fsync included, so the
+  engine's group commit never had more than one write to commit. Put now holds the lock
+  shared; Delete and CompareAndSet, which read before they write, still hold it exclusively.
+  Tests: `kvstore` `TestConcurrentPutsShareFsyncs` (320 Puts from 32 clients on a disk whose
+  fsyncs take 2 ms must take at most 80 fsyncs; 19–20 measured),
+  `TestCompareAndSetIsAtomicWithPuts` (with Puts to the same key running, no write falls
+  between the version a successful CompareAndSet expected and the one it wrote).
 
 Mutation checks (each change applied alone, then reverted):
 
@@ -957,6 +968,8 @@ Mutation checks (each change applied alone, then reverted):
 | --- | --- |
 | Log compaction without flushing the engine first | `replica` `TestPowerLossReplaysTheRaftLog` ("engine at 0 is behind the snapshot at 78") |
 | The leader counts its entries as matched when it appends them, before persisting | `raft` `TestLeaderCountsItselfOnlyOncePersisted`; the simulator at seed 11 (Leader Completeness: a leader of a later term lacks a committed entry) |
+| Put holds the store's lock exclusively again | `kvstore` `TestConcurrentPutsShareFsyncs` (320 fsyncs for 320 Puts; 3 of 3 runs) |
+| Put takes no lock | `kvstore` `TestCompareAndSetIsAtomicWithPuts` (5 of 5 runs) |
 | Join accepts a node before the meta group has recorded the cluster | `integration` `TestEarlyJoinerWaitsForTheMetaBootstrap` (the joiner never gets its share: timeout after 2 minutes) |
 
 Verification of the Raft change beyond unit tests:
@@ -986,20 +999,22 @@ Verification of the Raft change beyond unit tests:
 - **`make bench-local`** (`bench/run-local.sh`): the matrix of docs/PLAN.md scaled to one
   machine: cluster size (1, 3, 5 nodes), replication factor, fsync, durability path, read
   consistency, concurrency (1 to 256 workers), value size, open loop, key distribution,
-  optimizations and leader failover; three runs per variant. Ports, paths, durations and
+  optimizations, the standalone write path and leader failover; three runs per variant. Ports, paths, durations and
   sizes come from the environment.
 - **Node instrumentation**: Raft-log fsync and commit latency histograms; engine counters of
-  bytes written by users, to the engine's log and to SSTables (for write amplification);
-  `server.admin_pprof` serves `/debug/pprof/` on the admin port (off by default). Tests:
-  `node` `TestAdminHTTPAPI` (commits at least the puts, fsyncs counted, user bytes and no
-  engine-log bytes on the single-log path), `server` `TestAdminPprof`.
+  bytes written by users, to the engine's log and to SSTables, and each replica's bytes
+  written to its Raft log, so write amplification counts the log that carries the writes on
+  the single-log path; `server.admin_pprof` serves `/debug/pprof/` on the admin port (off by
+  default). Tests: `node` `TestAdminHTTPAPI` (commits at least the puts, fsyncs counted, user
+  bytes, Raft-log bytes at least the user bytes, no engine-log bytes on the single-log
+  path), `raftlog` `TestBytesWritten`, `dkv-bench` `TestServerDeltaCountsEveryLog`,
+  `TestDescribeLeavesOutReadsForWrites`, `server` `TestAdminPprof`.
 - **Compose profiles** (`deploy/compose/`): three nodes (`docker-compose.yml`), five nodes
   (`five.yml`: n4 and n5 join the three), chaos (`chaos.yml`, Phase 8) and the dashboard
   (`dashboard.yml`, Phase 9). `make compose-five` (`deploy/compose/five-check.sh`) checks
   that every node sees five nodes alive in the meta group, that both joiners are given
-  replicas and that a
-  write through n5 reads back through n1; it runs in the `five` job of `docker-gates.yml`,
-  since Docker is not available here.
+  replicas and that a write through n5 reads back through n1; it runs in the `five` job of
+  `docker-gates.yml`, since Docker is not available here.
 - **AWS** (`deploy/aws/`, Terraform ≥ 1.6, AWS provider 5.x pinned in `.terraform.lock.hcl`): a
   VPC with a subnet per availability zone, nodes spread over the zones at fixed private
   addresses (so the bootstrap peer list is known before they start), a load-generator
@@ -1027,6 +1042,13 @@ Verification of the Raft change beyond unit tests:
   is in, and the joiner retries. Test: `integration` `TestEarlyJoinerWaitsForTheMetaBootstrap`
   (a long rebalance interval delays the meta bootstrap; the joiner must take its share and
   serve writes).
+- The first full run of `make bench-local` (from a clean clone of 86bbbb7) stopped after 24
+  of its runs: the script passed `--storage.engine_wal`, and flags are spelled with hyphens
+  (`--storage.engine-wal`). Every experiment that starts nodes with extra flags or the Phase
+  9 build has since been smoke-run (one short run each) before the matrix was run again.
+- Write amplification counted only engine bytes, so on the single-log path it read 0.00 in
+  every cluster run of that first matrix; it now counts the Raft logs too. Write-only
+  experiments no longer list a read consistency among their settings.
 - A `dkv-bench` binary built at the repository root by a bare `go build` had been committed
   on the work branch; it is removed and root-level binaries are ignored.
 - `replica` test harness: its replicas ticked every 2 ms with an election timeout of 10

@@ -471,7 +471,8 @@ func (a *clusterAdmin) Stats() *dkvv1.StatsResponse {
 	byShard := n.allReplicas()
 	for _, rs := range n.nodeStatus().GetReplicas() {
 		if rp := byShard[int(rs.GetShard())]; rp != nil {
-			resp.Replicas = append(resp.Replicas, &dkvv1.ReplicaStats{Raft: rs, Engine: server.EngineStats(rp.EngineMetrics())})
+			resp.Replicas = append(resp.Replicas, &dkvv1.ReplicaStats{Raft: rs, Engine: server.EngineStats(rp.EngineMetrics()),
+				RaftLogBytes: rp.RaftLogBytes()})
 		}
 	}
 	return resp

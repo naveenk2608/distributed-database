@@ -1092,6 +1092,10 @@ func (rp *Replica) event(e obs.Event) {
 	}
 }
 
+// RaftLogBytes returns the bytes the replica has written to its Raft log
+// since it was opened.
+func (rp *Replica) RaftLogBytes() int64 { return rp.rlog.BytesWritten() }
+
 // EngineMetrics returns the metrics of the replica's storage engine.
 func (rp *Replica) EngineMetrics() lsm.Metrics {
 	rp.dbMu.RLock()

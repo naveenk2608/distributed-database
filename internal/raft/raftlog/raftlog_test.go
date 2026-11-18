@@ -179,6 +179,39 @@ func TestCompactAndRestore(t *testing.T) {
 	}
 }
 
+// TestBytesWritten: the log counts the payload of everything it appends:
+// entries, HardStates, and the checkpoints of compaction and restore.
+func TestBytesWritten(t *testing.T) {
+	l := open(t, vfs.NewMemFS())
+	if n := l.BytesWritten(); n != 0 {
+		t.Fatalf("a new log reports %d bytes written", n)
+	}
+	ents := []raft.Entry{ent(1, 1), ent(2, 1), ent(3, 1)}
+	hs := raft.HardState{Term: 1, Vote: "a", Commit: 2}
+	if err := l.Save(hs, ents, true); err != nil {
+		t.Fatal(err)
+	}
+	saved := int64(len(encodeEntries(ents)) + len(encodeHardState(hs)))
+	if n := l.BytesWritten(); n != saved {
+		t.Fatalf("after one Save: %d bytes written; want %d", n, saved)
+	}
+	snap := raft.SnapshotMeta{Index: 2, Term: 1, Conf: conf3()}
+	if err := l.Compact(snap); err != nil {
+		t.Fatal(err)
+	}
+	compacted := saved + int64(len(encodeCheckpoint(snap, hs, ents[2:])))
+	if n := l.BytesWritten(); n != compacted {
+		t.Fatalf("after compaction: %d bytes written; want %d", n, compacted)
+	}
+	if err := l.Save(raft.HardState{}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if n := l.BytesWritten(); n != compacted {
+		t.Fatalf("an empty Save counted %d bytes", n-compacted)
+	}
+	_ = l.Close()
+}
+
 // TestPowerLossDuringCompaction crashes at every filesystem operation of a
 // compaction and of a restore: the recovered log is the state before or
 // after, never one that lost entries.

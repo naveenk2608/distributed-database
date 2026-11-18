@@ -133,9 +133,10 @@ begin() { # EXPERIMENT: replace its earlier results
 
 if begin nodes; then
   t="Cluster size" w="One standalone node, then three and five nodes with every shard on three of them (RF 3)."
-  variant nodes 1 "$t" "$w" "1 node (standalone)" 1 1 1 "" -- --workload=A --concurrency=32
-  variant nodes 1 "$t" "$w" "3 nodes, RF 3" 2 3 3 "" -- --workload=A --concurrency=32
-  variant nodes 1 "$t" "$w" "5 nodes, RF 3" 3 5 3 "" -- --workload=A --concurrency=32
+  n="Every node and the load generator share this machine's CPUs and its one disk: more nodes means more processes competing for them. These numbers compare configurations on one machine; they do not measure scaling out."
+  variant nodes 1 "$t" "$w" "1 node (standalone)" 1 1 1 "" -- --workload=A --concurrency=32 --label note="$n"
+  variant nodes 1 "$t" "$w" "3 nodes, RF 3" 2 3 3 "" -- --workload=A --concurrency=32 --label note="$n"
+  variant nodes 1 "$t" "$w" "5 nodes, RF 3" 3 5 3 "" -- --workload=A --concurrency=32 --label note="$n"
 fi
 if begin replication; then
   t="Replication factor" w="Three nodes; every shard on one node (RF 1) or on all three (RF 3)."
@@ -150,7 +151,7 @@ fi
 if begin durability; then
   t="Durability path" w="Three nodes, RF 3, writes only. The single-log path (the default: the Raft log is a replica's only write-ahead log) against the two-log path (storage.engine_wal: each replica's engine also logs and fsyncs every write), docs/adr/0010."
   variant durability 4 "$t" "$w" "single log" 1 3 3 "" -- --workload=W --concurrency=32
-  variant durability 4 "$t" "$w" "two logs" 2 3 3 "--storage.engine_wal=true" -- --workload=W --concurrency=32
+  variant durability 4 "$t" "$w" "two logs" 2 3 3 "--storage.engine-wal=true" -- --workload=W --concurrency=32
 fi
 if begin consistency; then
   t="Read consistency" w="Three nodes, RF 3, reads only. Linearizable reads confirm leadership with a heartbeat round (ReadIndex); stale reads answer from any replica. Lease reads are not implemented (docs/adr/0007)."
@@ -189,8 +190,16 @@ if begin optimizations; then
   server_bin="$before_bin/dkv-server"
   variant optimizations 11 "$t" "$w" "phase-9: two logs, leader persists first" 1 3 3 "" -- --workload=W --concurrency=32
   server_bin="$bin/dkv-server"
-  variant optimizations 11 "$t" "$w" "two logs, parallel leader write" 2 3 3 "--storage.engine_wal=true" -- --workload=W --concurrency=32
+  variant optimizations 11 "$t" "$w" "two logs, parallel leader write" 2 3 3 "--storage.engine-wal=true" -- --workload=W --concurrency=32
   variant optimizations 11 "$t" "$w" "single log, parallel leader write (default)" 3 3 3 "" -- --workload=W --concurrency=32
+fi
+if begin standalone; then
+  build_before
+  t="Standalone write path" w="One standalone node, writes only: the Phase 9 build, in which each write held the store's lock through its fsync, so writes from different clients never shared one; then this build, in which concurrent writes share the engine's group commit and its fsync (internal/kvstore)."
+  server_bin="$before_bin/dkv-server"
+  variant standalone 12 "$t" "$w" "phase-9: one fsync per write" 1 1 1 "" -- --workload=W --concurrency=32
+  server_bin="$bin/dkv-server"
+  variant standalone 12 "$t" "$w" "group commit (this build)" 2 1 1 "" -- --workload=W --concurrency=32
 fi
 if begin failover; then
   t="Leader failover" w="Three nodes, RF 3, workload A; the node leading shard 0 is SIGKILLed 10 s into the measured time. Election timeouts are 0.5-1 s (raft.tick_interval 50 ms, raft.election_ticks 10)."

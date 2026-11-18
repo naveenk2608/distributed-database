@@ -93,6 +93,9 @@ message OpStats {
 message ReplicaStats {
   ReplicaStatus raft = 1;
   EngineStats engine = 2;
+  // Payload bytes the replica has written to its Raft log since the node
+  // started (0 on a standalone node).
+  int64 raft_log_bytes = 3;
 }
 
 message EngineStats {

@@ -525,13 +525,16 @@ type serverSide struct {
 	RaftLogSyncUS *latencyPercentiles `json:"raft_log_sync_us,omitempty"`
 	CommitUS      *latencyPercentiles `json:"commit_us,omitempty"`
 	RaftLogSyncs  uint64              `json:"raft_log_syncs"`
-	// Bytes the engines took from users, and wrote: flushes, compactions
-	// and their own logs (with storage.engine_wal).
+	// Bytes the engines took from users (keys and values applied, on every
+	// replica), and the bytes written for them: the Raft logs, the engines'
+	// own logs (a standalone node, or storage.engine_wal), flushes and
+	// compactions.
 	UserBytes       int64 `json:"user_bytes"`
+	RaftLogBytes    int64 `json:"raft_log_bytes"`
+	EngineWALBytes  int64 `json:"engine_wal_bytes"`
 	FlushBytes      int64 `json:"flush_bytes"`
 	CompactionBytes int64 `json:"compaction_bytes_written"`
-	EngineWALBytes  int64 `json:"engine_wal_bytes"`
-	// WriteAmplification: engine bytes written per user byte.
+	// WriteAmplification: bytes written to logs and tables per user byte.
 	WriteAmplification float64 `json:"write_amplification"`
 	// SpaceAmplification: bytes stored (tables and memtables, every
 	// replica) per byte of live data times the replication factor in the
@@ -577,8 +580,9 @@ func serverDelta(before, after map[string]*dkvv1.StatsResponse, c *runConfig) *s
 				commit, commitN = addCum(commit, d), commitN+n
 			}
 		}
-		engines := func(st *dkvv1.StatsResponse) (user, flush, comp, wal, stored int64) {
+		engines := func(st *dkvv1.StatsResponse) (user, flush, comp, wal, raftLog, stored int64) {
 			for _, r := range st.GetReplicas() {
+				raftLog += r.GetRaftLogBytes()
 				e := r.GetEngine()
 				user += e.GetUserBytes()
 				flush += e.GetFlushBytes()
@@ -588,12 +592,13 @@ func serverDelta(before, after map[string]*dkvv1.StatsResponse, c *runConfig) *s
 			}
 			return
 		}
-		u0, f0, c0, w0, _ := engines(b)
-		u1, f1, c1, w1, st := engines(a)
+		u0, f0, c0, w0, r0, _ := engines(b)
+		u1, f1, c1, w1, r1, st := engines(a)
 		s.UserBytes += u1 - u0
 		s.FlushBytes += f1 - f0
 		s.CompactionBytes += c1 - c0
 		s.EngineWALBytes += w1 - w0
+		s.RaftLogBytes += r1 - r0
 		s.StoredBytes += st
 	}
 	s.RaftLogSyncs = syncN
@@ -604,7 +609,7 @@ func serverDelta(before, after map[string]*dkvv1.StatsResponse, c *runConfig) *s
 		s.CommitUS = percentilesUS(bounds, commit, commitN)
 	}
 	if s.UserBytes > 0 {
-		s.WriteAmplification = float64(s.FlushBytes+s.CompactionBytes+s.EngineWALBytes) / float64(s.UserBytes)
+		s.WriteAmplification = float64(s.RaftLogBytes+s.EngineWALBytes+s.FlushBytes+s.CompactionBytes) / float64(s.UserBytes)
 	}
 	var rf float64
 	if _, err := fmt.Sscan(c.Labels["rf"], &rf); err == nil && rf > 0 {

@@ -19,10 +19,12 @@ import (
 // errors where a client can act on them: a closed engine is Unavailable,
 // detected corruption is DataLoss.
 type Store struct {
-	// writeMu makes Delete's read-then-write atomic with respect to other
-	// writes, so its found flag is exact. The engine serializes writes
-	// anyway, so this costs no concurrency.
-	writeMu sync.Mutex
+	// writeMu orders the writes that read first (Delete's found flag,
+	// CompareAndSet's version check) against every other write: they hold
+	// it exclusively. Put holds it shared: blind writes may run together,
+	// and the engine commits concurrent ones as one group with one fsync.
+	// Holding it exclusively in Put as well cost one fsync per write.
+	writeMu sync.RWMutex
 	db      *lsm.DB
 }
 
@@ -40,8 +42,8 @@ func (s *Store) Put(ctx context.Context, req *dkvv1.PutRequest) (*dkvv1.PutRespo
 	}
 	var b lsm.Batch
 	b.Set(req.GetKey(), req.GetValue())
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.writeMu.RLock()
+	defer s.writeMu.RUnlock()
 	seq, err := s.db.Apply(&b, 0)
 	if err != nil {
 		return nil, mapErr(err)

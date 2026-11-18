@@ -479,9 +479,12 @@ func (x *OpStats) GetLatencyCumulative() []uint64 {
 
 // ReplicaStats is one local replica: its Raft state and its engine.
 type ReplicaStats struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Raft          *ReplicaStatus         `protobuf:"bytes,1,opt,name=raft,proto3" json:"raft,omitempty"`
-	Engine        *EngineStats           `protobuf:"bytes,2,opt,name=engine,proto3" json:"engine,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Raft   *ReplicaStatus         `protobuf:"bytes,1,opt,name=raft,proto3" json:"raft,omitempty"`
+	Engine *EngineStats           `protobuf:"bytes,2,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Payload bytes the replica has written to its Raft log since the node
+	// started (0 on a standalone node).
+	RaftLogBytes  int64 `protobuf:"varint,3,opt,name=raft_log_bytes,json=raftLogBytes,proto3" json:"raft_log_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -528,6 +531,13 @@ func (x *ReplicaStats) GetEngine() *EngineStats {
 		return x.Engine
 	}
 	return nil
+}
+
+func (x *ReplicaStats) GetRaftLogBytes() int64 {
+	if x != nil {
+		return x.RaftLogBytes
+	}
+	return 0
 }
 
 type EngineStats struct {
@@ -1534,10 +1544,11 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x02ok\x18\x02 \x01(\x04R\x02ok\x12\x16\n" +
 	"\x06errors\x18\x03 \x01(\x04R\x06errors\x12.\n" +
 	"\x13latency_sum_seconds\x18\x04 \x01(\x01R\x11latencySumSeconds\x12-\n" +
-	"\x12latency_cumulative\x18\x05 \x03(\x04R\x11latencyCumulative\"f\n" +
+	"\x12latency_cumulative\x18\x05 \x03(\x04R\x11latencyCumulative\"\x8c\x01\n" +
 	"\fReplicaStats\x12)\n" +
 	"\x04raft\x18\x01 \x01(\v2\x15.dkv.v1.ReplicaStatusR\x04raft\x12+\n" +
-	"\x06engine\x18\x02 \x01(\v2\x13.dkv.v1.EngineStatsR\x06engine\"\x9e\x04\n" +
+	"\x06engine\x18\x02 \x01(\v2\x13.dkv.v1.EngineStatsR\x06engine\x12$\n" +
+	"\x0eraft_log_bytes\x18\x03 \x01(\x03R\fraftLogBytes\"\x9e\x04\n" +
 	"\vEngineStats\x12\x19\n" +
 	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\x12\x1c\n" +
 	"\tmemtables\x18\x02 \x01(\x05R\tmemtables\x12%\n" +

@@ -117,6 +117,12 @@ func writeReport(w io.Writer, results []*result) error {
 	p("runs the matrix and regenerates this file). Every number is the median over a variant's runs,\n")
 	p("with the lowest and highest in parentheses. Latencies are client-side, from issuing an\n")
 	p("operation to its answer (in open loop, from its intended start), in milliseconds.\n\n")
+	p("The nodes' own numbers cover the measured time: \"Fsync\" is persisting a Raft Ready that needs\n")
+	p("an fsync, \"Commit\" a write from proposal to apply on its leader, both over every replica of\n")
+	p("every node. \"Write amp.\" is the bytes written to the Raft logs, the engines' own logs, flushes\n")
+	p("and compactions per byte of keys and values applied, over every replica: about 1 plus the log\n")
+	p("records' overhead until memtables flush. Raw data: each result file holds the run's full\n")
+	p("configuration, the latency histogram and these counters.\n\n")
 
 	p("## Environment\n\n")
 	machines, shas := map[string]int{}, map[string]int{}
@@ -290,7 +296,12 @@ func describe(runs []*result) (same, varies []string) {
 			}
 			return "closed loop"
 		}},
-		{"reads", func(c *runConfig) string { return c.Consistency + " reads" }},
+		{"reads", func(c *runConfig) string {
+			if c.Workload == "W" {
+				return "" // writes only
+			}
+			return c.Consistency + " reads"
+		}},
 		{"timing", func(c *runConfig) string {
 			return fmt.Sprintf("%.0f s warm-up, %.0f s measured", c.WarmupS, c.DurationS)
 		}},
@@ -299,10 +310,13 @@ func describe(runs []*result) (same, varies []string) {
 		seen := map[string]bool{}
 		var order []string
 		for _, r := range runs {
-			if v := fl.f(r.Config); !seen[v] {
+			if v := fl.f(r.Config); v != "" && !seen[v] {
 				seen[v] = true
 				order = append(order, v)
 			}
+		}
+		if len(order) == 0 {
+			continue
 		}
 		if len(order) == 1 {
 			same = append(same, order[0])

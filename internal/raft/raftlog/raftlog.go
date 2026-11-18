@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
@@ -46,6 +47,9 @@ type Log struct {
 	snap    raft.SnapshotMeta
 	hs      raft.HardState
 	entries []raft.Entry // indexes snap.Index+1 onward
+	// written counts the payload bytes of every record appended, for
+	// write amplification; read from other goroutines.
+	written atomic.Int64
 }
 
 // Open opens or creates the log in dir and replays it.
@@ -151,6 +155,7 @@ func (l *Log) Save(hs raft.HardState, ents []raft.Entry, sync bool) error {
 	if err := l.w.Append(recs...); err != nil {
 		return err
 	}
+	l.count(recs...)
 	// Fsync before the caller sends any message: Raft's safety depends on
 	// a vote or an acknowledged entry never being forgotten.
 	if sync {
@@ -199,9 +204,11 @@ func (l *Log) checkpoint(snap raft.SnapshotMeta, hs raft.HardState, ents []raft.
 	if err != nil {
 		return err
 	}
-	if err := l.w.Append(wal.Record{Type: recCheckpoint, Payload: encodeCheckpoint(snap, hs, ents)}); err != nil {
+	rec := wal.Record{Type: recCheckpoint, Payload: encodeCheckpoint(snap, hs, ents)}
+	if err := l.w.Append(rec); err != nil {
 		return err
 	}
+	l.count(rec)
 	// Fsync the checkpoint before deleting the segments it supersedes
 	// (Rotate already made the new segment's directory entry durable).
 	if err := l.w.Sync(); err != nil {
@@ -225,6 +232,19 @@ func (l *Log) checkpoint(snap raft.SnapshotMeta, hs raft.HardState, ents []raft.
 		return fmt.Errorf("raftlog: sync %s: %w", l.dir, err)
 	}
 	return nil
+}
+
+// BytesWritten returns the payload bytes of every record this Log has
+// appended since it was opened: entries, HardStates and the checkpoints of
+// compactions and snapshot installs.
+func (l *Log) BytesWritten() int64 { return l.written.Load() }
+
+func (l *Log) count(recs ...wal.Record) {
+	var n int64
+	for _, r := range recs {
+		n += int64(len(r.Payload))
+	}
+	l.written.Add(n)
 }
 
 // Close syncs and closes the log.
