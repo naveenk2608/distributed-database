@@ -385,8 +385,9 @@ func (r *Raft) becomeLeader() {
 	r.bcastAppend()
 }
 
-// appendEntries adds entries to the leader's log and counts them as
-// matched by the leader itself.
+// appendEntries adds entries to the leader's log. The leader counts them
+// as matched by itself only once they are persisted (Advance), since its
+// followers may receive them first (Ready.Appends).
 func (r *Raft) appendEntries(ents ...Entry) {
 	li := r.log.lastIndex()
 	for i := range ents {
@@ -394,11 +395,20 @@ func (r *Raft) appendEntries(ents ...Entry) {
 		ents[i].Index = li + 1 + uint64(i)
 	}
 	r.noteAppended(r.log.append(ents))
-	self := r.prs[r.id]
-	self.match = r.log.lastIndex()
-	self.next = self.match + 1
-	if r.maybeCommit() {
-		r.afterCommit()
+	r.prs[r.id].next = r.log.lastIndex() + 1
+}
+
+// selfPersisted counts the leader's persisted entries as matched by
+// itself, which may commit them.
+func (r *Raft) selfPersisted() {
+	if r.state != StateLeader {
+		return
+	}
+	if self := r.prs[r.id]; self != nil && r.log.stable > self.match {
+		self.match = r.log.stable
+		if r.maybeCommit() {
+			r.afterCommit()
+		}
 	}
 }
 
@@ -1083,11 +1093,22 @@ func (r *Raft) Ready() Ready {
 	if ss := r.softState(); ss != r.prevSoft {
 		rd.SoftState = &ss
 	}
+	termOrVote := false
 	if hs := r.hardState(); hs != r.prevHard {
 		rd.HardState = hs
-		rd.MustSync = hs.Term != r.prevHard.Term || hs.Vote != r.prevHard.Vote
+		termOrVote = hs.Term != r.prevHard.Term || hs.Vote != r.prevHard.Vote
 	}
-	rd.MustSync = rd.MustSync || len(rd.Entries) > 0 || rd.Snapshot != nil
+	rd.MustSync = termOrVote || len(rd.Entries) > 0 || rd.Snapshot != nil
+	if r.state == StateLeader && !termOrVote && len(r.msgs) > 0 {
+		rd.Messages = nil
+		for _, m := range r.msgs {
+			if m.Type == MsgApp || m.Type == MsgHeartbeat {
+				rd.Appends = append(rd.Appends, m)
+			} else {
+				rd.Messages = append(rd.Messages, m)
+			}
+		}
+	}
 	return rd
 }
 
@@ -1112,6 +1133,7 @@ func (r *Raft) Advance(rd Ready) {
 	if n := len(rd.CommittedEntries); n > 0 {
 		r.log.applied = max(r.log.applied, rd.CommittedEntries[n-1].Index)
 	}
-	r.msgs = r.msgs[len(rd.Messages):]
+	r.msgs = r.msgs[len(rd.Messages)+len(rd.Appends):]
 	r.readStates = r.readStates[len(rd.ReadStates):]
+	r.selfPersisted()
 }

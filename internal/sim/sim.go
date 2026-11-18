@@ -160,6 +160,10 @@ type Sim struct {
 	nextProp int
 	nextRead uint64
 	hash     hash.Hash64
+	// crashRng decides crashes between sending a leader's Ready.Appends
+	// and persisting its Ready; a stream of its own, so schedules that
+	// never crash draw from rng exactly as before.
+	crashRng *rand.Rand
 	// intercept, if set, sees every message a node sends; returning false
 	// drops it. Targeted schedules use it to hold or lose chosen messages.
 	intercept func(raft.Message) bool
@@ -208,7 +212,8 @@ func (s *Sim) run() Result {
 // rng and node timers seeded from seed.
 func newSim(seed uint64, rng *rand.Rand, o Options) *Sim {
 	h := fnv.New64a()
-	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), hash: h, trace: hashWriter{h: h, out: o.Trace}}
+	s := &Sim{rng: rng, opts: o, nodes: map[string]*simNode{}, check: NewChecker(), hash: h, trace: hashWriter{h: h, out: o.Trace},
+		crashRng: rand.New(rand.NewPCG(seed, 0xc4a5))}
 	var voters []string
 	for i := range o.Nodes + o.Spares {
 		id := fmt.Sprintf("n%d", i+1)
@@ -498,6 +503,18 @@ func (s *Sim) processReady() {
 				s.res.Snapshots++
 				s.check.SnapshotInstalled(n.id, *rd.Snapshot)
 				s.trace.event("%d install %s %d", s.now, n.id, rd.Snapshot.Index)
+			}
+			// A leader's appends may leave before its Ready is persisted;
+			// it may then crash in between, and lose the entries its
+			// followers just received.
+			for _, m := range rd.Appends {
+				s.send(m)
+			}
+			if len(rd.Appends) > 0 && len(rd.Entries) > 0 && s.crashRng.Float64() < s.opts.CrashRate {
+				n.up, n.unsynced, n.r = false, nil, nil
+				s.res.Crashes++
+				s.trace.event("%d crash %s before persisting %d entries it sent", s.now, n.id, len(rd.Entries))
+				break
 			}
 			// An unsynced write (a commit-only HardState update) is lost
 			// in a crash unless a later synced write makes it durable, as

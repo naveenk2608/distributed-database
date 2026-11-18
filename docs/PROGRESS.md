@@ -4,11 +4,16 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
 
 ## Needs from you
 
-Nothing is blocked. Docker is still unavailable in this WSL distro (Docker Desktop's engine
-is not running and WSL integration is off), so every Docker gate runs on GitHub's runners
-instead: the Phase 4 Compose gate, the Phase 8 chaos scenarios and the Phase 9 dashboard gate
-(`docker-gates.yml` and the nightly workflow), and all three pass there. To run them here too,
-start Docker Desktop and enable Settings → Resources → WSL integration for this distro.
+- **AWS (Phase 10, optional):** `make aws-up` creates the benchmark cluster in AWS and
+  `make aws-down` destroys it. Neither has been run: it needs AWS credentials in the
+  environment, a `deploy/aws/terraform.tfvars` (copy `terraform.tfvars.example`: your
+  address as `allowed_cidr` and an EC2 key pair), and your decision to spend the money.
+- Docker is still unavailable in this WSL distro (Docker Desktop's engine is not running
+  and WSL integration is off), so every Docker gate runs on GitHub's runners instead: the
+  Phase 4 Compose gate, the Phase 8 chaos scenarios, the Phase 9 dashboard gate and the
+  Phase 10 five-node profile (`docker-gates.yml` and the nightly workflow). To run them here
+  too, start Docker Desktop and enable Settings → Resources → WSL integration for this
+  distro.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -905,3 +910,117 @@ Mutation checks (each change applied alone, then reverted):
 - The dashboard's layout and charts are checked in jsdom and, in Compose, only through the
   gate's checks in Chromium; there are no visual regression tests.
 - No Prometheus server or Grafana is shipped; `/metrics` is there for one.
+
+## Phase 10: Docker, AWS deployment and benchmarking
+
+Status: **in progress.** Everything below is implemented and its tests pass locally (`make
+check`). The benchmark matrix runs next, from a clean clone of this commit; its results and
+the gate evidence that depends on them come in the following commit.
+
+### Gate
+
+| Gate item | Evidence | Status |
+| --- | --- | --- |
+| `make bench-local` reproduces the local results from a clean clone | `bench/run-local.sh`: builds the binaries, and for each run starts a fresh cluster of `dkv-server` processes on this machine (data on a real disk; it refuses tmpfs, where fsync is free), preloads it, runs `dkv-bench`, stops it, and regenerates `docs/benchmarks.md` from the result files. | Pending: the matrix |
+| The report lists hardware, configuration, git SHA, methodology and raw data | Each result file holds the run's configuration and labels, the machine (CPU model and count, memory, OS, kernel), the build's git revision and whether it had uncommitted changes, the Go version, the raw HDR latency histogram, per-operation percentiles, an optional per-second time series, and the nodes' own numbers over the measured window (Raft-log fsync and commit latencies, bytes written by users, to engine logs and to SSTables). The report gives the medians with their ranges over the runs, the machine and build of every run, and for each experiment what it measures and the settings its variants share and vary. `cmd/dkv-bench` `TestBenchAgainstAServer` runs a closed and an open loop against a real node and checks the counts, the read share, the time series, the histogram total, the server-side numbers, the machine and revision, and the report generated from the files. | Pending: the matrix |
+| Before-and-after numbers for each optimization | The "Optimizations" experiment runs the Phase 9 build (from the `phase-9` tag), this build with the engine's log kept, and this build's default, so each of the two optimizations below is measured on its own. | Pending: the matrix |
+| The AWS cluster is created and destroyed with one command each | `make aws-up` (`deploy/aws/up.sh`: builds linux/amd64 binaries, `terraform apply`, prints the addresses) and `make aws-down` (`terraform destroy`). CI's `terraform` job checks formatting and runs `init` and `validate` against the AWS provider. Not applied: you asked me not to run `terraform apply`, and it needs AWS credentials. | Scripts written and validated; not run |
+
+### Optimizations
+
+Profiling a write-only run (workload W, 32 workers, three nodes, RF 3, on this machine's
+ext4 disk) with the new opt-in pprof endpoint gave 516 ops/s with a commit latency of 46 ms
+at the median and a Raft-log fsync of 11.5 ms: 29% of CPU time in system calls and no hot
+spot in user code. The cluster was waiting on its disk, and each write waited on four fsyncs
+in a row: the leader's Raft log, then its engine's log, then the followers' Raft logs and
+engine logs. Two changes, each with an ADR revision:
+
+- **The Raft log is a replica's only write-ahead log** (ADR 0010). Replica engines run
+  without a log (`lsm.Options.DisableWAL`): applied entries stay in the memtable until a
+  flush, and a restart replays the Raft log above the engine's last flushed index. Log
+  compaction and snapshots already flush first. `storage.engine_wal` brings the second log
+  back. Tests: `lsm` `TestDisableWALKeepsOnlyFlushedWrites`,
+  `TestSwitchingOffTheWALKeepsLoggedWrites` (an engine that had a log replays it when it
+  reopens without one); `replica` `TestPowerLossReplaysTheRaftLog` (a whole group loses
+  power right after its writes, with log compaction off and every 20 entries); the Phase 8
+  power-loss tests and failure matrix, now on this path.
+- **The leader writes while it replicates** (ADR 0003, Raft thesis §10.2.1). A leader's
+  appends and heartbeats now leave before it persists (`Ready.Appends`); the leader counts
+  its own entries toward a commit only in `Advance`, once they are persisted. A Ready that
+  changes the term or vote holds everything back, and votes and acknowledgments still wait
+  for the state they promise. Tests: `raft` `TestLeaderCountsItselfOnlyOncePersisted`; the
+  simulator sends a leader's appends before it persists and can crash it in between.
+
+Mutation checks (each change applied alone, then reverted):
+
+| Deliberate bug | Caught by |
+| --- | --- |
+| Log compaction without flushing the engine first | `replica` `TestPowerLossReplaysTheRaftLog` ("engine at 0 is behind the snapshot at 78") |
+| The leader counts its entries as matched when it appends them, before persisting | `raft` `TestLeaderCountsItselfOnlyOncePersisted`; the simulator at seed 11 (Leader Completeness: a leader of a later term lacks a committed entry) |
+
+Verification of the Raft change beyond unit tests:
+
+- Simulator, seeds 1–100,000, after both changes. PreVote on: 17 m 58 s, zero violations;
+  385,344 leaders elected, 390,283 crashes (329,739 before the crash window between send and
+  persist was added), 117,631 membership changes, 176,348 leader transfers, 125,324 snapshots
+  installed. PreVote off: 17 m 14 s, zero violations; 432,050 leaders elected, 390,038
+  crashes (330,010 before).
+- Linearizability, in process (`test/linearizability`, `-lin-runs=3`): the failure matrix
+  passed 42 of 42 scenario runs; the majority power loss is Ok with `storage.sync` always
+  and interval, and Illegal with never, as it must be; the negative control still fails the
+  checker.
+
+### Implemented and tested
+
+- **`dkv-bench`** (`cmd/dkv-bench`): YCSB workloads A (50% reads, 50% updates), B (95/5), C
+  (reads only) and W (writes only); uniform or scrambled Zipfian keys (YCSB's, θ 0.99);
+  closed loop with N workers, or open loop at a fixed arrival rate with latency counted from
+  each operation's intended start; preload; warm-up excluded from the measurement; HDR
+  histograms; errors and timeouts counted apart; an optional per-second time series and a
+  command run at a given time (the failover runs kill a leader with it); linearizable or
+  stale reads; the nodes' own numbers read from their admin APIs before and after the
+  measured window; one JSON file per run; `report` renders `docs/benchmarks.md` from the
+  files; `leader` finds the node leading a shard. Tests: `TestKeyDistributions`,
+  `TestBenchAgainstAServer`, `TestStat` (with goleak).
+- **`make bench-local`** (`bench/run-local.sh`): the matrix of docs/PLAN.md scaled to one
+  machine: cluster size (1, 3, 5 nodes), replication factor, fsync, durability path, read
+  consistency, concurrency (1 to 256 workers), value size, open loop, key distribution,
+  optimizations and leader failover; three runs per variant. Ports, paths, durations and
+  sizes come from the environment.
+- **Node instrumentation**: Raft-log fsync and commit latency histograms; engine counters of
+  bytes written by users, to the engine's log and to SSTables (for write amplification);
+  `server.admin_pprof` serves `/debug/pprof/` on the admin port (off by default). Tests:
+  `node` `TestAdminHTTPAPI` (commits at least the puts, fsyncs counted, user bytes and no
+  engine-log bytes on the single-log path), `server` `TestAdminPprof`.
+- **Compose profiles** (`deploy/compose/`): three nodes (`docker-compose.yml`), five nodes
+  (`five.yml`: n4 and n5 join the three), chaos (`chaos.yml`, Phase 8) and the dashboard
+  (`dashboard.yml`, Phase 9). `make compose-five` (`deploy/compose/five-check.sh`) checks
+  that every node sees five members up, that both joiners are given replicas and that a
+  write through n5 reads back through n1; it runs in the `five` job of `docker-gates.yml`,
+  since Docker is not available here.
+- **AWS** (`deploy/aws/`, Terraform ≥ 1.6, AWS provider 5.x pinned in `.terraform.lock.hcl`): a
+  VPC with a subnet per availability zone, nodes spread over the zones at fixed private
+  addresses (so the bootstrap peer list is known before they start), a load-generator
+  instance, a security group (every port between the cluster's own instances; the public
+  and admin APIs and SSH only from `allowed_cidr`), gp3 volumes by default, an S3 bucket the instances
+  fetch the binaries from with an instance profile, systemd units from user data, and
+  outputs for `dkv-bench` and the report. `terraform.tfvars.example`. Checked by CI's
+  `terraform` job; never applied.
+- **Docs**: `docs/architecture.md` (layers, the write path, the replica runner, durability,
+  cluster management, observability, testing; Mermaid diagrams); README sections on
+  benchmarks and deployment; ADRs 0003 and 0010 revised.
+
+### Fixed along the way
+
+- A `dkv-bench` binary built at the repository root by a bare `go build` had been committed
+  on the work branch; it is removed and root-level binaries are ignored.
+
+### Known limitations
+
+- The local benchmarks run every node and the load generator on one machine: they compare
+  variants with each other, not with other databases or with a real cluster.
+- The single-log path makes a restart replay up to a memtable's worth of the Raft log per
+  replica.
+- One `replica` durability test failed once during this phase in a full `make check`
+  run whose output was not kept; it did not fail again in 45 runs of the package's
+  durability tests and 9 full runs of the package. The cause is unknown.

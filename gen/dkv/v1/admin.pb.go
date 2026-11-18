@@ -302,7 +302,11 @@ type StatsResponse struct {
 	Ops                  []*OpStats      `protobuf:"bytes,5,rep,name=ops,proto3" json:"ops,omitempty"`
 	Replicas             []*ReplicaStats `protobuf:"bytes,6,rep,name=replicas,proto3" json:"replicas,omitempty"`
 	// The block cache every engine on the node shares.
-	BlockCache    *CacheStats `protobuf:"bytes,7,opt,name=block_cache,json=blockCache,proto3" json:"block_cache,omitempty"`
+	BlockCache *CacheStats `protobuf:"bytes,7,opt,name=block_cache,json=blockCache,proto3" json:"block_cache,omitempty"`
+	// Internal latencies, same form as ops: raft_log_sync (persisting a
+	// Raft Ready that must be durable, fsync included) and commit (a write
+	// proposed on a leader until it is applied there).
+	Internal      []*OpStats `protobuf:"bytes,8,rep,name=internal,proto3" json:"internal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -382,6 +386,13 @@ func (x *StatsResponse) GetReplicas() []*ReplicaStats {
 func (x *StatsResponse) GetBlockCache() *CacheStats {
 	if x != nil {
 		return x.BlockCache
+	}
+	return nil
+}
+
+func (x *StatsResponse) GetInternal() []*OpStats {
+	if x != nil {
+		return x.Internal
 	}
 	return nil
 }
@@ -534,8 +545,12 @@ type EngineStats struct {
 	CompactionBytesWritten int64                  `protobuf:"varint,11,opt,name=compaction_bytes_written,json=compactionBytesWritten,proto3" json:"compaction_bytes_written,omitempty"`
 	WriteStalls            int64                  `protobuf:"varint,12,opt,name=write_stalls,json=writeStalls,proto3" json:"write_stalls,omitempty"`
 	WriteSlowdowns         int64                  `protobuf:"varint,13,opt,name=write_slowdowns,json=writeSlowdowns,proto3" json:"write_slowdowns,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// user_bytes: keys and values applied; wal_bytes: written to the
+	// engine's own log (0 on the single-log path, docs/adr/0010).
+	UserBytes     int64 `protobuf:"varint,14,opt,name=user_bytes,json=userBytes,proto3" json:"user_bytes,omitempty"`
+	WalBytes      int64 `protobuf:"varint,15,opt,name=wal_bytes,json=walBytes,proto3" json:"wal_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EngineStats) Reset() {
@@ -655,6 +670,20 @@ func (x *EngineStats) GetWriteStalls() int64 {
 func (x *EngineStats) GetWriteSlowdowns() int64 {
 	if x != nil {
 		return x.WriteSlowdowns
+	}
+	return 0
+}
+
+func (x *EngineStats) GetUserBytes() int64 {
+	if x != nil {
+		return x.UserBytes
+	}
+	return 0
+}
+
+func (x *EngineStats) GetWalBytes() int64 {
+	if x != nil {
+		return x.WalBytes
 	}
 	return 0
 }
@@ -1489,7 +1518,7 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x05shard\x18\x01 \x01(\x05R\x05shard\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"$\n" +
 	"\"AdminServiceTransferLeaderResponse\"\x0e\n" +
-	"\fStatsRequest\"\xb1\x02\n" +
+	"\fStatsRequest\"\xde\x02\n" +
 	"\rStatsResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1b\n" +
 	"\tunix_nano\x18\x02 \x01(\x03R\bunixNano\x12*\n" +
@@ -1498,7 +1527,8 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x03ops\x18\x05 \x03(\v2\x0f.dkv.v1.OpStatsR\x03ops\x120\n" +
 	"\breplicas\x18\x06 \x03(\v2\x14.dkv.v1.ReplicaStatsR\breplicas\x123\n" +
 	"\vblock_cache\x18\a \x01(\v2\x12.dkv.v1.CacheStatsR\n" +
-	"blockCache\"\xa0\x01\n" +
+	"blockCache\x12+\n" +
+	"\binternal\x18\b \x03(\v2\x0f.dkv.v1.OpStatsR\binternal\"\xa0\x01\n" +
 	"\aOpStats\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\x04R\x02ok\x12\x16\n" +
@@ -1507,7 +1537,7 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	"\x12latency_cumulative\x18\x05 \x03(\x04R\x11latencyCumulative\"f\n" +
 	"\fReplicaStats\x12)\n" +
 	"\x04raft\x18\x01 \x01(\v2\x15.dkv.v1.ReplicaStatusR\x04raft\x12+\n" +
-	"\x06engine\x18\x02 \x01(\v2\x13.dkv.v1.EngineStatsR\x06engine\"\xe2\x03\n" +
+	"\x06engine\x18\x02 \x01(\v2\x13.dkv.v1.EngineStatsR\x06engine\"\x9e\x04\n" +
 	"\vEngineStats\x12\x19\n" +
 	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\x12\x1c\n" +
 	"\tmemtables\x18\x02 \x01(\x05R\tmemtables\x12%\n" +
@@ -1524,7 +1554,10 @@ const file_dkv_v1_admin_proto_rawDesc = "" +
 	" \x01(\x03R\x13compactionBytesRead\x128\n" +
 	"\x18compaction_bytes_written\x18\v \x01(\x03R\x16compactionBytesWritten\x12!\n" +
 	"\fwrite_stalls\x18\f \x01(\x03R\vwriteStalls\x12'\n" +
-	"\x0fwrite_slowdowns\x18\r \x01(\x03R\x0ewriteSlowdowns\"~\n" +
+	"\x0fwrite_slowdowns\x18\r \x01(\x03R\x0ewriteSlowdowns\x12\x1d\n" +
+	"\n" +
+	"user_bytes\x18\x0e \x01(\x03R\tuserBytes\x12\x1b\n" +
+	"\twal_bytes\x18\x0f \x01(\x03R\bwalBytes\"~\n" +
 	"\n" +
 	"CacheStats\x12%\n" +
 	"\x0ecapacity_bytes\x18\x01 \x01(\x03R\rcapacityBytes\x12\x1d\n" +
@@ -1649,34 +1682,35 @@ var file_dkv_v1_admin_proto_depIdxs = []int32{
 	7,  // 0: dkv.v1.StatsResponse.ops:type_name -> dkv.v1.OpStats
 	8,  // 1: dkv.v1.StatsResponse.replicas:type_name -> dkv.v1.ReplicaStats
 	10, // 2: dkv.v1.StatsResponse.block_cache:type_name -> dkv.v1.CacheStats
-	22, // 3: dkv.v1.ReplicaStats.raft:type_name -> dkv.v1.ReplicaStatus
-	9,  // 4: dkv.v1.ReplicaStats.engine:type_name -> dkv.v1.EngineStats
-	13, // 5: dkv.v1.EventsResponse.events:type_name -> dkv.v1.Event
-	23, // 6: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
-	18, // 7: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
-	23, // 8: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
-	0,  // 9: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
-	24, // 10: dkv.v1.MemberStatus.node_state:type_name -> dkv.v1.NodeState
-	21, // 11: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
-	16, // 12: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
-	19, // 13: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
-	14, // 14: dkv.v1.AdminService.Decommission:input_type -> dkv.v1.DecommissionRequest
-	1,  // 15: dkv.v1.AdminService.Drain:input_type -> dkv.v1.DrainRequest
-	3,  // 16: dkv.v1.AdminService.TransferLeader:input_type -> dkv.v1.AdminServiceTransferLeaderRequest
-	5,  // 17: dkv.v1.AdminService.Stats:input_type -> dkv.v1.StatsRequest
-	11, // 18: dkv.v1.AdminService.Events:input_type -> dkv.v1.EventsRequest
-	17, // 19: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
-	20, // 20: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
-	15, // 21: dkv.v1.AdminService.Decommission:output_type -> dkv.v1.DecommissionResponse
-	2,  // 22: dkv.v1.AdminService.Drain:output_type -> dkv.v1.DrainResponse
-	4,  // 23: dkv.v1.AdminService.TransferLeader:output_type -> dkv.v1.AdminServiceTransferLeaderResponse
-	6,  // 24: dkv.v1.AdminService.Stats:output_type -> dkv.v1.StatsResponse
-	12, // 25: dkv.v1.AdminService.Events:output_type -> dkv.v1.EventsResponse
-	19, // [19:26] is the sub-list for method output_type
-	12, // [12:19] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	7,  // 3: dkv.v1.StatsResponse.internal:type_name -> dkv.v1.OpStats
+	22, // 4: dkv.v1.ReplicaStats.raft:type_name -> dkv.v1.ReplicaStatus
+	9,  // 5: dkv.v1.ReplicaStats.engine:type_name -> dkv.v1.EngineStats
+	13, // 6: dkv.v1.EventsResponse.events:type_name -> dkv.v1.Event
+	23, // 7: dkv.v1.ClusterStatusResponse.self:type_name -> dkv.v1.NodeInfo
+	18, // 8: dkv.v1.ClusterStatusResponse.members:type_name -> dkv.v1.MemberStatus
+	23, // 9: dkv.v1.MemberStatus.node:type_name -> dkv.v1.NodeInfo
+	0,  // 10: dkv.v1.MemberStatus.state:type_name -> dkv.v1.MemberState
+	24, // 11: dkv.v1.MemberStatus.node_state:type_name -> dkv.v1.NodeState
+	21, // 12: dkv.v1.ShardMapResponse.shards:type_name -> dkv.v1.ShardInfo
+	16, // 13: dkv.v1.AdminService.ClusterStatus:input_type -> dkv.v1.ClusterStatusRequest
+	19, // 14: dkv.v1.AdminService.ShardMap:input_type -> dkv.v1.ShardMapRequest
+	14, // 15: dkv.v1.AdminService.Decommission:input_type -> dkv.v1.DecommissionRequest
+	1,  // 16: dkv.v1.AdminService.Drain:input_type -> dkv.v1.DrainRequest
+	3,  // 17: dkv.v1.AdminService.TransferLeader:input_type -> dkv.v1.AdminServiceTransferLeaderRequest
+	5,  // 18: dkv.v1.AdminService.Stats:input_type -> dkv.v1.StatsRequest
+	11, // 19: dkv.v1.AdminService.Events:input_type -> dkv.v1.EventsRequest
+	17, // 20: dkv.v1.AdminService.ClusterStatus:output_type -> dkv.v1.ClusterStatusResponse
+	20, // 21: dkv.v1.AdminService.ShardMap:output_type -> dkv.v1.ShardMapResponse
+	15, // 22: dkv.v1.AdminService.Decommission:output_type -> dkv.v1.DecommissionResponse
+	2,  // 23: dkv.v1.AdminService.Drain:output_type -> dkv.v1.DrainResponse
+	4,  // 24: dkv.v1.AdminService.TransferLeader:output_type -> dkv.v1.AdminServiceTransferLeaderResponse
+	6,  // 25: dkv.v1.AdminService.Stats:output_type -> dkv.v1.StatsResponse
+	12, // 26: dkv.v1.AdminService.Events:output_type -> dkv.v1.EventsResponse
+	20, // [20:27] is the sub-list for method output_type
+	13, // [13:20] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_dkv_v1_admin_proto_init() }

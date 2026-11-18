@@ -1,6 +1,6 @@
 # ADR 0010: Durability path for replicas
 
-Status: Accepted for Phases 6–8 (two logs); to be revisited in Phase 10
+Status: Accepted; revised in Phase 10 (the Raft log is the only write-ahead log)
 
 ## Context
 
@@ -100,3 +100,31 @@ path in Phase 10.
   what was fsynced) while the third is partitioned away, with
   `storage.sync` `always` and `interval`, and every acknowledged write
   survives.
+
+## Revision in Phase 10: the Raft log is a replica's only write-ahead log
+
+**Decision.** Replica engines run without a log of their own
+(`lsm.Options.DisableWAL`): applied entries live in the memtable until a
+flush makes them durable, and a restart replays the Raft log above the
+engine's last flushed index. What makes it safe was already in place: log
+compaction flushes the engine before it truncates (Phase 7), checkpoints
+for snapshots flush first, and the runner gives Raft the engine's last
+sequence number as the applied index. An engine that ran with a log replays
+and flushes it when it reopens without one. `storage.engine_wal` keeps the
+two-log path, for comparison; a standalone node always keeps its engine's
+log.
+
+**Alternatives.** Keeping both logs (the Phase 6 choice): obviously
+correct, one extra fsync per write on every replica. Making the engine log
+asynchronous instead of absent: fewer fsyncs but the same bytes written
+twice, and still a second recovery path.
+
+**Consequences.** One fsync per write per replica instead of two (with
+`storage.sync = always`). A restart replays more of the Raft log (up to a
+memtable's worth per replica); `storage.sync` interval and always now
+behave the same for replicas. Tests: `lsm` `TestDisableWALKeepsOnlyFlushedWrites`,
+`TestSwitchingOffTheWALKeepsLoggedWrites`; `replica`
+`TestPowerLossReplaysTheRaftLog` (a whole group loses power right after its
+writes, with and without log compaction; it fails if compaction does not
+flush first); the Phase 8 power-loss and failure-matrix tests, now on this
+path. Measured in `docs/benchmarks.md` ("Durability path", "Optimizations").

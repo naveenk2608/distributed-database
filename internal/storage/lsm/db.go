@@ -109,6 +109,9 @@ type engineStats struct {
 	flushBytes                         atomic.Int64
 	compactReadBytes, compactWriteByte atomic.Int64
 	stalls, slowdowns                  atomic.Int64
+	// userBytes: keys and values applied; walBytes: records appended to
+	// the log. With table bytes they give write amplification.
+	userBytes, walBytes atomic.Int64
 }
 
 // pendingWrite is one Apply call waiting in the commit queue.
@@ -171,7 +174,7 @@ func Open(dir string, opts Options) (*DB, error) {
 		go d.compactLoop()
 		signal(d.compactCh) // the recovered tables may need compacting
 	}
-	if opts.Sync == SyncInterval {
+	if opts.Sync == SyncInterval && d.wal != nil {
 		d.bgWG.Add(1)
 		go d.syncLoop()
 	}
@@ -313,7 +316,9 @@ func (d *DB) commit(group []*pendingWrite) {
 		}
 		g.out, last = s, s
 		ok = append(ok, g)
-		recs = append(recs, wal.Record{Type: recordBatch, Payload: g.batch.encode(nil, s)})
+		if d.wal != nil {
+			recs = append(recs, wal.Record{Type: recordBatch, Payload: g.batch.encode(nil, s)})
+		}
 	}
 	if len(ok) == 0 {
 		return
@@ -324,21 +329,32 @@ func (d *DB) commit(group []*pendingWrite) {
 		fail(err)
 		return
 	}
-	if err := d.wal.Append(recs...); err != nil {
-		d.failed = err
-		fail(err)
-		return
-	}
-	if d.opts.Sync == SyncAlways {
-		if err := d.wal.Sync(); err != nil {
+	// Without a log (Options.DisableWAL) the memtable is the only copy
+	// until a flush.
+	if d.wal != nil {
+		var n int64
+		for _, r := range recs {
+			n += int64(len(r.Payload))
+		}
+		d.stats.walBytes.Add(n)
+		if err := d.wal.Append(recs...); err != nil {
 			d.failed = err
 			fail(err)
 			return
 		}
+		if d.opts.Sync == SyncAlways {
+			if err := d.wal.Sync(); err != nil {
+				d.failed = err
+				fail(err)
+				return
+			}
+		}
 	}
 	mem := d.state.mem
+	var user int64
 	for _, g := range ok {
 		for _, op := range g.batch.ops {
+			user += int64(len(op.key) + len(op.value))
 			if err := mem.Add(g.out, op.kind, op.key, op.value); err != nil {
 				// Unreachable while sequence numbers are fresh and a batch
 				// holds each key once. If it happens anyway, part of a batch
@@ -350,6 +366,7 @@ func (d *DB) commit(group []*pendingWrite) {
 			}
 		}
 	}
+	d.stats.userBytes.Add(user)
 	d.lastSeq = last
 	d.visibleSeq.Store(last)
 }
@@ -394,12 +411,15 @@ func (d *DB) makeRoomLocked() error {
 // rotateLocked makes the active memtable immutable and starts a new
 // memtable and log segment. Caller holds d.mu.
 func (d *DB) rotateLocked() error {
-	seg, err := d.wal.Rotate()
-	if err != nil {
-		d.failed = fmt.Errorf("lsm: rotate log: %w", err)
-		return d.failed
-	}
 	s := d.state
+	seg := s.memLog + 1 // without a log, memtables keep their numbering
+	if d.wal != nil {
+		var err error
+		if seg, err = d.wal.Rotate(); err != nil {
+			d.failed = fmt.Errorf("lsm: rotate log: %w", err)
+			return d.failed
+		}
+	}
 	imm := append(slices.Clone(s.imm), &immMem{mt: s.mem, logNum: s.memLog, maxSeq: d.lastSeq})
 	d.installState(newReadState(memtable.New(), seg, imm, s.tables))
 	signal(d.flushCh)
@@ -530,7 +550,10 @@ func (d *DB) Close() error {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	err := d.wal.Close()
+	var err error
+	if d.wal != nil {
+		err = d.wal.Close()
+	}
 	if d.failed != nil {
 		err = nil // already reported to the writers that hit it
 	}
@@ -559,8 +582,11 @@ type Metrics struct {
 	CompactionBytesWrite int64
 	WriteStalls          int64
 	WriteSlowdowns       int64
-	LiveSnapshots        int
-	BlockCache           sstable.CacheStats
+	// UserBytes counts the keys and values applied, WALBytes the bytes
+	// appended to the write-ahead log (0 with DisableWAL).
+	UserBytes, WALBytes int64
+	LiveSnapshots       int
+	BlockCache          sstable.CacheStats
 }
 
 // Metrics returns a snapshot of engine metrics.
@@ -574,6 +600,8 @@ func (d *DB) Metrics() Metrics {
 		CompactionBytesWrite: d.stats.compactWriteByte.Load(),
 		WriteStalls:          d.stats.stalls.Load(),
 		WriteSlowdowns:       d.stats.slowdowns.Load(),
+		UserBytes:            d.stats.userBytes.Load(),
+		WALBytes:             d.stats.walBytes.Load(),
 		BlockCache:           d.opts.BlockCache.Stats(),
 	}
 	d.mu.Lock()

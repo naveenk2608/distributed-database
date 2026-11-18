@@ -49,6 +49,14 @@ type Options struct {
 	MemtableBytes int64
 	// Sync is the log sync policy.
 	Sync SyncPolicy
+	// DisableWAL keeps no write-ahead log: writes become durable only when
+	// their memtable is flushed (Flush, or a full memtable), and a crash or
+	// Close loses the rest; LastSeq after Open is the last flushed sequence
+	// number. For an owner that logs every write itself and replays it
+	// after a restart, such as a replica, whose Raft log is the only
+	// write-ahead log (docs/adr/0010). Log segments left by an earlier run
+	// with a log are replayed and flushed at Open. Sync is then unused.
+	DisableWAL bool
 	// SyncInterval is the fsync period for SyncInterval. 0 means 10ms.
 	SyncInterval time.Duration
 	// Logger receives recovery and background messages; nil discards.

@@ -107,7 +107,7 @@ func (nw *network) settle() {
 			}
 			nw.reads[id] = append(nw.reads[id], rd.ReadStates...)
 			r.Advance(rd)
-			for _, m := range rd.Messages {
+			for _, m := range slices.Concat(rd.Appends, rd.Messages) {
 				if m.Type == MsgSnap && m.Snapshot == nil {
 					// Act as the leader's runner: describe a snapshot at
 					// the applied index and stream it, then report.
@@ -791,5 +791,68 @@ func TestPreVoteKeepsTermStableUnderOneWayPartition(t *testing.T) {
 	}
 	if l := nw.leaders(); !slices.Equal(l, []string{"s1"}) {
 		t.Fatalf("leaders %v after the partition healed; want s1", l)
+	}
+}
+
+// TestLeaderCountsItselfOnlyOncePersisted: a leader's appends may go out
+// before it persists the entries (Ready.Appends), so until Advance it does
+// not count itself: one follower's acknowledgment does not commit, two do
+// (a majority holds the entry without the leader), and so does one once
+// the leader has persisted.
+func TestLeaderCountsItselfOnlyOncePersisted(t *testing.T) {
+	for _, twoFollowers := range []bool{false, true} {
+		t.Run(fmt.Sprintf("two followers=%v", twoFollowers), func(t *testing.T) {
+			nw := newNetwork(t, 3, nil)
+			nw.campaign("s1")
+			l := nw.nodes["s1"]
+			if err := l.Propose([]byte("x")); err != nil {
+				t.Fatal(err)
+			}
+			x := l.LastIndex()
+			rd := l.Ready()
+			if len(rd.Appends) != 2 || len(rd.Entries) != 1 {
+				t.Fatalf("Ready: %d appends, %d entries; want an append to each follower and the new entry", len(rd.Appends), len(rd.Entries))
+			}
+			for _, m := range rd.Messages {
+				if m.Type == MsgApp {
+					t.Fatalf("an append in Messages: %+v", m)
+				}
+			}
+			// The followers persist and acknowledge; the leader has not.
+			ack := func(to string) {
+				f := nw.nodes[to]
+				for _, m := range rd.Appends {
+					if m.To == to {
+						if err := f.Step(m); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				frd := f.Ready()
+				f.Advance(frd)
+				for _, m := range frd.Messages {
+					if m.Type == MsgAppResp {
+						if err := l.Step(m); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			ack("s2")
+			if l.Committed() >= x {
+				t.Fatalf("committed %d with the entry at %d durable on one follower only", l.Committed(), x)
+			}
+			if twoFollowers {
+				ack("s3")
+				if l.Committed() < x {
+					t.Fatalf("committed %d; both followers hold %d", l.Committed(), x)
+				}
+				return
+			}
+			l.Advance(rd) // the leader's own copy is now persisted
+			if l.Committed() < x {
+				t.Fatalf("committed %d after the leader persisted %d, acknowledged by a follower", l.Committed(), x)
+			}
+		})
 	}
 }

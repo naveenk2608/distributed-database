@@ -112,6 +112,7 @@ type Node struct {
 	ticksPaused atomic.Bool // fault injection: the node's Raft clock stops
 
 	events   *obs.EventLog
+	internal *obs.Requests // internal latencies, see replica.Config.OnLatency
 	started  time.Time
 	adminLis net.Listener // see ServeAdminOn
 }
@@ -174,7 +175,8 @@ func openCluster(cfg *config.Config, log *slog.Logger, o options) (_ *Node, err 
 		return nil, fmt.Errorf("node: lock %s: %w", dir, err)
 	}
 	n := &Node{cfg: cfg, opts: o, fs: o.fs, lock: lock, replicas: map[int]*replica.Replica{}, created: map[int]time.Time{},
-		events: obs.NewEventLog(eventCapacity, time.Now), started: time.Now()}
+		events: obs.NewEventLog(eventCapacity, time.Now), started: time.Now(),
+		internal: obs.NewRequests("raft_log_sync", "commit")}
 	defer func() {
 		if err != nil {
 			_ = n.closeReplicas() // the open error is the one worth reporting
@@ -288,10 +290,11 @@ func (n *Node) openReplica(shard int, peers []string) (*replica.Replica, error) 
 	rp, err := replica.Open(replica.Config{
 		Shard: shard, ID: n.id, Peers: peers, Dir: ShardDir(n.cfg.Storage.Dir, shard), FS: n.fs,
 		UnsafeNoSync: n.cfg.Storage.Sync == "never",
-		Engine:       storageOptions(n.cfg.Storage, shardLog, n.cache, n.compactions),
+		Engine:       replicaStorageOptions(n.cfg.Storage, shardLog, n.cache, n.compactions),
 		ElectionTick: n.cfg.Raft.ElectionTicks, HeartbeatTick: n.cfg.Raft.HeartbeatTicks,
 		SessionTTL: n.cfg.Raft.SessionTTL, CompactEntries: n.cfg.Raft.CompactEntries,
 		Sender: n.net, Snapshots: n.net, OnEvent: n.recordEvent, Log: shardLog,
+		OnLatency: func(step string, d time.Duration) { n.internal.Observe(step, d, false) },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("node: shard %d: %w", shard, err)
@@ -522,6 +525,16 @@ func storageOptions(c config.Storage, log *slog.Logger, cache *sstable.Cache, po
 	default: // "always"; config.Validate rejects anything else
 		opts.Sync = lsm.SyncAlways
 	}
+	return opts
+}
+
+// replicaStorageOptions are a replica engine's options: without a log of
+// its own unless storage.engine_wal is set, since the replica's Raft log
+// is logged and fsynced first and replays every entry above the engine's
+// last flush after a restart (docs/adr/0010).
+func replicaStorageOptions(c config.Storage, log *slog.Logger, cache *sstable.Cache, pool *lsm.CompactionPool) lsm.Options {
+	opts := storageOptions(c, log, cache, pool)
+	opts.DisableWAL = !c.EngineWAL
 	return opts
 }
 

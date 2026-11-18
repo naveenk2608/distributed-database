@@ -55,6 +55,9 @@ type Server struct {
 	// map, statistics and events for dkv-console and operators, and
 	// Prometheus metrics. Empty disables it.
 	AdminAddr string `yaml:"admin_addr"`
+	// AdminPprof also serves Go's profiler on the admin port, under
+	// /debug/pprof/. Off by default: profiles cost CPU while they run.
+	AdminPprof bool `yaml:"admin_pprof"`
 }
 
 // Cluster configures membership. With neither an internal address nor
@@ -149,15 +152,22 @@ type Rebalance struct {
 type Storage struct {
 	// Dir is the data directory. Required; created if missing.
 	Dir string `yaml:"dir"`
-	// Sync is the WAL sync policy: always (fsync before acknowledging, the
-	// default), interval (fsync every SyncInterval; can lose the last
-	// interval's acknowledged writes on power loss) or never (benchmarks
-	// only). In a cluster, never also skips the fsync of every Raft log
-	// write (entries, term and vote), which lets a power loss break Raft's
-	// guarantees.
+	// Sync is the sync policy. Standalone, for the engine's WAL: always
+	// (fsync before acknowledging, the default), interval (fsync every
+	// SyncInterval; a power loss can lose the last interval's acknowledged
+	// writes) or never (benchmarks only). In a cluster the Raft log is
+	// fsynced before a write is acknowledged with always and interval alike
+	// (they differ only for the engine log that storage.engine_wal keeps);
+	// never skips the fsync of every Raft log write (entries, term and
+	// vote), which lets a power loss break Raft's guarantees.
 	Sync string `yaml:"sync"`
 	// SyncInterval is the fsync period when Sync is interval.
 	SyncInterval time.Duration `yaml:"sync_interval"`
+	// EngineWAL keeps each replica's engine write-ahead log in a cluster
+	// (the two-log path). By default the Raft log is a replica's only
+	// write-ahead log and the engine makes writes durable by flushing them
+	// (docs/adr/0010); a standalone node always keeps its engine's log.
+	EngineWAL bool `yaml:"engine_wal"`
 	// MemtableBytes is the memtable size at which a new memtable and WAL
 	// segment start. A cluster node has one engine per shard replica it
 	// holds, each with its own memtables.
@@ -323,6 +333,17 @@ func stringListSetting[T any](key, usage string, field func(*T) *[]string) setti
 	}}
 }
 
+func boolSetting[T any](key, usage string, field func(*T) *bool) setting[T] {
+	return setting[T]{key, usage, func(c *T, v string) error {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("not true or false: %w", err)
+		}
+		*field(c) = b
+		return nil
+	}}
+}
+
 func durationSetting[T any](key, usage string, field func(*T) *time.Duration) setting[T] {
 	return setting[T]{key, usage, func(c *T, v string) error {
 		d, err := time.ParseDuration(v)
@@ -343,6 +364,8 @@ var settings = []setting[Config]{
 		func(c *Config) *time.Duration { return &c.Server.ShutdownTimeout }),
 	stringSetting("server.admin_addr", "host:port for the admin HTTP API (status, metrics, events); empty disables it",
 		func(c *Config) *string { return &c.Server.AdminAddr }),
+	boolSetting("server.admin_pprof", "also serve Go's profiler on the admin port under /debug/pprof/",
+		func(c *Config) *bool { return &c.Server.AdminPprof }),
 	stringSetting("cluster.name", "cluster name; must match on every node",
 		func(c *Config) *string { return &c.Cluster.Name }),
 	stringSetting("cluster.internal_addr", "host:port for the node-to-node API (required with cluster.peers)",
@@ -395,6 +418,8 @@ var settings = []setting[Config]{
 		func(c *Config) *string { return &c.Storage.Sync }),
 	durationSetting("storage.sync_interval", "fsync period when storage.sync is interval",
 		func(c *Config) *time.Duration { return &c.Storage.SyncInterval }),
+	boolSetting("storage.engine_wal", "in a cluster, also keep each replica's engine log (two fsyncs per write; default: the Raft log only)",
+		func(c *Config) *bool { return &c.Storage.EngineWAL }),
 	intSetting("storage.memtable_bytes", "memtable size that starts a new memtable and WAL segment, in bytes",
 		func(c *Config) *int { return &c.Storage.MemtableBytes }),
 	intSetting("storage.block_cache_bytes", "block cache shared by every engine on the node, in bytes",

@@ -1,0 +1,48 @@
+# Five nodes: docker-compose.yml's three, which bootstrap the cluster, plus
+# two that join it.
+#
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/five.yml up -d --build
+#
+# The Compose files are layered profiles: docker-compose.yml (three nodes),
+# five.yml (five), chaos.yml (fault-injection settings, for test/chaos) and
+# dashboard.yml (admin APIs, a fourth node, dkv-console and PostgreSQL).
+# five.yml and dashboard.yml both define n4; use one or the other.
+x-joiner: &joiner
+  image: dkv:dev
+  restart: "no"
+  stop_grace_period: 15s
+  depends_on: [n1, n2, n3]
+
+x-joiner-env: &joiner-env
+  DKV_SERVER_GRPC_ADDR: "0.0.0.0:7070"
+  DKV_CLUSTER_NAME: "dkv-compose"
+  DKV_CLUSTER_INTERNAL_ADDR: "0.0.0.0:7100"
+  # Not bootstrap peers: they join the cluster the first three formed.
+  DKV_CLUSTER_JOIN: "n1:7100,n2:7100,n3:7100"
+  DKV_CLUSTER_PING_INTERVAL: "500ms"
+  DKV_CLUSTER_PING_TIMEOUT: "500ms"
+  DKV_CLUSTER_DOWN_AFTER: "3s"
+  DKV_STORAGE_DIR: "/data"
+  DKV_LOG_FORMAT: "json"
+
+services:
+  n4:
+    <<: *joiner
+    hostname: n4
+    environment:
+      <<: *joiner-env
+      DKV_CLUSTER_ADVERTISE_ADDR: "n4:7100"
+    ports: ["7074:7070"]
+    volumes: ["n4-data:/data"]
+  n5:
+    <<: *joiner
+    hostname: n5
+    environment:
+      <<: *joiner-env
+      DKV_CLUSTER_ADVERTISE_ADDR: "n5:7100"
+    ports: ["7075:7070"]
+    volumes: ["n5-data:/data"]
+
+volumes:
+  n4-data:
+  n5-data:

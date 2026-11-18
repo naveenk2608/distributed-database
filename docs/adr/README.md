@@ -10,14 +10,14 @@ come up during implementation take the next free number from 0016.
 | [0000](0000-scope.md) | Scope: single-key operations with CAS | Accepted |
 | [0001](0001-replication-model.md) | One Raft group per shard | Accepted |
 | [0002](0002-partitioning.md) | Fixed hash shards placed by consistent hashing | Accepted |
-| [0003](0003-raft-structure.md) | Raft as a deterministic core driven by a runner; pre-vote tie-break; per-node message batching | Accepted (extended in Phase 7 and in the Phase 8 follow-up) |
+| [0003](0003-raft-structure.md) | Raft as a deterministic core driven by a runner; pre-vote tie-break; per-node message batching; the leader writes while it replicates | Accepted (extended in Phase 7, the Phase 8 follow-up and Phase 10) |
 | [0004](0004-engine-per-shard.md) | One storage engine per shard replica, sharing a node-wide block cache and compaction pool | Accepted |
 | [0005](0005-compaction.md) | Size-tiered compaction over time-ordered runs of adjacent tables | Accepted |
 | [0006](0006-manifest-format.md) | Manifest rewritten in full with an atomic rename | Accepted |
 | [0007](0007-read-consistency.md) | ReadIndex reads by default, stale reads opt-in, lease reads later | Accepted |
 | [0008](0008-idempotency.md) | Client sessions in replicated state; a pool of sessions per client | Accepted |
 | [0009](0009-conflict-resolution.md) | Log order plus compare-and-set; version = log index | Accepted |
-| [0010](0010-durability-path.md) | Raft log plus engine WAL; commit index not fsynced; log compaction and snapshot install; `sync = never` skips both logs' write fsyncs | Accepted (revised in Phases 7 and 8; revisit in Phase 10) |
+| [0010](0010-durability-path.md) | The Raft log is a replica's only WAL (since Phase 10; two logs before); commit index not fsynced; log compaction and snapshot install | Accepted (revised in Phases 7, 8 and 10) |
 | [0011](0011-cluster-metadata.md) | Meta Raft group inside dkv; conditional transactions; directory polling | Accepted |
 | [0012](0012-membership-changes.md) | Single-server changes with learners, applied on append; node IDs as members; leader transfer; rebalancer steps | Accepted |
 | [0013](0013-failure-detection.md) | Heartbeats to the meta leader as soft state; only decisions replicated | Accepted |

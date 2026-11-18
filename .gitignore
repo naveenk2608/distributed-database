@@ -1,4 +1,9 @@
 /bin/
+# binaries from a bare `go build ./cmd/...` at the root
+/dkv-server
+/dkvctl
+/dkv-bench
+/dkv-console
 *.test
 *.out
 /data/
@@ -11,3 +16,13 @@ web/test-results/
 web/playwright-report/
 *.tsbuildinfo
 dashboard-gate.log
+
+# Benchmarks: binaries and cluster data of make bench-local (results are kept)
+bench/bin/
+bench/data/
+
+# Terraform state and provider cache (deploy/aws)
+deploy/aws/.terraform/
+deploy/aws/.terraform.lock.hcl.bak
+deploy/aws/*.tfstate*
+deploy/aws/terraform.tfvars

@@ -71,6 +71,10 @@ message StatsResponse {
   repeated ReplicaStats replicas = 6;
   // The block cache every engine on the node shares.
   CacheStats block_cache = 7;
+  // Internal latencies, same form as ops: raft_log_sync (persisting a
+  // Raft Ready that must be durable, fsync included) and commit (a write
+  // proposed on a leader until it is applied there).
+  repeated OpStats internal = 8;
 }
 
 // OpStats counts one public API operation since the node started.
@@ -105,6 +109,10 @@ message EngineStats {
   int64 compaction_bytes_written = 11;
   int64 write_stalls = 12;
   int64 write_slowdowns = 13;
+  // user_bytes: keys and values applied; wal_bytes: written to the
+  // engine's own log (0 on the single-log path, docs/adr/0010).
+  int64 user_bytes = 14;
+  int64 wal_bytes = 15;
 }
 
 message CacheStats {

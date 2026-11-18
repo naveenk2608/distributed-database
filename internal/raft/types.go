@@ -7,13 +7,15 @@
 // any of these, Ready returns what the outside world must do, in this
 // order:
 //
-//  1. install Snapshot, if any, and persist HardState and Entries (fsync
-//     if MustSync) — before anything below, so a vote or an
-//     acknowledgment is never sent and then forgotten;
-//  2. send Messages; a MsgSnap asks the caller to stream a snapshot of
+//  1. install Snapshot, if any, and send Appends, which may go before
+//     anything is persisted;
+//  2. persist HardState and Entries (fsync if MustSync) — before anything
+//     below, so a vote or an acknowledgment is never sent and then
+//     forgotten;
+//  3. send Messages; a MsgSnap asks the caller to stream a snapshot of
 //     its state machine (see SnapshotAt) and report the outcome with
 //     ReportSnapshot;
-//  3. apply CommittedEntries to the state machine and answer ReadStates;
+//  4. apply CommittedEntries to the state machine and answer ReadStates;
 //
 // and then call Advance. The design follows etcd/raft (docs/adr/0003):
 // leader election with randomized timeouts, PreVote, CheckQuorum, log
@@ -170,6 +172,14 @@ type Ready struct {
 	// already persisted.
 	MustSync         bool
 	CommittedEntries []Entry
-	Messages         []Message
-	ReadStates       []ReadState
+	// Appends are a leader's appends and heartbeats to its followers. They
+	// may be sent before HardState and Entries are persisted, so the leader
+	// writes to its disk while its followers write to theirs (Raft thesis
+	// §10.2.1): it counts its own new entries toward a commit only once
+	// Advance reports them persisted. Only a Ready that changes neither
+	// the term nor the vote has them; everything else is in Messages.
+	Appends []Message
+	// Messages must be sent after HardState and Entries are persisted.
+	Messages   []Message
+	ReadStates []ReadState
 }

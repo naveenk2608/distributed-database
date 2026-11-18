@@ -97,7 +97,8 @@ func EngineStats(m lsm.Metrics) *dkvv1.EngineStats {
 	return &dkvv1.EngineStats{LastSeq: m.LastSeq, Memtables: int32(m.Memtables), MemtableBytes: m.MemtableBytes,
 		Tables: int32(m.Tables), TableBytes: m.TableBytes, TableEntries: m.TableEntries, Flushes: m.Flushes,
 		FlushBytes: m.FlushBytes, Compactions: m.Compactions, CompactionBytesRead: m.CompactionBytesRead,
-		CompactionBytesWritten: m.CompactionBytesWrite, WriteStalls: m.WriteStalls, WriteSlowdowns: m.WriteSlowdowns}
+		CompactionBytesWritten: m.CompactionBytesWrite, WriteStalls: m.WriteStalls, WriteSlowdowns: m.WriteSlowdowns,
+		UserBytes: m.UserBytes, WalBytes: m.WALBytes}
 }
 
 type adminService struct {

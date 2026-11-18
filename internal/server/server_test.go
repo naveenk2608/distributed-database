@@ -318,6 +318,11 @@ func TestStandaloneAdminAPI(t *testing.T) {
 	if _, err := admin.TransferLeader(c, &dkvv1.AdminServiceTransferLeaderRequest{NodeId: "x"}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("transfer-leader: %v", err)
 	}
+	if resp, err := http.Get("http://" + node.AdminAddr + "/debug/pprof/"); err != nil || resp.StatusCode != http.StatusNotFound { //nolint:noctx // a test against a local server
+		t.Fatalf("profiler without server.admin_pprof: %v %v", resp, err)
+	} else {
+		_ = resp.Body.Close()
+	}
 	resp, err := http.Get("http://" + node.AdminAddr + "/v1/stats") //nolint:noctx // a test against a local server
 	if err != nil {
 		t.Fatal(err)
@@ -327,5 +332,19 @@ func TestStandaloneAdminAPI(t *testing.T) {
 	var hst dkvv1.StatsResponse
 	if err != nil || protojson.Unmarshal(b, &hst) != nil || len(hst.GetOps()) != 4 || hst.GetOps()[0].GetOk() != 3 {
 		t.Fatalf("GET /v1/stats: %s, %v", b, err)
+	}
+}
+
+// TestAdminPprof: with server.admin_pprof the profiler is on the admin port.
+func TestAdminPprof(t *testing.T) {
+	node := servertest.Start(t, func(c *config.Config) { c.Server.AdminAddr, c.Server.AdminPprof = "127.0.0.1:0", true })
+	resp, err := http.Get("http://" + node.AdminAddr + "/debug/pprof/") //nolint:noctx // a test against a local server
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(b, []byte("goroutine")) {
+		t.Fatalf("profiler index: %d", resp.StatusCode)
 	}
 }

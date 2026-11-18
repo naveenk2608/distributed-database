@@ -3,6 +3,7 @@ module github.com/naveenk2608/distributed-database
 go 1.27
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.4.0
 	github.com/anishathalye/porcupine v1.3.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/jackc/pgx/v5 v5.13.0

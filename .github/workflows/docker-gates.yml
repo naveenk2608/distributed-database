@@ -1,7 +1,8 @@
 name: Docker gates
 
 # The phase gates that need Docker Compose: Phase 4 (cluster formation and
-# failure detection) and Phase 9 (the dashboard, in Chromium). The nightly
+# failure detection), Phase 9 (the dashboard, in Chromium) and the Phase 10
+# five-node profile. The nightly
 # workflow calls this one; it can also be dispatched on its own.
 
 on:
@@ -22,6 +23,17 @@ jobs:
 
       - name: compose gate
         run: make compose-gate
+
+  five:
+    # Phase 10: the five-node Compose profile. n4 and n5 join the cluster
+    # the first three formed, are given replicas, and serve.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: five nodes
+        run: make compose-five
 
   dashboard:
     # Phase 9 gate in Docker Compose with Chromium: a killed node on the

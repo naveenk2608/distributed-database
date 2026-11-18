@@ -142,7 +142,8 @@ func (g *group) tryOpen(id string) error {
 		g.ids = append(g.ids, id)
 	}
 	r, err := Open(Config{Shard: 7, ID: id, Peers: peers, Dir: "/data/" + id, FS: g.fsOf(id),
-		Engine: lsm.Options{Sync: lsm.SyncNever}, ElectionTick: 10, HeartbeatTick: 2,
+		// No engine log, as in production: the Raft log is the only one.
+		Engine: lsm.Options{DisableWAL: true}, ElectionTick: 10, HeartbeatTick: 2,
 		SessionTTL: time.Hour, CompactEntries: g.compact, Sender: g.net, Snapshots: g,
 		OnEvent: func(e obs.Event) {
 			g.evMu.Lock()
@@ -330,6 +331,57 @@ func TestStateSurvivesRestart(t *testing.T) {
 	// The session table survived too: replaying request 20 is a duplicate.
 	if v, err := l.Put(ctx(t), []byte("k19"), []byte("again"), "c1", 20); err != nil || v != last {
 		t.Fatalf("duplicate after restart: %d %v", v, err)
+	}
+}
+
+// TestPowerLossReplaysTheRaftLog: a whole group loses power right after
+// its writes were acknowledged. The engines keep no log, so whatever they
+// had not flushed comes back from the Raft logs: every write at its
+// version, and the session table that answers a retry. With log
+// compaction, the Raft log no longer holds the start of history; the
+// engines must have flushed it before it was compacted away.
+func TestPowerLossReplaysTheRaftLog(t *testing.T) {
+	for _, tc := range []struct {
+		compact, writes int
+	}{{0, 20}, {50, 120}} {
+		t.Run(fmt.Sprintf("compact=%d", tc.compact), func(t *testing.T) {
+			g := newGroupCompacting(t, 3, tc.compact)
+			l := g.leader()
+			var last uint64
+			for i := range tc.writes {
+				var err error
+				if last, err = l.Put(ctx(t), []byte(fmt.Sprint("k", i)), []byte(fmt.Sprint("v", i)), "c1", uint64(i+1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.compact == 0 {
+				for _, id := range g.ids {
+					if st := g.rep(id).EngineMetrics(); st.FlushedSeq != 0 {
+						t.Fatalf("setup: %s's engine flushed through %d; want nothing flushed", id, st.FlushedSeq)
+					}
+				}
+			} else {
+				g.waitFor("the leader to compact", func() bool { return l.Status().FirstIndex > 2 })
+			}
+			img := g.fs.CrashImage(nil) // power cut: only what was fsynced
+			for _, id := range g.ids {
+				g.discard(id) // its filesystem is gone; closing it can only fail
+			}
+			g.fs = img
+			for _, id := range g.ids {
+				g.open(id)
+			}
+			l = g.leader()
+			for i := range tc.writes {
+				key := fmt.Sprint("k", i)
+				if v, _, found, _, err := l.Get(ctx(t), []byte(key), false, 0); err != nil || !found || string(v) != fmt.Sprint("v", i) {
+					t.Fatalf("after the power loss %s = %q %v %v", key, v, found, err)
+				}
+			}
+			if v, err := l.Put(ctx(t), []byte(fmt.Sprint("k", tc.writes-1)), []byte("again"), "c1", uint64(tc.writes)); err != nil || v != last {
+				t.Fatalf("retry of the last write after the power loss: version %d, %v; want the original %d", v, err, last)
+			}
+		})
 	}
 }
 

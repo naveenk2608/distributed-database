@@ -143,3 +143,21 @@ jobs:
         env:
           DKV_TEST_POSTGRES_DSN: postgres://dkv:dkv-ci@localhost:5432/dkv_test?sslmode=disable
         run: go test -race -count=1 -v ./cmd/dkv-console
+
+  terraform:
+    # The AWS deployment (deploy/aws): formatted and valid. Nothing is
+    # applied here; deploy/aws/up.sh does that, with credentials.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: fmt, init, validate
+        run: |
+          terraform -chdir=deploy/aws fmt -check -recursive
+          terraform -chdir=deploy/aws init -backend=false -input=false
+          terraform -chdir=deploy/aws validate

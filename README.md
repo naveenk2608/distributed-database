@@ -4,12 +4,15 @@ A sharded, Raft-replicated key-value store written in Go, with its own LSM-tree
 storage engine. See [docs/PLAN.md](docs/PLAN.md) for the design and roadmap and
 [docs/PROGRESS.md](docs/PROGRESS.md) for what is implemented and tested.
 
-**Current state: Phase 5.** Keys are hashed into a fixed number of shards,
-placed on nodes with a consistent hash ring; each node keeps one durable
-LSM-tree engine per shard replica it holds, and any node accepts any key and
-forwards it to the shard's owner (`dkvctl shards`, `dkvctl status`).
-Replication with Raft arrives in Phase 6; until then only a shard's primary
-serves it.
+Every shard is a Raft group of three replicas (PreVote, CheckQuorum, leader
+transfer, joint-consensus membership changes, snapshots); a replica's Raft log
+is its only write-ahead log. Any node accepts any key and forwards it to the
+shard's leader; reads are linearizable by default. A meta group tracks the
+nodes, declares dead ones, and moves replicas and leadership. Each node serves
+a read-only admin HTTP API that `dkv-console` and its dashboard watch.
+[docs/architecture.md](docs/architecture.md) is the map,
+[docs/benchmarks.md](docs/benchmarks.md) the measurements, and `docs/adr/` the
+decisions with their alternatives.
 
 ## Quick start
 
@@ -81,6 +84,53 @@ docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/dashboard.
 The cluster never depends on the console: stopping it, or its database,
 changes nothing for clients (docs/adr/0014, docs/adr/0015).
 
+## Benchmarks
+
+`make bench-local` builds the binaries, then for each run starts a fresh
+cluster of `dkv-server` processes on this machine, preloads it, drives it with
+`dkv-bench` and stops it; at the end it regenerates
+[docs/benchmarks.md](docs/benchmarks.md) from the JSON result files in
+`bench/results/` (configuration, git revision, machine, raw latency histogram,
+the nodes' own fsync and commit latencies). Data goes under `bench/data`,
+which must be on a real disk. A full matrix takes about 80 minutes;
+`ONLY=<experiment>`, `RUNS`, `WARMUP`, `DURATION` and `RECORDS` narrow it
+(see `bench/run-local.sh`).
+
+```sh
+make bench-local
+ONLY=durability RUNS=1 make bench-local
+bin/dkv-bench run --addr=$A --workload=A --concurrency=32 --duration=30s --out=bench/results/mine.json
+bin/dkv-bench report --results=bench/results --out=docs/benchmarks.md
+```
+
+## Deployment
+
+**Docker Compose.** `deploy/compose/` holds layered profiles on one image
+(`deploy/docker/Dockerfile`, static binaries on distroless):
+
+| Profile | Command | What |
+| --- | --- | --- |
+| three nodes | `make compose-up` | `docker-compose.yml` |
+| five nodes | `docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/five.yml up -d --build` | two more nodes join the three; `make compose-five` checks it |
+| chaos | `make chaos` | `chaos.yml`: fault injection on, for the failure matrix (`test/chaos`) |
+| dashboard | see [Dashboard](#dashboard) | admin APIs, a fourth node, `dkv-console`, PostgreSQL |
+
+**AWS.** `deploy/aws/` is Terraform for a benchmark cluster: a VPC with a
+subnet per availability zone, nodes spread over the zones on fixed private
+addresses, one load-generator instance, gp3 volumes by default, and an S3 bucket the
+instances fetch the binaries from. It costs money from `aws-up` until
+`aws-down`.
+
+```sh
+cp deploy/aws/terraform.tfvars.example deploy/aws/terraform.tfvars   # set allowed_cidr, ssh_key_name
+make aws-up      # builds linux/amd64 binaries, terraform apply, prints the addresses
+make aws-down    # terraform destroy
+```
+
+`terraform output bench_addrs` gives the `--addr` and `--admin` flags for
+`dkv-bench` on the load generator, and `terraform output environment` a line
+for the report.
+
 ## Development
 
 ```sh
@@ -91,6 +141,11 @@ make proto-check  # fail if gen/ is stale
 make crash        # kill -9 harness: CYCLES=150 writer crashes, every ack checked
 make test-integration # in-process multi-node clusters
 make compose-gate # Phase 4 gate in Docker Compose (needs Docker)
+make compose-five # the five-node Compose profile (needs Docker)
+make sim          # deterministic Raft simulation: SEEDS=1000, PREVOTE=random|on|off
+make lin          # the failure matrix in process, histories checked for linearizability
+make chaos        # the failure matrix against Docker Compose (needs Docker)
+make bench-local  # the benchmark matrix; regenerates docs/benchmarks.md
 make web-test     # dashboard: typecheck and unit tests (Node 22)
 make dashboard-gate # Phase 9 gate in Docker Compose with Chromium (needs Docker, jq, Playwright)
 make storage-gate # Phase 3 gate: 1M-op model test, crash at every flush/compaction step, bloom rate

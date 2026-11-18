@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (which git ignores) and fill in. Every other
+# variable has a default; see variables.tf.
+allowed_cidr = "203.0.113.7/32" # your public address, as a /32
+ssh_key_name = "my-key"         # an existing EC2 key pair in the region
+
+# region             = "eu-west-1"
+# availability_zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+# node_count         = 3
+# node_instance_type = "c6i.large"
+# volume_type        = "gp3"

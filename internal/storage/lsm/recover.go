@@ -98,12 +98,16 @@ func (d *DB) recover() error {
 		closeAll()
 		return fmt.Errorf("lsm: open %s: %w", dir, err)
 	}
-	w, err := wal.NewWriter(fsys, dir, newSeg)
-	if err != nil {
-		closeAll()
-		return fmt.Errorf("lsm: open %s: %w", dir, err)
+	if !d.opts.DisableWAL {
+		w, err := wal.NewWriter(fsys, dir, newSeg)
+		if err != nil {
+			closeAll()
+			return fmt.Errorf("lsm: open %s: %w", dir, err)
+		}
+		d.wal = w
 	}
-	d.wal = w
+	// Every older segment is flushed (into the table built above, if any):
+	// the manifest just written says so.
 	d.removeObsoleteLogs(newSeg)
 	d.lastSeq, d.flushedSeq, d.logNum = last, last, newSeg
 	d.visibleSeq.Store(last)

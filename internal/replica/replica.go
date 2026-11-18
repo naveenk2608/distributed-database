@@ -107,7 +107,11 @@ type Config struct {
 	// snapshot installs and leadership transfers, from the replica's own
 	// goroutine; it must not block.
 	OnEvent func(obs.Event)
-	Log     *slog.Logger
+	// OnLatency, if set, is told how long internal steps take:
+	// "raft_log_sync" (persisting a Ready that must be durable) and
+	// "commit" (a write from proposal until applied here, as leader).
+	OnLatency func(step string, d time.Duration)
+	Log       *slog.Logger
 }
 
 // NotLeaderError is returned when this replica cannot serve a request
@@ -585,10 +589,22 @@ func (rp *Replica) handleReady() error {
 				return fmt.Errorf("install snapshot at %d: %w", rd.Snapshot.Index, err)
 			}
 		}
-		if err := rp.rlog.Save(rd.HardState, rd.Entries, rd.MustSync && !rp.cfg.UnsafeNoSync); err != nil {
+		// A leader's appends go out before its own fsync, so followers
+		// write to their disks while it writes to its own (Raft thesis
+		// §10.2.1); it counts its entries toward a commit only once they
+		// are persisted, at Advance.
+		if len(rd.Appends) > 0 {
+			rp.cfg.Sender.Send(rp.cfg.Shard, rd.Appends)
+		}
+		sync := rd.MustSync && !rp.cfg.UnsafeNoSync
+		start := time.Now()
+		if err := rp.rlog.Save(rd.HardState, rd.Entries, sync); err != nil {
 			return fmt.Errorf("persist raft log: %w", err)
 		}
-		// 2. Send; a snapshot request is served from a checkpoint.
+		if sync {
+			rp.latency("raft_log_sync", time.Since(start))
+		}
+		// 2. Send the rest; a snapshot request is served from a checkpoint.
 		msgs := make([]raft.Message, 0, len(rd.Messages))
 		for _, m := range rd.Messages {
 			if m.Type == raft.MsgSnap && m.Snapshot == nil {
@@ -1084,6 +1100,7 @@ func (rp *Replica) EngineMetrics() lsm.Metrics {
 }
 
 func (rp *Replica) submit(ctx context.Context, cmd *dkvv1.Command) (result, error) {
+	start := time.Now()
 	p := &proposal{cmd: cmd, done: make(chan result, 1)}
 	select {
 	case rp.props <- p:
@@ -1094,11 +1111,20 @@ func (rp *Replica) submit(ctx context.Context, cmd *dkvv1.Command) (result, erro
 	}
 	select {
 	case res := <-p.done:
+		if res.err == nil {
+			rp.latency("commit", time.Since(start))
+		}
 		return res, res.err
 	case <-ctx.Done():
 		// The write may still commit; a retry with the same request ID is
 		// answered from the session table.
 		return result{}, ctx.Err()
+	}
+}
+
+func (rp *Replica) latency(step string, d time.Duration) {
+	if rp.cfg.OnLatency != nil {
+		rp.cfg.OnLatency(step, d)
 	}
 }
 

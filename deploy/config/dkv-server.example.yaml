@@ -57,14 +57,18 @@ storage:
   # Required. Data directory; created if missing. A cluster node keeps one
   # engine and one Raft log per shard replica under shards/NNNN/.
   dir: "/var/lib/dkv"
-  # Engine WAL sync policy. always: fsync before acknowledging (group commit
-  # shares one fsync between concurrent writes). interval: fsync every
-  # sync_interval; a power loss can lose that interval's acknowledged writes
-  # in standalone mode. never: for measuring fsync cost only; in a cluster it
-  # also skips the fsync of every Raft log write (entries, term and vote), so
-  # a power loss can lose acknowledged writes. With always or interval the Raft log is fsynced before an entry
-  # is acknowledged, so the engine can replay what it lost from it.
+  # Sync policy. Standalone, for the engine's WAL: always fsyncs before
+  # acknowledging (group commit shares one fsync between concurrent writes);
+  # interval fsyncs every sync_interval, so a power loss can lose that
+  # interval's acknowledged writes; never is for measuring fsync cost only.
+  # In a cluster the Raft log is a replica's only log: always and interval
+  # both fsync it before acknowledging a write, and the engine replays what
+  # it had not flushed from it after a restart. never skips those fsyncs too,
+  # so a power loss can lose acknowledged writes.
   sync: always
+  # In a cluster, also keep each replica's engine log (two fsyncs per write),
+  # to compare with the default single-log path (docs/adr/0010).
+  engine_wal: false
   sync_interval: 10ms
   # Memtable size at which a new memtable and WAL segment start.
   memtable_bytes: 4194304

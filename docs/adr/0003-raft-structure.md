@@ -128,3 +128,34 @@ shows in one schedule in four), so targeted schedules build them directly
 with the simulator's machinery: `TestDelayedTimeoutNowMeetsTheLogCheck`
 delays a leader's `MsgTimeoutNow` until the transferee's log is stale,
 leaving the vote's log check as the only guard.
+
+## Revision in Phase 10: the leader writes while it replicates
+
+Profiling a write-heavy run showed a disk-bound cluster: a third of each
+node's samples in system calls, one Raft-log fsync per write per replica at
+11.5 ms median on the development machine, and a commit latency of four of
+them, because the runner persisted a Ready before sending anything, so the
+leader's fsync and the followers' ran one after the other.
+
+**Decision.** A leader's appends and heartbeats now leave before it
+persists (`Ready.Appends`, sent first by the runner), as the Raft
+dissertation allows (§10.2.1): the leader counts its own new entries as
+matched only in `Advance`, once they are persisted, so an entry commits
+when a majority has it on disk, with or without the leader. A Ready that
+changes the term or the vote holds everything back as before, and votes
+and acknowledgments are still sent only after the state they promise is
+durable. A node still applies only entries it has persisted, since it
+applies after persisting in the same Ready.
+
+**Alternatives.** Asynchronous storage writes throughout, as in etcd's
+newer interface: followers could acknowledge without blocking the runner,
+but the core would need persistence acknowledgments as messages, a larger
+change. A shared log per node with group commit across shards: fewer
+fsyncs, but a different storage architecture.
+
+**Consequences.** The simulator now sends a leader's appends before
+persisting and can crash the leader in between (390,000 crashes in 100,000
+schedules, against 330,000 before), and finds the bug of counting
+unpersisted entries (seed 11: a leader of a later term lacks a committed
+entry). `TestLeaderCountsItselfOnlyOncePersisted` pins the rule. Measured
+in `docs/benchmarks.md` ("Optimizations").

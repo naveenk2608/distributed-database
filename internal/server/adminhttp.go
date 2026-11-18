@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"time"
 
@@ -58,6 +59,7 @@ func CacheStats(c sstable.CacheStats) *dkvv1.CacheStats { return cacheStats(c) }
 //	GET /v1/events?after=N&limit=M EventsResponse
 //	GET /metrics                   Prometheus text format
 //	GET /healthz                   "ok"
+//	GET /debug/pprof/...           Go's profiler, with server.admin_pprof
 //
 // Responses are the protobuf messages in their JSON form (protojson,
 // field names as in the .proto files, zero values included; 64-bit
@@ -84,6 +86,13 @@ func (s *Server) AdminHandler() http.Handler {
 	reg.MustRegister(statsCollector{s.Stats})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	if s.cfg.AdminPprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 	return mux
 }
 

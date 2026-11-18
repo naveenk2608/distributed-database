@@ -457,6 +457,10 @@ func (a *clusterAdmin) TransferLeader(ctx context.Context, shard int, nodeID str
 func (a *clusterAdmin) Stats() *dkvv1.StatsResponse {
 	n := a.n
 	resp := &dkvv1.StatsResponse{NodeId: n.id, StartedUnixNano: n.started.UnixNano(), BlockCache: server.CacheStats(n.cache.Stats())}
+	for _, o := range n.internal.Snapshot() {
+		resp.Internal = append(resp.Internal, &dkvv1.OpStats{Op: o.Op, Ok: o.OK, LatencySumSeconds: o.Sum.Seconds(),
+			LatencyCumulative: o.Cumulative})
+	}
 	byShard := n.allReplicas()
 	for _, rs := range n.nodeStatus().GetReplicas() {
 		if rp := byShard[int(rs.GetShard())]; rp != nil {

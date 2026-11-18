@@ -129,6 +129,29 @@ func TestAdminHTTPAPI(t *testing.T) {
 			t.Fatalf("unknown path: %d", code)
 		}
 	}
+	var commits, syncs uint64
+	var userBytes int64
+	for _, m := range c.Members {
+		var st dkvv1.StatsResponse
+		getJSON(t, "http://"+m.AdminAddr+"/v1/stats", &st)
+		for _, o := range st.GetInternal() {
+			switch o.GetOp() {
+			case "commit":
+				commits += o.GetOk()
+			case "raft_log_sync":
+				syncs += o.GetOk()
+			}
+		}
+		for _, r := range st.GetReplicas() {
+			userBytes += r.GetEngine().GetUserBytes()
+			if r.GetEngine().GetWalBytes() != 0 {
+				t.Fatalf("replica %d wrote %d bytes to an engine log on the single-log path", r.GetRaft().GetShard(), r.GetEngine().GetWalBytes())
+			}
+		}
+	}
+	if commits < puts || syncs == 0 || userBytes == 0 {
+		t.Fatalf("internal latencies: %d commits for %d puts, %d raft log syncs; %d user bytes", commits, puts, syncs, userBytes)
+	}
 	for _, shard := range []int32{0, 1, meta.Shard} {
 		if !elected[shard] {
 			t.Errorf("no node recorded winning the election of shard %d: %v", shard, elected)

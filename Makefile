@@ -7,15 +7,16 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: web web-test dashboard-gate all build check fmt fmt-check vet lint test test-short test-integration sim lin chaos crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
+.PHONY: compose-five aws-up aws-down bench-local web web-test dashboard-gate all build check fmt fmt-check vet lint test test-short test-integration sim lin chaos crash storage-gate bench fuzz docker-build compose-up compose-down compose-gate proto proto-check tools clean
 
 all: check build
 
-## build: compile dkv-server, dkvctl and dkv-console into bin/
+## build: compile dkv-server, dkvctl, dkv-console and dkv-bench into bin/
 build:
 	go build -o bin/dkv-server ./cmd/dkv-server
 	go build -o bin/dkvctl ./cmd/dkvctl
 	go build -o bin/dkv-console ./cmd/dkv-console
+	go build -o bin/dkv-bench ./cmd/dkv-bench
 
 ## check: everything CI runs: formatting, vet, lint, race-enabled tests
 check: fmt-check vet lint test
@@ -100,6 +101,10 @@ compose-down:
 compose-gate:
 	bash deploy/compose/gate.sh
 
+## compose-five: the five-node Compose profile: two nodes join, get replicas, serve (needs Docker)
+compose-five:
+	bash deploy/compose/five-check.sh
+
 ## web: install the dashboard's dependencies and build it into web/dist (needs Node 22)
 web:
 	cd web && npm ci --no-audit --no-fund && npm run build
@@ -107,6 +112,19 @@ web:
 ## web-test: typecheck and unit-test the dashboard
 web-test:
 	cd web && npm run typecheck && npm test
+
+## bench-local: the local benchmark matrix; regenerates docs/benchmarks.md (RUNS, WARMUP,
+## DURATION, RECORDS, ONLY=<experiment>; see bench/run-local.sh)
+bench-local:
+	bash bench/run-local.sh
+
+## aws-up / aws-down: create or destroy the AWS benchmark cluster (deploy/aws; costs money
+## until aws-down; needs terraform, AWS credentials and deploy/aws/terraform.tfvars)
+aws-up:
+	bash deploy/aws/up.sh
+
+aws-down:
+	bash deploy/aws/down.sh
 
 ## dashboard-gate: Phase 9 gate in Compose with a browser (needs Docker, jq, and
 ## cd web && npx playwright install chromium)

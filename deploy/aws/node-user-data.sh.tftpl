@@ -1,0 +1,48 @@
+#!/bin/bash
+# Runs once at first boot: installs dkv-server and runs it under systemd.
+set -euo pipefail
+snap install aws-cli --classic
+for b in dkv-server dkvctl; do
+  aws s3 cp "s3://${bucket}/bin/$b" "/usr/local/bin/$b"
+  chmod 0755 "/usr/local/bin/$b"
+done
+useradd --system --home /var/lib/dkv --create-home dkv || true
+mkdir -p /etc/dkv
+cat > /etc/dkv/dkv-server.yaml <<CONFIG
+server:
+  grpc_addr: "0.0.0.0:7070"
+  admin_addr: "0.0.0.0:7200"
+cluster:
+  name: "dkv-aws"
+  internal_addr: "${internal_addr}"
+  advertise_addr: "${internal_addr}"
+%{ if bootstrap ~}
+  peers: [${join(", ", [for p in split(",", peers) : "\"${p}\""])}]
+%{ else ~}
+  join: [${join(", ", [for p in split(",", peers) : "\"${p}\""])}]
+%{ endif ~}
+  shards: ${shards}
+  replication_factor: ${replication_factor}
+storage:
+  dir: "/var/lib/dkv/data"
+  sync: "${storage_sync}"
+log:
+  format: "json"
+CONFIG
+cat > /etc/systemd/system/dkv-server.service <<UNIT
+[Unit]
+Description=dkv node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dkv
+ExecStart=/usr/local/bin/dkv-server --config=/etc/dkv/dkv-server.yaml
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now dkv-server
