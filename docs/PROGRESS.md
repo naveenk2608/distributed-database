@@ -995,7 +995,8 @@ Verification of the Raft change beyond unit tests:
 - **Compose profiles** (`deploy/compose/`): three nodes (`docker-compose.yml`), five nodes
   (`five.yml`: n4 and n5 join the three), chaos (`chaos.yml`, Phase 8) and the dashboard
   (`dashboard.yml`, Phase 9). `make compose-five` (`deploy/compose/five-check.sh`) checks
-  that every node sees five members up, that both joiners are given replicas and that a
+  that every node sees five nodes alive in the meta group, that both joiners are given
+  replicas and that a
   write through n5 reads back through n1; it runs in the `five` job of `docker-gates.yml`,
   since Docker is not available here.
 - **AWS** (`deploy/aws/`, Terraform ≥ 1.6, AWS provider 5.x pinned in `.terraform.lock.hcl`): a

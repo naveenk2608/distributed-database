@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # The five-node Compose profile (five.yml): the three nodes of
 # docker-compose.yml form the cluster, n4 and n5 join it, every node sees
-# five members up, the rebalancer gives both joiners replicas, and a write
-# through a joiner is read back through a founder.
+# five nodes alive in the meta group, the rebalancer gives both joiners
+# replicas, and a write through a joiner is read back through a founder.
+#
+# Liveness is the meta group's NODE STATE column: the ping failure detector
+# (STATE) watches only the configured bootstrap peers, so it shows joined
+# nodes as UNKNOWN (docs/PROGRESS.md, Phase 7, known limitations).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,7 +17,7 @@ ctl() { # node dkvctl-args...: dkvctl inside that node's container
   shift
   compose exec -T "$n" dkvctl --addr=localhost:7070 --timeout=2s "$@"
 }
-members_up() { ctl "$1" status 2>/dev/null | awk '$3 == "UP"' | wc -l; }
+nodes_alive() { ctl "$1" status 2>/dev/null | awk 'NR > 1 && $4 == "alive"' | wc -l; }
 local_replicas() { ctl "$1" shards 2>/dev/null | awk '$3 == "yes"' | wc -l; }
 fail() {
   echo "FAIL: $*"
@@ -24,12 +28,12 @@ fail() {
 compose up -d --build
 deadline=$((SECONDS + 180))
 for n in n1 n2 n3 n4 n5; do
-  until [ "$(members_up "$n")" -eq 5 ]; do
-    [ "$SECONDS" -lt "$deadline" ] || { ctl "$n" status || true; fail "$n does not see five members up"; }
+  until [ "$(nodes_alive "$n")" -eq 5 ]; do
+    [ "$SECONDS" -lt "$deadline" ] || { ctl "$n" status || true; fail "$n does not see five nodes alive"; }
     sleep 1
   done
 done
-echo "every node sees five members up"
+echo "every node sees five nodes alive"
 ctl n1 status
 
 for n in n4 n5; do
