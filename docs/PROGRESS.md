@@ -957,6 +957,7 @@ Mutation checks (each change applied alone, then reverted):
 | --- | --- |
 | Log compaction without flushing the engine first | `replica` `TestPowerLossReplaysTheRaftLog` ("engine at 0 is behind the snapshot at 78") |
 | The leader counts its entries as matched when it appends them, before persisting | `raft` `TestLeaderCountsItselfOnlyOncePersisted`; the simulator at seed 11 (Leader Completeness: a leader of a later term lacks a committed entry) |
+| Join accepts a node before the meta group has recorded the cluster | `integration` `TestEarlyJoinerWaitsForTheMetaBootstrap` (the joiner never gets its share: timeout after 2 minutes) |
 
 Verification of the Raft change beyond unit tests:
 
@@ -1013,6 +1014,19 @@ Verification of the Raft change beyond unit tests:
 
 ### Fixed along the way
 
+- **A node that asked to join before the meta group had recorded the cluster was given an
+  empty directory** (Phase 7 code). The Join handler accepted it as soon as the meta group
+  had a leader, before that leader's bootstrap transaction (settings, the bootstrap nodes'
+  records, every descriptor), so the answer held no node address and no meta voter. The
+  joiner kept it, could never reach the meta group, and its replicas could not answer their
+  leaders; the leaders gave up on them two minutes later. The five-node Compose profile found
+  it on its second run in CI (Docker gates run 44411317033: n5 joined through n2 a second
+  after starting, with one node record, its own). Its first run (44410365722) had failed on
+  a mistake in the check itself, which read the ping detector's column; that detector
+  watches only bootstrap peers. Join now answers Unavailable until the bootstrap transaction
+  is in, and the joiner retries. Test: `integration` `TestEarlyJoinerWaitsForTheMetaBootstrap`
+  (a long rebalance interval delays the meta bootstrap; the joiner must take its share and
+  serve writes).
 - A `dkv-bench` binary built at the repository root by a bare `go build` had been committed
   on the work branch; it is removed and root-level binaries are ignored.
 

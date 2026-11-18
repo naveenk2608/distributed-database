@@ -208,6 +208,13 @@ func (a *internalAPI) Join(ctx context.Context, req *dkvv1.JoinRequest) (*dkvv1.
 	if err != nil {
 		return nil, err
 	}
+	// The first meta leader writes the settings, the bootstrap nodes'
+	// records and every descriptor in one transaction. Before it has, the
+	// answer would hold no node addresses and no meta voters, and a joiner
+	// that kept it could never reach the meta group: it must ask again.
+	if st.Settings == nil {
+		return nil, status.Error(codes.Unavailable, "the meta group has not recorded the cluster yet; retry")
+	}
 	if rec := st.Nodes[nd.GetNodeId()]; rec == nil {
 		rec = &dkvv1.NodeRecord{NodeId: nd.GetNodeId(), Addr: nd.GetInternalAddr(), State: dkvv1.NodeState_NODE_STATE_ALIVE,
 			JoinedUnixNano: time.Now().UnixNano(), StateChangedUnixNano: time.Now().UnixNano()}

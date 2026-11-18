@@ -297,6 +297,34 @@ func TestAddedNodeTakesItsShare(t *testing.T) {
 	checkKeys(t, c, idx, acked)
 }
 
+// TestEarlyJoinerWaitsForTheMetaBootstrap: a node started with the
+// cluster's first nodes asks to join while the meta group has a leader but
+// has not yet recorded the cluster (a long rebalance interval delays that
+// write here; in Compose it was a node starting a second early). It must be
+// told to retry rather than be given an empty directory, and once it joins
+// it takes its share and serves. Found by the five-node Compose profile.
+func TestEarlyJoinerWaitsForTheMetaBootstrap(t *testing.T) {
+	const shards = 8
+	c := nodetest.Start(t, 3, func(_ int, cfg *config.Config) {
+		cfg.Cluster.Shards = shards
+		cfg.Rebalance.Interval = 2 * time.Second
+	})
+	idx := c.Add()
+	var ids []string
+	for _, m := range c.Members {
+		ids = append(ids, m.NodeID())
+	}
+	want := meta.InitialLayout(ids, shards, 3, 3)
+	took := nodetest.WaitFor(t, 120*time.Second, "the placement to include the early joiner", func() bool {
+		return placed(c, shards, func(shard int, voters []string) bool {
+			return slices.Equal(slices.Sorted(slices.Values(voters)), want[shard])
+		})
+	})
+	t.Logf("the early joiner holds its share after %v", took.Round(time.Millisecond))
+	acked := writeKeys(t, c, idx, 20, "early")
+	checkKeys(t, c, 0, acked)
+}
+
 // TestMetaQuorumLossStopsRebalancingNotData is a Phase 7 gate check: with
 // the meta group unable to reach a quorum (its Raft traffic is dropped on
 // every node), a dead data node is not replaced, but reads and writes to
