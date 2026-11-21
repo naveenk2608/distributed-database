@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The report is generated from the result files alone: every number in it
@@ -46,6 +48,85 @@ func loadResults(dir string) ([]*result, error) {
 		out = append(out, &r)
 	}
 	return out, nil
+}
+
+// reruns lists the runs that were repeated because something outside the
+// benchmark competed with them for the machine, with every attempt. It is
+// read from reruns/index.json in the results directory; the attempts not
+// used keep their result files under reruns/, where loadResults does not
+// look, and the attempt used is the run's file in the results directory.
+type reruns struct {
+	// Method says how runs were screened and which were repeated; the
+	// report prints it as is.
+	Method string     `json:"method"`
+	Runs   []rerunRun `json:"runs"`
+}
+
+type rerunRun struct {
+	Run      string         `json:"run"` // the result file's name without .json
+	Attempts []rerunAttempt `json:"attempts"`
+}
+
+type rerunAttempt struct {
+	Label string    `json:"label"` // which session ran it, e.g. "matrix", "rerun 1"
+	File  string    `json:"file"`  // its result file, relative to the results directory
+	Time  time.Time `json:"time"`  // the result's own time, to tell a later run from it
+	// OutsideCPU is the CPU-seconds processes outside the benchmark used
+	// during the measured window; ExcessCPU the part above the machine's
+	// idle floor.
+	OutsideCPU float64 `json:"outside_cpu_s"`
+	ExcessCPU  float64 `json:"excess_cpu_s"`
+	Busiest    string  `json:"busiest"`         // the busiest outside processes in that window
+	Event      string  `json:"event,omitempty"` // e.g. another WSL distro starting
+	Used       bool    `json:"used"`
+
+	result *result
+}
+
+// loadReruns reads dir/reruns/index.json and each attempt's result file;
+// it returns nil if there is no index.
+func loadReruns(dir string) (*reruns, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "reruns", "index.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var rr reruns
+	if err := json.Unmarshal(b, &rr); err != nil {
+		return nil, fmt.Errorf("reruns/index.json: %w", err)
+	}
+	for _, run := range rr.Runs {
+		used := 0
+		for i := range run.Attempts {
+			a := &run.Attempts[i]
+			b, err := os.ReadFile(filepath.Join(dir, a.File))
+			if err != nil {
+				return nil, fmt.Errorf("rerun of %s: %w", run.Run, err)
+			}
+			a.result = new(result)
+			if err := json.Unmarshal(b, a.result); err != nil {
+				return nil, fmt.Errorf("rerun of %s: %s: %w", run.Run, a.File, err)
+			}
+			if !a.result.Time.Equal(a.Time) {
+				return nil, fmt.Errorf("rerun of %s: %s is a run of %v, not the attempt of %v the index describes",
+					run.Run, a.File, a.result.Time, a.Time)
+			}
+			if a.Used {
+				used++
+				// The tables count the results directory's files: the
+				// attempt used must be the one there.
+				if a.File != run.Run+".json" {
+					return nil, fmt.Errorf("rerun of %s: the attempt used is %s, not %s.json", run.Run, a.File, run.Run)
+				}
+			}
+		}
+		if used != 1 || len(run.Attempts) < 2 {
+			return nil, fmt.Errorf("rerun of %s: %d attempts, %d used; want at least 2, exactly 1 used", run.Run, len(run.Attempts), used)
+		}
+	}
+	return &rr, nil
 }
 
 // group is the runs of one variant of one experiment.
@@ -97,8 +178,9 @@ func atoi(s string) int {
 	return n
 }
 
-// writeReport renders the results as markdown.
-func writeReport(w io.Writer, results []*result) error {
+// writeReport renders the results as markdown, with the reruns (nil if
+// none) at the end.
+func writeReport(w io.Writer, results []*result, rr *reruns) error {
 	byExp := map[string][]*result{}
 	for _, r := range results {
 		byExp[r.Labels["experiment"]] = append(byExp[r.Labels["experiment"]], r)
@@ -144,6 +226,10 @@ func writeReport(w io.Writer, results []*result) error {
 	}
 	if env := results[0].Labels["environment"]; env != "" {
 		p("- %s\n", env)
+	}
+	if rr != nil {
+		p("- %d of the %d runs were repeated because something outside the benchmark competed with them for\n", len(rr.Runs), len(results))
+		p("  the machine; \"Reruns\" at the end lists every attempt.\n")
 	}
 	p("\n")
 
@@ -227,7 +313,41 @@ func writeReport(w io.Writer, results []*result) error {
 			p("%s\n\n", note)
 		}
 	}
+	if rr != nil {
+		writeReruns(p, rr)
+	}
 	return nil
+}
+
+// writeReruns renders every attempt of every repeated run, in the order
+// the index lists them.
+func writeReruns(p func(string, ...any), rr *reruns) {
+	p("## Reruns\n\n")
+	if rr.Method != "" {
+		p("%s\n\n", rr.Method)
+	}
+	p("| Run | Attempt | Throughput (ops/s) | Outside CPU-s in the measured window (above the idle floor) | Busiest outside processes | Used |\n")
+	p("| --- | --- | --- | --- | --- | --- |\n")
+	for _, run := range rr.Runs {
+		for i, a := range run.Attempts {
+			name := ""
+			if i == 0 {
+				r := a.result
+				name = fmt.Sprintf("%s / %s, run %d", r.Labels["experiment"], r.Labels["variant"], r.Config.Seed)
+			}
+			busiest := a.Busiest
+			if a.Event != "" {
+				busiest = a.Event + "; " + busiest
+			}
+			used := ""
+			if a.Used {
+				used = "yes"
+			}
+			p("| %s | %s | %.0f | %.2f (%.2f) | %s | %s |\n", name, a.Label, a.result.Results.Throughput, a.OutsideCPU,
+				max(a.ExcessCPU, 0), busiest, used)
+		}
+	}
+	p("\n")
 }
 
 func pct(l *latencyPercentiles, p99 bool) (float64, bool) {

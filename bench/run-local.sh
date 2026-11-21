@@ -129,6 +129,9 @@ wanted() { [ -z "$ONLY" ] || [[ "$1" == *"$ONLY"* ]]; }
 begin() { # EXPERIMENT: replace its earlier results
   wanted "$1" || return 1
   rm -f "$RESULTS/$1--"*.json
+  # Reruns describe the session that ran the replaced results; the new
+  # runs have not been screened (docs/benchmarks.md, "Reruns").
+  rm -rf "$RESULTS/reruns"
 }
 
 if begin nodes; then

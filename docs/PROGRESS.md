@@ -8,12 +8,12 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
   `make aws-down` destroys it. Neither has been run: it needs AWS credentials in the
   environment, a `deploy/aws/terraform.tfvars` (copy `terraform.tfvars.example`: your
   address as `allowed_cidr` and an EC2 key pair), and your decision to spend the money.
-- Docker is still unavailable in this WSL distro (Docker Desktop's engine is not running
-  and WSL integration is off), so every Docker gate runs on GitHub's runners instead: the
-  Phase 4 Compose gate, the Phase 8 chaos scenarios, the Phase 9 dashboard gate and the
-  Phase 10 five-node profile (`docker-gates.yml` and the nightly workflow). To run them here
-  too, start Docker Desktop and enable Settings → Resources → WSL integration for this
-  distro.
+- Docker Desktop's WSL integration is now on for this distro (`/usr/bin/docker` links to
+  it since 21 November), but its engine is stopped: the benchmark matrix needed the machine
+  to itself. Every Docker gate still runs on GitHub's runners: the Phase 4 Compose gate, the
+  Phase 8 chaos scenarios, the Phase 9 dashboard gate and the Phase 10 five-node profile
+  (`docker-gates.yml` and the nightly workflow). To run them here too, start Docker Desktop;
+  it competes with everything else for this machine's 3.7 GiB of memory.
 
 ## Phase 1: Skeleton and single-node in-memory store
 
@@ -913,17 +913,18 @@ Mutation checks (each change applied alone, then reverted):
 
 ## Phase 10: Docker, AWS deployment and benchmarking
 
-Status: **in progress.** Everything below is implemented and its tests pass locally (`make
-check`). The benchmark matrix runs next, from a clean clone of this commit; its results and
-the gate evidence that depends on them come in the following commit.
+Status: **gate passed except the AWS item**, which needs your AWS credentials and your
+decision to spend (see "Needs from you"). The benchmark matrix ran from a clean clone of
+a28db12; `docs/benchmarks.md` and `bench/results/` hold its results, and "Benchmark runs"
+below records how they were screened.
 
 ### Gate
 
 | Gate item | Evidence | Status |
 | --- | --- | --- |
-| `make bench-local` reproduces the local results from a clean clone | `bench/run-local.sh`: builds the binaries, and for each run starts a fresh cluster of `dkv-server` processes on this machine (data on a real disk; it refuses tmpfs, where fsync is free), preloads it, runs `dkv-bench`, stops it, and regenerates `docs/benchmarks.md` from the result files. | Pending: the matrix |
-| The report lists hardware, configuration, git SHA, methodology and raw data | Each result file holds the run's configuration and labels, the machine (CPU model and count, memory, OS, kernel), the build's git revision and whether it had uncommitted changes, the Go version, the raw HDR latency histogram, per-operation percentiles, an optional per-second time series, and the nodes' own numbers over the measured window (Raft-log fsync and commit latencies, bytes written by users, to engine logs and to SSTables). The report gives the medians with their ranges over the runs, the machine and build of every run, and for each experiment what it measures and the settings its variants share and vary. `cmd/dkv-bench` `TestBenchAgainstAServer` runs a closed and an open loop against a real node and checks the counts, the read share, the time series, the histogram total, the server-side numbers, the machine and revision, and the report generated from the files. | Pending: the matrix |
-| Before-and-after numbers for each optimization | The "Optimizations" experiment runs the Phase 9 build (from the `phase-9` tag), this build with the engine's log kept, and this build's default, so each of the two cluster optimizations below is measured on its own; the "Standalone write path" experiment runs a standalone Phase 9 node against this build's. | Pending: the matrix |
+| `make bench-local` reproduces the local results from a clean clone | `bench/run-local.sh`: builds the binaries, and for each run starts a fresh cluster of `dkv-server` processes on this machine (data on a real disk; it refuses tmpfs, where fsync is free), preloads it, runs `dkv-bench`, stops it, and regenerates `docs/benchmarks.md` from the result files. It ran end to end from a clean clone of a28db12: 87 runs in 95 minutes, then the report; every result records a28db12 without uncommitted changes. 24 runs were then repeated with the same build and seeds because outside load overlapped them ("Benchmark runs" below). | Passed |
+| The report lists hardware, configuration, git SHA, methodology and raw data | Each result file holds the run's configuration and labels, the machine (CPU model and count, memory, OS, kernel), the build's git revision and whether it had uncommitted changes, the Go version, the raw HDR latency histogram, per-operation percentiles, an optional per-second time series, and the nodes' own numbers over the measured window (Raft-log fsync and commit latencies, bytes written by users, to engine logs and to SSTables). The report gives the medians with their ranges over the runs, the machine and build of every run, and for each experiment what it measures and the settings its variants share and vary. `cmd/dkv-bench` `TestBenchAgainstAServer` runs a closed and an open loop against a real node and checks the counts, the read share, the time series, the histogram total, the server-side numbers, the machine and revision, and the report generated from the files. `docs/benchmarks.md`, generated from the 87 result files: the machine (i3-1115G4, 4 CPUs, 3.7 GiB, WSL2), the build (a28db12, go1.27.4), each experiment's settings, medians with ranges, the failover time series, and "Reruns", every replaced attempt with its screening numbers. Raw data in `bench/results/`, the replaced attempts under `bench/results/reruns/`. `TestReportListsReruns`. | Passed |
+| Before-and-after numbers for each optimization | The "Optimizations" experiment runs the Phase 9 build (from the `phase-9` tag), this build with the engine's log kept, and this build's default, so each of the two cluster optimizations below is measured on its own; the "Standalone write path" experiment runs a standalone Phase 9 node against this build's. Cluster, writes only, median ops/s (range): Phase 9 build 453 (219–527); with the parallel leader write 534 (434–563); with the single log as well (the default) 775 (672–892), commit p50 48.1 → 26.6 ms, write amplification 2.29 → 1.17. The single log's gain is clear (the ranges are apart); the parallel leader write's is within the run-to-run spread on this one-disk machine (ADR 0003). Standalone: Phase 9 367 (309–383), group commit 4,645 (4,375–4,763). | Passed |
 | The AWS cluster is created and destroyed with one command each | `make aws-up` (`deploy/aws/up.sh`: builds linux/amd64 binaries, `terraform apply`, prints the addresses) and `make aws-down` (`terraform destroy`). CI's `terraform` job checks formatting and runs `init` and `validate` against the AWS provider. Not applied: you asked me not to run `terraform apply`, and it needs AWS credentials. | Scripts written and validated; not run |
 
 ### Optimizations
@@ -984,6 +985,44 @@ Verification of the Raft change beyond unit tests:
   and interval, and Illegal with never, as it must be; the negative control still fails the
   checker.
 
+### Benchmark runs
+
+Decisions taken while running the matrix (21 November), in order:
+
+- The first attempt, in a clone at `~/dkv-bench-clone`, was interrupted when the laptop
+  slept; one run measured right after it woke gave 501 ops/s. All of its results are
+  discarded. Only runs from one clean session count.
+- Two attempts from a clean clone of a28db12 were stopped and discarded: the first
+  overlapped the language server re-indexing after a source edit; the second ran while
+  Docker Desktop's WSL distro was up (25 results). Docker Desktop was then stopped with
+  `docker desktop stop`, and source files were left alone during runs.
+- The matrix that counts ran from 12:53 to 14:29 UTC with a sampler reading /proc every
+  5 s: every process's CPU time, the VM's CPU and other WSL distros' thread count. Docker
+  Desktop was nonetheless started from a terminal from 12:55 to 12:58 UTC; three runs
+  overlapped it.
+- Screening rule. The rule set beforehand, rerun any run in which processes outside the
+  benchmark used more than 1 CPU-s, could not be met: their idle floor (VS Code, its
+  extension processes and language server, system services; the sampler excluded) was
+  0.064 cores, 1.27 CPU-s per 20 s, and 86 of 87 runs exceeded it. It became: rerun a run
+  if another WSL distro started during it, or if outside processes used more than 1 CPU-s
+  above the floor during its 20 measured seconds. The floor stays the matrix's for every
+  rerun session. At most three attempts per run; the first that passes is used, otherwise
+  the one with the least outside CPU, so the choice never looks at throughput.
+- 24 runs failed the screen and were repeated, 15 of them twice. 12 never passed. The
+  4000-byte-value runs push the idle editor processes into swap (afterwards 829 of 1,024
+  MiB of swap was in use and the extension host had 226 MiB swapped out); their page-ins
+  show up as outside CPU, mostly system time, in those runs and, in the rerun sessions, in
+  most runs after them. A fourth attempt could not avoid that, so none was made.
+- The earlier fsync "always" run 1 at 126 ops/s came from the discarded clone. In the
+  matrix that counts, run 1 measured 453 ops/s while the language server used 3.2 CPU-s of
+  its measured window; its rerun measured 891 ops/s and is used. The report's "Reruns"
+  table lists both, as it does every attempt.
+- No run shows a heartbeat gap of 10 s or more (the longest, 9 s, was during the Docker
+  Desktop start) or a wall time more than a second beyond its preload, warm-up and measured
+  time. Every result records a28db12 without uncommitted changes.
+- The per-attempt numbers are in `bench/results/reruns/index.json`. The sampler, its raw
+  samples and the screening script are kept locally, outside the repository.
+
 ### Implemented and tested
 
 - **`dkv-bench`** (`cmd/dkv-bench`): YCSB workloads A (50% reads, 50% updates), B (95/5), C
@@ -994,8 +1033,10 @@ Verification of the Raft change beyond unit tests:
   command run at a given time (the failover runs kill a leader with it); linearizable or
   stale reads; the nodes' own numbers read from their admin APIs before and after the
   measured window; one JSON file per run; `report` renders `docs/benchmarks.md` from the
-  files; `leader` finds the node leading a shard. Tests: `TestKeyDistributions`,
-  `TestBenchAgainstAServer`, `TestStat` (with goleak).
+  files, with every attempt of a repeated run from `bench/results/reruns/index.json` (it
+  refuses an index whose attempt used is not the run's file in `bench/results/`); `leader`
+  finds the node leading a shard. Tests: `TestKeyDistributions`, `TestBenchAgainstAServer`,
+  `TestStat`, `TestReportListsReruns` (with goleak).
 - **`make bench-local`** (`bench/run-local.sh`): the matrix of docs/PLAN.md scaled to one
   machine: cluster size (1, 3, 5 nodes), replication factor, fsync, durability path, read
   consistency, concurrency (1 to 256 workers), value size, open loop, key distribution,
@@ -1075,6 +1116,37 @@ Verification of the Raft change beyond unit tests:
   variants with each other, not with other databases or with a real cluster.
 - The single-log path makes a restart replay up to a memtable's worth of the Raft log per
   replica.
+- The benchmark numbers vary widely between runs on this machine (stale reads 7,148–12,767
+  ops/s; Zipfian keys 1,825–2,615), and 12 of the 87 runs used are the least disturbed of
+  three attempts rather than undisturbed ("Benchmark runs").
+- **Tests that fail under sustained load; a fix is written but not committed.** CI's
+  `check` job failed twice on the `phase-9` tag commit 608153e, which was not recorded then:
+  run 44183205436 (`TestTransferLeaderAndDrain` panicked on index -1; `TestReplicaEvents`)
+  and run 44183210645 (`TestReplicaEvents`; the `TestCrashDuringSnapshotInstall` data
+  race; `TestDashboardGate` "stopping the console changes nothing": 80 writes in the second
+  before, 0 in the second after). The `replica` failures are fixed above. The panic: a new
+  leader publishes its role at the end of the Ready that made it leader, after its first
+  appends have left, so its followers, a finished leadership transfer and `Settled` can
+  know of it before `nodetest.Cluster.Leader` finds it. The fix, a `WaitLeader` helper used
+  wherever a test reads a leader once, was run 50 times under `-race` with every test it
+  touches, two test binaries at a time on 4 CPUs for 16 minutes. `TestRetriedPutAppliedOnce`
+  and `TestPausedLeaderCannotNoticeLostQuorum` passed 50 of 50. The others failed in ways
+  the fix does not address. `TestTransferLeaderAndDrain`, 3 of 50: leader balancing raced
+  the test's transfer or moved the leadership again (transfer-leader is a nudge, Phase 9);
+  the test now waits for a stable balance and makes a move that keeps it, and passed 3 of 3
+  so far. `TestDashboardGate`, 12 of 50: the console showed a node whose 200 ms poll had
+  timed out as down, while the test required its start time (8); writes stalled for a whole
+  second (2); the election, dead verdict and re-replication after a kill were not all seen
+  within 60 s (3, not diagnosed). `TestLeaderFailover`, 8 of 50: new leaders after 0.62–1.36
+  s against the 600 ms bound (6); the stopped node's port was taken by another process when
+  it restarted (3). The fix stays uncommitted until all of these pass 50 runs.
+- `make check` for the results commit, after the matrix (879 of 1,024 MiB of swap in use;
+  the editor's processes held about 1 GiB): two runs with two test binaries at a time each
+  failed timing checks in tests the commit does not touch. `dkv-bench`
+  `TestBenchAgainstAServer`: the first whole second held 860 of 1,844 operations, against
+  its "at least half" (20 of 20 passed alone). `e2e` `TestConsoleWatchesRealProcesses`: the
+  console's polls of the nodes timed out. `integration` `TestAnyNodeAcceptsAnyKey`: a read
+  hit its deadline. The third run, one test binary at a time (`GOFLAGS=-p=1`), passed.
 - One `replica` durability test failed once during this phase in a full `make check`
   run whose output was not kept; it did not fail again in 45 runs of the package's
   durability tests and 9 full runs of the package. The cause is unknown (the harness's

@@ -71,12 +71,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "dkv-bench: no results in %s: %v\n", dir, err)
 			return 1
 		}
+		rr, err := loadReruns(dir)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "dkv-bench: %v\n", err)
+			return 1
+		}
 		f, err := os.Create(out)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "dkv-bench: %v\n", err)
 			return 1
 		}
-		werr := writeReport(f, results)
+		werr := writeReport(f, results, rr)
 		if cerr := f.Close(); werr == nil {
 			werr = cerr
 		}

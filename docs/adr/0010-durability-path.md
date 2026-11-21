@@ -127,4 +127,11 @@ behave the same for replicas. Tests: `lsm` `TestDisableWALKeepsOnlyFlushedWrites
 `TestPowerLossReplaysTheRaftLog` (a whole group loses power right after its
 writes, with and without log compaction; it fails if compaction does not
 flush first); the Phase 8 power-loss and failure-matrix tests, now on this
-path. Measured in `docs/benchmarks.md` ("Durability path", "Optimizations").
+path.
+
+**Measured** (`docs/benchmarks.md`: three nodes on one laptop disk, writes
+only, three runs each, median and range). "Durability path": the single log
+served 756 ops/s (703–782) against 459 (352–577) with the engine's log,
+with a commit p50 of 26.5 ms against 46.8 ms and write amplification 1.17
+against 2.29. "Optimizations", same build: 775 ops/s (672–892) against 534
+(434–563); the ranges do not overlap in either experiment.

@@ -157,5 +157,13 @@ fsyncs, but a different storage architecture.
 persisting and can crash the leader in between (390,000 crashes in 100,000
 schedules, against 330,000 before), and finds the bug of counting
 unpersisted entries (seed 11: a leader of a later term lacks a committed
-entry). `TestLeaderCountsItselfOnlyOncePersisted` pins the rule. Measured
-in `docs/benchmarks.md` ("Optimizations").
+entry). `TestLeaderCountsItselfOnlyOncePersisted` pins the rule.
+
+**Measured** (`docs/benchmarks.md`, "Optimizations": three nodes on one
+laptop disk, writes only, three runs each, median and range). With the
+engine's log kept in both builds, the Phase 9 build served 453 ops/s
+(219–527) at a client p50 of 61 ms; this build 534 ops/s (434–563) at 52 ms.
+The ranges overlap: on this machine the gain is within the run-to-run
+spread. All three nodes fsync to the same disk there, so a leader's fsync
+and its followers' compete for one device; separate disks per node, as on
+the AWS cluster, were not measured.

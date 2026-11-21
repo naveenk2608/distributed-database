@@ -92,7 +92,7 @@ cluster of `dkv-server` processes on this machine, preloads it, drives it with
 [docs/benchmarks.md](docs/benchmarks.md) from the JSON result files in
 `bench/results/` (configuration, git revision, machine, raw latency histogram,
 the nodes' own fsync and commit latencies). Data goes under `bench/data`,
-which must be on a real disk. A full matrix takes about 80 minutes;
+which must be on a real disk. A full matrix took 95 minutes on a 4-CPU laptop;
 `ONLY=<experiment>`, `RUNS`, `WARMUP`, `DURATION` and `RECORDS` narrow it
 (see `bench/run-local.sh`).
 

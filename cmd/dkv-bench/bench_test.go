@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -135,7 +136,7 @@ func TestBenchAgainstAServer(t *testing.T) {
 		t.Fatalf("loaded %d results: %v", len(loaded), err)
 	}
 	var md bytes.Buffer
-	if err := writeReport(&md, loaded); err != nil {
+	if err := writeReport(&md, loaded, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"## test", "| closed | 1 |", "| open | 1 |", "Machine:", "loop: closed loop, open loop at 200 ops/s",
@@ -200,5 +201,71 @@ func TestDescribeLeavesOutReadsForWrites(t *testing.T) {
 	runs[0].Config.Workload = "A"
 	if same, _ := describe(runs); !slices.Contains(same, "linearizable reads") {
 		t.Fatalf("workload A: %v", same)
+	}
+}
+
+// TestReportListsReruns: a repeated run's attempts are listed with their
+// own throughput, the one used is marked, and an index whose used attempt
+// is not the run's file in the results directory is refused.
+func TestReportListsReruns(t *testing.T) {
+	dir := t.TempDir()
+	run := func(tput float64) *result {
+		return &result{Labels: map[string]string{"experiment": "sync", "variant": "always"},
+			Config: &runConfig{Workload: "W", Dist: "uniform", Seed: 1}, Results: measured{Throughput: tput}}
+	}
+	for path, r := range map[string]*result{"sync--always--1.json": run(891), "reruns/sync--always--1--matrix.json": run(453)} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writeResult(r, filepath.Join(dir, path)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := func(used, rerunTime string) {
+		b := `{"method": "Screened by outside CPU.", "runs": [{"run": "sync--always--1", "attempts": [
+			{"label": "matrix", "file": "reruns/sync--always--1--matrix.json", "time": "0001-01-01T00:00:00Z",
+			 "outside_cpu_s": 4.33, "excess_cpu_s": 3.06, "busiest": "gopls 3.18", "used": ` + strconv.FormatBool(used == "matrix") + `},
+			{"label": "rerun 1", "file": "sync--always--1.json", "time": "` + rerunTime + `",
+			 "outside_cpu_s": 0.78, "excess_cpu_s": -0.49, "busiest": "MainThread 0.42", "used": ` + strconv.FormatBool(used == "rerun 1") + `}]}]}`
+		if err := os.WriteFile(filepath.Join(dir, "reruns", "index.json"), []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	index("rerun 1", "0001-01-01T00:00:00Z")
+	results, err := loadResults(dir)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("loaded %d results: %v; want only the run used", len(results), err)
+	}
+	rr, err := loadReruns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var md bytes.Buffer
+	if err := writeReport(&md, results, rr); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"1 of the 1 runs were repeated", "## Reruns", "Screened by outside CPU.",
+		"| sync / always, run 1 | matrix | 453 | 4.33 (3.06) | gopls 3.18 |  |",
+		"|  | rerun 1 | 891 | 0.78 (0.00) | MainThread 0.42 | yes |"} {
+		if !strings.Contains(md.String(), want) {
+			t.Fatalf("report lacks %q:\n%s", want, md.String())
+		}
+	}
+
+	index("matrix", "0001-01-01T00:00:00Z")
+	if _, err := loadReruns(dir); err == nil || !strings.Contains(err.Error(), "the attempt used is reruns/sync--always--1--matrix.json") {
+		t.Fatalf("an index using an attempt the tables do not count: %v", err)
+	}
+	// A later run of the experiment replaced the file the index describes.
+	index("rerun 1", "2026-11-21T14:40:00Z")
+	if _, err := loadReruns(dir); err == nil || !strings.Contains(err.Error(), "not the attempt of") {
+		t.Fatalf("an index describing a run since replaced: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "reruns", "index.json")); err != nil {
+		t.Fatal(err)
+	}
+	if rr, err := loadReruns(dir); rr != nil || err != nil {
+		t.Fatalf("without an index: %v, %v", rr, err)
 	}
 }
