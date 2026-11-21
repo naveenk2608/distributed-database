@@ -119,3 +119,20 @@ test("a streamed overview updates the overview, each node's history and the even
   const evs = qc.getQueryData<EventView[]>(eventsKey)!;
   expect(evs.filter((e) => e.seq === 999999)).toHaveLength(1);
 });
+
+test("shards: the filter narrows the groups, and says so when none match", () => {
+  show(<ShardsPage />);
+  const rows = () => within(screen.getByTestId("shards")).getAllByRole("row").slice(1);
+  expect(rows()).toHaveLength(overview.shards.length);
+  const box = screen.getByRole("searchbox");
+  fireEvent.change(box, { target: { value: "meta" } });
+  expect(rows().map((r) => r.getAttribute("data-testid"))).toEqual(["shard--1"]);
+  const leader = overview.shards.find((s) => s.shard === 2)!.leader;
+  fireEvent.change(box, { target: { value: shortID(leader) } });
+  expect(rows().length).toBe(overview.shards.filter((s) => s.leader === leader || s.members.some((m) => m.node_id === leader)).length);
+  fireEvent.change(box, { target: { value: "no-such-node" } });
+  expect(screen.queryByTestId("shards")).toBeNull();
+  expect(screen.getByText(/No groups match/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+  expect(rows()).toHaveLength(overview.shards.length);
+});

@@ -1151,3 +1151,65 @@ Decisions taken while running the matrix (21 November), in order:
   run whose output was not kept; it did not fail again in 45 runs of the package's
   durability tests and 9 full runs of the package. The cause is unknown (the harness's
   election timeout, fixed above, is a candidate).
+
+## Dashboard visual refresh
+
+A visual redesign of the Phase 9 dashboard (`web/`). The console's API, the data and what
+every figure means are unchanged: each number on the page is a field of the console's JSON,
+or, as before, a sum of them (a node's and the cluster's ops are reads plus writes; the
+throughput chart adds up the nodes' samples of each poll).
+
+### Implemented and tested
+
+- Layout: a left sidebar (a top bar on phones) for Overview, Shards, Nodes and Events; page
+  titles; the stream's state beside them; a red banner while the live stream is
+  disconnected, giving the time of the last update the page shows.
+- Themes: dark by default, light behind a toggle kept in `localStorage` (`dkv-theme`) and
+  applied before the first paint. Colors are CSS variables behind Tailwind tokens; green,
+  amber and red mean state only (up/alive/leader, suspect/learner, down/dead) and always sit
+  beside a text label. Every figure uses tabular numerals; IDs, terms and indexes are
+  monospace.
+- Overview: nodes up, groups with a leader, ops/s (reads, writes and errors beneath it),
+  p50 and p99; the throughput chart (reads and writes, legend, gridlines, tooltip); a card
+  per node; recent events with relative times.
+- Shards: a table with a sticky header and row hover; replicas as chips per node, the
+  leader's highlighted and labelled, learners dashed and labelled; terms and commits
+  right-aligned; a filter by shard name or the start of a node ID or address.
+- Nodes: a card per node with its status, short ID (a click copies the full ID; plain-HTTP
+  consoles, which have no Clipboard API, fall back to `execCommand`), address, leaders,
+  replicas, storage figures, the storage chart and the replica table behind a disclosure.
+- Events: a timeline, newest first, a badge per kind, relative times with the UTC time
+  beneath.
+- Loading skeletons per page; empty states (no nodes, no groups, no events, no samples yet,
+  no filter match); an error state when the console does not answer.
+- Tests: the existing page tests pass unchanged; the selectors and test IDs they and the
+  Phase 9 browser gate use are kept (`node-<addr>`, `nodes-up`, `groups-led`, `shard-<n>`,
+  `node-detail-<addr>`, `memtable-bytes`, `table-bytes`, `events`, `tr[data-kind]`,
+  `stream-state`, the Events link). New: `format` (relative times; split figures read as
+  the whole ones did), `pages` (the shard filter and its empty state) and `layout` (the
+  stream's state and the disconnected banner, through a fake `EventSource`; the theme saved
+  and restored). `npm run typecheck`, `npm test` (13 tests) and `npm run build` pass.
+
+### Decisions
+
+- The throughput chart draws reads and writes only; errors per second moved to the Ops/s
+  figure. Alternative: a third series, but its natural color, red, is reserved for state.
+- Shards has no separate Leader column: the leader is the labelled chip, and a group
+  without one shows a red "leader: none". With the column, the chips wrapped onto two lines
+  in every row at 1440 px; without it they fit one line down to about 1400 px.
+- The Events timeline is still a table (one row per event, a visually hidden header): the
+  Phase 9 browser gate finds events as `tr[data-kind=…]`. A list would have meant changing
+  the gate.
+- Series colors: indigo `#6366f1` (the accent) and magenta `#d55181`, checked for
+  colour-vision-deficiency separation, lightness and contrast on both card surfaces. Sky
+  failed the contrast check on white and cyan the lightness band.
+- The web package has no linter and CI does not lint it (it runs typecheck, tests and the
+  build). A one-off run of typescript-eslint's recommended rules and the React hooks rules
+  over `web/` reported no problems; neither was added as a dependency.
+
+### Known limitations
+
+- Below about 1400 px wide, the replica chips of a group wrap onto a second line.
+- The Phase 9 browser gate (`make dashboard-gate`) was not run here: it brings up its own
+  Compose cluster on port 8080, which the local demo cluster holds, and SIGKILLs a node.
+  Its read-only locators were checked in Chromium against the rebuilt console instead.
