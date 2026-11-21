@@ -274,18 +274,35 @@ func (c *Client) ShardMap(ctx context.Context) (*dkvv1.ShardMapResponse, error) 
 	return resp, nil
 }
 
-// ShardMaps asks every node the client was given for its shard map. A
-// node reports leaders only for the shards it holds, so merging the maps
-// of all nodes gives every shard's leader. The slices are in address
-// order; errs[i] is set where nodes[i] is nil.
-func (c *Client) ShardMaps(ctx context.Context) (maps []*dkvv1.ShardMapResponse, errs []error) {
-	for _, conn := range c.conns {
-		resp, err := dkvv1.NewAdminServiceClient(conn).ShardMap(ctx, &dkvv1.ShardMapRequest{})
-		if err != nil {
-			err = fmt.Errorf("dkv: shard map from %s: %w", conn.Target(), err)
-		}
-		maps, errs = append(maps, resp), append(errs, err)
+// ShardMaps asks every node the client was given for its shard map, all at
+// once. A node reports leaders only for the shards it holds, so merging the
+// maps of all nodes gives every shard's leader. Each node has perNode to
+// answer (when perNode > 0) within ctx, so a node that never answers delays
+// the call by at most perNode and takes no time from the others. The slices
+// are in address order; errs[i] is set where maps[i] is nil.
+func (c *Client) ShardMaps(ctx context.Context, perNode time.Duration) (maps []*dkvv1.ShardMapResponse, errs []error) {
+	maps = make([]*dkvv1.ShardMapResponse, len(c.conns))
+	errs = make([]error, len(c.conns))
+	// One goroutine per node, owned by this call: each ends when its
+	// request does, which perNode or ctx bounds, and the call waits for all.
+	var wg sync.WaitGroup
+	for i, conn := range c.conns {
+		wg.Go(func() {
+			nodeCtx := ctx
+			if perNode > 0 {
+				var cancel context.CancelFunc
+				nodeCtx, cancel = context.WithTimeout(ctx, perNode)
+				defer cancel()
+			}
+			resp, err := dkvv1.NewAdminServiceClient(conn).ShardMap(nodeCtx, &dkvv1.ShardMapRequest{})
+			if err != nil {
+				errs[i] = fmt.Errorf("dkv: shard map from %s: %w", conn.Target(), err)
+				return
+			}
+			maps[i] = resp
+		})
 	}
+	wg.Wait()
 	return maps, errs
 }
 

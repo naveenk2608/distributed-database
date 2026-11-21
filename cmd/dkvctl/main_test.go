@@ -280,6 +280,68 @@ func TestClusterCommands(t *testing.T) {
 	}
 }
 
+// TestLeadersWithDeadNodesFirst: leaders asks every node at once, each for
+// up to --timeout, so dead nodes listed first in --addr hide no other
+// node's view: one that accepts connections but never answers (a stopped
+// container behind Docker's port proxy) and one that refuses them (a
+// stopped process). Both are reported as unreachable; the table still shows
+// every shard's leader, as the live nodes see it.
+func TestLeadersWithDeadNodesFirst(t *testing.T) {
+	c := nodetest.Start(t, 3, func(_ int, cfg *config.Config) { cfg.Cluster.Shards = 3 })
+	nodetest.WaitFor(t, 30*time.Second, "every group to elect a leader", c.Settled)
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = silent.Close() }()
+	stoppedID, stoppedAddr := c.Members[2].NodeID(), c.Members[2].PublicAddr
+	c.Stop(2)
+	live := c.Members[0].PublicAddr + "," + c.Members[1].PublicAddr
+	leaders := func(r result) []leaderInfo {
+		var ls []leaderInfo
+		if r.code != exitOK || json.Unmarshal([]byte(r.stdout), &ls) != nil {
+			return nil
+		}
+		return ls
+	}
+	ledByLive := func(ls []leaderInfo) bool {
+		for _, l := range ls {
+			if l.Leader == "" || l.Leader == stoppedID {
+				return false
+			}
+		}
+		return len(ls) == 3
+	}
+	nodetest.WaitFor(t, 30*time.Second, "the two live nodes to lead every shard", func() bool {
+		return ledByLive(leaders(ctl(t, nil, "--addr="+live, "--json", "leaders")))
+	})
+
+	const timeout = 2 * time.Second
+	args := []string{"--addr=" + silent.Addr().String() + "," + stoppedAddr + "," + live, "--timeout=" + timeout.String()}
+	start := time.Now()
+	r := ctl(t, nil, append(args, "leaders")...)
+	elapsed := time.Since(start)
+	if r.code != exitOK {
+		t.Fatalf("leaders with dead nodes first: exit %d\nstdout:\n%sstderr:\n%s", r.code, r.stdout, r.stderr)
+	}
+	if lines := strings.Split(strings.TrimSpace(r.stdout), "\n"); len(lines) != 4 || strings.Contains(r.stdout, "unknown") {
+		t.Errorf("leaders with dead nodes first: want a leader for each of 3 shards:\n%s", r.stdout)
+	}
+	for _, dead := range []string{silent.Addr().String(), stoppedAddr} {
+		if !strings.Contains(r.stderr, dead+" unreachable") {
+			t.Errorf("stderr does not report %s as unreachable:\n%s", dead, r.stderr)
+		}
+	}
+	if elapsed > timeout+time.Second {
+		t.Errorf("leaders took %v; every node is asked at once, each for up to %v", elapsed, timeout)
+	}
+
+	r = ctl(t, nil, append(args, "--json", "leaders")...)
+	if ls := leaders(r); !ledByLive(ls) || !strings.Contains(r.stderr, silent.Addr().String()+" unreachable") {
+		t.Errorf("leaders --json with dead nodes first: exit %d, leaders %+v\nstderr:\n%s", r.code, ls, r.stderr)
+	}
+}
+
 // metaKnowsAll reports whether node 0 has read every member's record from
 // the meta group; until then, commands naming a node (drain) find none.
 func metaKnowsAll(c *nodetest.Cluster) bool {

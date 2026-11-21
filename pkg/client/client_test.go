@@ -96,6 +96,50 @@ func TestLargeValueRoundTrip(t *testing.T) {
 	}
 }
 
+// TestShardMapsAsksNodesAtOnce: a live node between two silent ones (they
+// accept TCP connections but never speak gRPC). Each node has its own
+// timeout and they are asked at the same time, so the call takes one
+// timeout, not two, however long ctx allows, and the live node's map comes
+// back although a silent node comes first.
+func TestShardMapsAsksNodesAtOnce(t *testing.T) {
+	node := servertest.Start(t, nil)
+	var silent []string
+	for range 2 {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = lis.Close() }()
+		silent = append(silent, lis.Addr().String())
+	}
+	c, err := client.New(silent[0], node.Addr, silent[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	const perNode = 1500 * time.Millisecond
+	start := time.Now()
+	maps, errs := c.ShardMaps(ctx, perNode)
+	elapsed := time.Since(start)
+	if len(maps) != 3 || len(errs) != 3 {
+		t.Fatalf("ShardMaps returned %d maps and %d errors for 3 nodes", len(maps), len(errs))
+	}
+	if errs[1] != nil || len(maps[1].GetShards()) != 1 {
+		t.Errorf("live node: map %v, error %v; want its one shard", maps[1], errs[1])
+	}
+	for _, i := range []int{0, 2} {
+		if maps[i] != nil || status.Code(errs[i]) != codes.DeadlineExceeded {
+			t.Errorf("silent node %d: map %v, error %v; want DeadlineExceeded", i, maps[i], errs[i])
+		}
+	}
+	if elapsed >= 2*perNode {
+		t.Errorf("ShardMaps took %v; asked one after another, the two silent nodes take at least %v", elapsed, 2*perNode)
+	}
+}
+
 // TestClientUnresponsiveServer points the client at a listener that accepts
 // TCP connections but never speaks gRPC. Unlike dialing a stopped server's
 // old port, nothing else can be listening there.

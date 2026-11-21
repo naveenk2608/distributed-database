@@ -35,6 +35,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -125,7 +127,7 @@ func runCommand(ctx context.Context, args []string, getenv func(string) string, 
 	fs := flag.NewFlagSet("dkvctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", getenv(addrEnv), "node addresses host:port, comma-separated; requests move to the next when one is unreachable (env "+addrEnv+")")
-	timeout := fs.Duration("timeout", 5*time.Second, "deadline for the request, including retries")
+	timeout := fs.Duration("timeout", 5*time.Second, "deadline for the request, including retries (leaders: for each node, all asked at once)")
 	consistency := fs.String("consistency", "linearizable", "get: linearizable (confirmed by the shard's leader) or stale (any replica)")
 	stale := fs.Bool("stale", false, "get: shorthand for --consistency=stale")
 	minVersion := fs.Uint64("min-version", 0, "get with stale consistency: wait until the replica has applied this version")
@@ -143,7 +145,9 @@ Commands:
   status              show the node's view of the cluster
   shards              show where each shard is placed and the node's local replicas
   leaders             show each shard's leader and term (ask every node:
-                      pass all of them in --addr)
+                      pass all of them in --addr; they are asked at once,
+                      each for up to --timeout, and any that cannot be
+                      reached is reported on stderr)
   transfer-leader <shard> <node-id>
                       hand a shard's leadership to one of its voters (-1 is
                       the meta group); the rebalancer may move it again
@@ -205,7 +209,8 @@ Flags:
 		}
 	}
 
-	c, err := client.New(strings.Split(*addr, ",")...)
+	addrs := strings.Split(*addr, ",")
+	c, err := client.New(addrs...)
 	if err != nil {
 		out.errorf("%v", err)
 		return exitError
@@ -249,14 +254,21 @@ Flags:
 			printShards(out, resp)
 		}
 	case "leaders":
-		shardMaps, errs := c.ShardMaps(ctx)
-		shardMaps = slices.DeleteFunc(shardMaps, func(m *dkvv1.ShardMapResponse) bool { return m == nil })
-		if err := errors.Join(errs...); err != nil && len(shardMaps) == 0 {
-			return fail(err)
-		} else if err != nil {
-			out.errorf("some nodes did not answer; their shards may show no leader: %v", err)
+		// Every node is asked at once and has the whole --timeout, so one
+		// that never answers hides no other node's view.
+		shardMaps, errs := c.ShardMaps(ctx, *timeout)
+		var answered []*dkvv1.ShardMapResponse
+		for i, err := range errs {
+			if err != nil {
+				out.errorf("%s", nodeProblem(addrs[i], err, *timeout))
+				continue
+			}
+			answered = append(answered, shardMaps[i])
 		}
-		leaders := mergeLeaders(shardMaps)
+		if len(answered) == 0 {
+			return fail(errors.New("no node answered"))
+		}
+		leaders := mergeLeaders(answered)
 		if *asJSON {
 			out.json(leaders)
 		} else {
@@ -382,6 +394,24 @@ func mergeLeaders(shardMaps []*dkvv1.ShardMapResponse) []leaderInfo {
 	out := slices.Collect(maps.Values(byShard))
 	slices.SortFunc(out, func(a, b leaderInfo) int { return int(a.Shard - b.Shard) })
 	return out
+}
+
+// nodeProblem says why the node at addr sent no shard map: unreachable when
+// it could not be connected to or gave no answer within timeout, otherwise
+// the error it answered with.
+func nodeProblem(addr string, err error, timeout time.Duration) string {
+	switch status.Code(err) {
+	case codes.DeadlineExceeded:
+		return fmt.Sprintf("%s unreachable: no answer within %s", addr, timeout)
+	case codes.Unavailable:
+		msg := err.Error()
+		var se interface{ GRPCStatus() *status.Status }
+		if errors.As(err, &se) {
+			msg = se.GRPCStatus().Message()
+		}
+		return fmt.Sprintf("%s unreachable: %s", addr, msg)
+	}
+	return fmt.Sprintf("%s: %v", addr, err)
 }
 
 // printLeaders writes one line per shard: its leader and term.

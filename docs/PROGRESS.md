@@ -1109,9 +1109,29 @@ Decisions taken while running the matrix (21 November), in order:
   check`: one write took 5.2 s against its 2 s bound, with the median write at 187 ms
   (about 4 ms when the test runs alone), so the machine was saturated. It passed 3 of 3
   runs alone (slowest write 66–99 ms) and is unchanged.
+- **`dkvctl leaders` printed nothing when the first node in `--addr` was dead** (Phase 9
+  code), found in a live Compose demo. The client asked the nodes one after another under
+  the single `--timeout` deadline. A stopped container behind Docker Desktop's port proxy
+  accepts the connection and then says nothing, so it used the whole deadline and every
+  node after it failed with DeadlineExceeded; listed first, it left no node to answer, and
+  the command exited 2 with no table. `client.ShardMaps` now asks every node at once, each
+  with its own timeout (dkvctl passes `--timeout`), and `leaders` reports each node it could
+  not reach on stderr (`<addr> unreachable: …`); stdout, the table or the JSON array, is
+  unchanged, so scripts that read it keep working. Tests: `client`
+  `TestShardMapsAsksNodesAtOnce` (a live node between two silent listeners: the live node's
+  map comes back, and the call takes one timeout, not two); `dkvctl`
+  `TestLeadersWithDeadNodesFirst` (three nodes, one stopped; a silent listener and the
+  stopped node first in `--addr`: every shard's leader shown, both reported unreachable,
+  within `--timeout` plus 1 s; before the fix it exited 2 with no output). Against the
+  Compose cluster, with a silent listener first: before, exit 2 and no table after 2.6 s;
+  after, all 64 leaders and the listener reported unreachable in 2.0–2.2 s.
 
 ### Known limitations
 
+- `dkvctl status`, `shards`, `transfer-leader`, `drain`, `undrain` and `decommission` ask
+  only the first node in `--addr` and do not move on when it is unreachable, although the
+  flag's help says requests move to the next; only the key-value commands and `leaders` use
+  the other addresses.
 - The local benchmarks run every node and the load generator on one machine: they compare
   variants with each other, not with other databases or with a real cluster.
 - The single-log path makes a restart replay up to a memtable's worth of the Raft log per
@@ -1147,6 +1167,26 @@ Decisions taken while running the matrix (21 November), in order:
   its "at least half" (20 of 20 passed alone). `e2e` `TestConsoleWatchesRealProcesses`: the
   console's polls of the nodes timed out. `integration` `TestAnyNodeAcceptsAnyKey`: a read
   hit its deadline. The third run, one test binary at a time (`GOFLAGS=-p=1`), passed.
+- `make check` for the `dkvctl leaders` fix ("Fixed along the way"), on a quiet machine
+  (`GOFLAGS=-p=2`): one failure, `dkv-bench` `TestBenchAgainstAServer`, the timing check
+  that also failed for the results commit above (the first whole second held 1,178 of 2,643
+  operations). Its test binary built from the fix is identical to HEAD's in every section
+  but the build ID (race build, `-trimpath`), so the fix cannot change its outcome; alone
+  it failed 1 of 80 runs here (60 unloaded, 20 beside three CPU-bound loops) and 0 of 80 on
+  HEAD. `e2e` `TestConsoleWatchesRealProcesses`, which had failed in earlier runs on a busy
+  machine, passed 20 of 20 on HEAD and 20 of 20 with the fix, in 12.8–19.9 s each.
+- Those earlier runs, while other work shared the machine (load averages of 15 to 48; the
+  VM restarted once), each failed in different tests, none of which runs the changed code:
+  the failure modes recorded above (`TestTransferLeaderAndDrain` and `e2e`
+  `TestSIGKILLedLeaderIsReplaced` reading a leader before it was published,
+  `TestDashboardGate`'s zero start time, `TestLeaderFailover` at 633 ms against 600 ms), a
+  5 s deadline in `TestThreeProcessesFormACluster`, and two not recorded before.
+  `linearizability` `wipe-node` failed twice on its own precondition, "the data shards'
+  logs were not compacted before the faults ended" (86 and 135 writes during the faults,
+  over 4 shards that compact every 20 entries); both histories were linearizable, and
+  alone it passed. When `e2e` `TestConsoleWatchesRealProcesses` fails, it reads the
+  console's captured stderr while the console is still writing it, and the race detector
+  reports a data race in the test itself.
 - One `replica` durability test failed once during this phase in a full `make check`
   run whose output was not kept; it did not fail again in 45 runs of the package's
   durability tests and 9 full runs of the package. The cause is unknown (the harness's
