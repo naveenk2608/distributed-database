@@ -244,7 +244,7 @@ at 8c7def4 (`check`, `crash`, `storage-gate`, `sim`) is green.
 | Gate item | Evidence | Status |
 | --- | --- | --- |
 | At least 10,000 seeded simulator schedules with zero violations of Election Safety, Log Matching, Leader Completeness and State Machine Safety; a failing seed replays identically | `internal/sim` via `make sim SEEDS=10000`: each schedule draws 3 or 5 nodes, drop rate 0–30%, duplicates 0–10%, delays up to 5 steps (so reordering), crashes that lose everything not fsynced (including commit-index updates written without fsync), restarts, and partitions, for 400 steps. Election Safety and Leader Completeness are checked whenever a leader is elected, State Machine Safety whenever an entry commits or applies, ReadIndex safety (a confirmed read index is never below an index committed before the read began) whenever a read is confirmed, and Log Matching across all live logs every 10 steps and at the end; then 300 calm steps must elect a leader and apply a new proposal on every node. Last run: 10,000 schedules in 81.5 s, zero violations; 23,843 leaders, 3,046,831 commit advances, 32,761 crashes, 22,421 partitions, 318,190 reads confirmed, 34,191,767 messages delivered and 3,748,186 dropped. `TestReplayIsIdentical` runs 50 seeds twice each and requires identical trace hashes (and different hashes for different seeds); a failing seed is rerun with `-first-seed`. `make check` runs 1,000 seeds under `-race`; CI runs 10,000 in its `sim` job. | Passed |
-| A three-node RF=3 cluster keeps serving after its leader is killed, with a new leader within about two election timeouts and no acknowledged write lost | `test/integration` `TestLeaderFailover`: 3 in-process nodes, 4 shards, 20 ms ticks (election timeout 200–400 ms). Four writers run through the survivors' public APIs; the leader of shard 0 is stopped; every shard it led must get a new leader within 2 election timeouts + 10 ticks (600 ms) of the stop; writes continue; then every acknowledged write is read back (linearizable) through a survivor, and after the stopped node restarts, through it and from its own replicas. 40 runs under `-race`: slowest new leader 203–394 ms per run (median 309 ms); 316 ms in a full parallel `go test -race ./...`. `test/e2e` `TestSIGKILLedLeaderIsReplaced`: three real `dkv-server` processes; the shard-0 leader gets SIGKILL after 40 acknowledged writes; a new leader is seen within the limit (2 timeouts + 25 ticks, as it polls each survivor over gRPC from another process); 40 more writes succeed; all 80 read back from the survivors and, after restart on the same data directory, from the killed node. 5 runs: 214–359 ms. | Passed |
+| A three-node RF=3 cluster keeps serving after its leader is killed, with a new leader within about two election timeouts and no acknowledged write lost | `test/integration` `TestLeaderFailover`: 3 in-process nodes, 4 shards, 20 ms ticks (election timeout 200–400 ms). Four writers run through the survivors' public APIs; the leader of shard 0 is stopped; every shard it led must get a new leader within two of the longest election timeouts, 4 × election ticks × tick (800 ms; ADR 0028, since the Phase 10 follow-up "Tests that fail at random"; it was 2 timeouts + 10 ticks, 600 ms) of the stop; writes continue; then every acknowledged write is read back (linearizable) through a survivor, and after the stopped node restarts, through it and from its own replicas. 40 runs under `-race`: slowest new leader 203–394 ms per run (median 309 ms); 316 ms in a full parallel `go test -race ./...`. `test/e2e` `TestSIGKILLedLeaderIsReplaced`: three real `dkv-server` processes; the shard-0 leader gets SIGKILL after 40 acknowledged writes; a new leader is seen within the limit (2 timeouts + 25 ticks, as it polls each survivor over gRPC from another process); 40 more writes succeed; all 80 read back from the survivors and, after restart on the same data directory, from the killed node. 5 runs: 214–359 ms. | Passed |
 | A retried PUT is applied exactly once | `test/integration` `TestRetriedPutAppliedOnce`: (1) a client interceptor lets the first Put reach the cluster and be applied, then reports `Unavailable` as if the response were lost; the client retries with the same session and request ID and gets the version the first try was applied at, and a read returns that version; (2) a Put through a follower, then the shard's leader is stopped, then the identical request is sent again: it returns the original version and the value is the first write's, not the retry's; a request ID older than the session's latest is refused with `FAILED_PRECONDITION`. `internal/replica` `TestRetriedWriteAppliedOnce` and `TestStateSurvivesRestart` (the session table survives restarting every replica). | Passed |
 
 Mutation checks (each deliberate bug applied alone, then the named tests run; scripts kept
@@ -1339,6 +1339,24 @@ before its commit.
   No run reported a data race. `integration` `TestLeaderFailover`, which also restarts a node
   on its address, is run with its own fix (next item).
 
+- **`integration` `TestLeaderFailover` asked for more than the plan** (Phase 6 test). The
+  gate is "a new leader within about two election timeouts". Each follower draws its
+  timeout from `[election_ticks, 2 × election_ticks)` ticks, 200–380 ms with the test's 20
+  ms ticks and 10 election ticks, and the test allowed two of the shortest plus 10 ticks,
+  600 ms. It failed now and then on a busy machine with nothing wrong (633 ms in one `make
+  check`; 0.62–1.36 s in 6 of 50 runs with two test binaries at a time). The bound is now
+  two of the longest timeouts, `4 × election_ticks × tick`, computed from the test's
+  configuration: 800 ms (ADR 0028). The first covers the wait for the winning survivor's
+  timer, which a refused pre-vote does not stretch (once both survivors campaign, the
+  tie-break picks one); the second, the election rounds and the test's polling. `e2e`
+  `TestSIGKILLedLeaderIsReplaced` keeps its looser 900 ms. 50 runs under `-race`, alone, on
+  the ports fix plus this change: 50 passed, slowest new leader 203–398 ms (median 285 ms),
+  no data race. An earlier batch of 50, run while the machine was slowed (below, "Known
+  limitations"), passed 37: 7 new leaders after 0.92–3.76 s, 4 acknowledged writes that
+  could not be read back within 5 s, 1 run with no write acknowledged to one shard in 8
+  writes, and 1 "shard 0 has no leader" (the next item but one); stopping a node took up to
+  2 s there, against at most 30 ms in the batch that passed.
+
 ### Known limitations
 
 - `linearizability` `wipe-node` waits, during its 3 s of faults, until every data shard
@@ -1350,4 +1368,17 @@ before its commit.
   Run alone 50 times it passed 50 of 50 with the ports fix (162–633 writes) and 50 of 50 on
   the commit before it (176–574): both failures came in runs after the matrix's other four
   scenarios in the same process.
-
+- `integration` `TestAnyNodeAcceptsAnyKey` (4 nodes, 16 shards of 2 replicas, 20 ms ticks)
+  needs most of this machine's 4 CPUs under `-race`, and every one of its groups needs both
+  of its replicas to commit or to answer a read, so one starved node stalls a group. It
+  failed `make check` for the ports fix (a read hit its 10 s deadline). Run alone after
+  that, with Docker Desktop's engine, the editor and three other terminal sessions running
+  (CPU pressure around 50%), it failed 3 of 3 runs on the commit before the ports fix and 3
+  of 3 with it: a request hit its deadline, or not every shard elected a leader within
+  20 s. It passed in CI (run 44984779518), and it had failed under load before (Phase 10,
+  "Known limitations"). Between about 04:00 and 04:35 UTC on 22 November everything
+  in-process ran slowly here (nodes took up to 2 s to stop; `TestLeaderFailover` failed 13
+  of 50 runs, above), with CPU pressure (`/proc/pressure/cpu`, 10 s average) around 50%
+  while only one test binary ran; the cause is outside this VM's view. Afterwards
+  `TestLeaderFailover` passed 50 of 50 and this test 10 of 10 (13.7–24.2 s each, against
+  22–300 s in that window).

@@ -111,12 +111,14 @@ func TestLeaderFailover(t *testing.T) {
 	}
 	t.Logf("node %d (leader of shards %v) stopped in %v; new leaders after %v (slowest %v; election timeout %v-%v)",
 		old, led, stopped.Round(time.Millisecond), elected, slowest.Round(time.Millisecond), electionTimeout, 2*electionTimeout)
-	// The followers' timers start at the victim's last heartbeat; the
-	// first to fire, within [timeout, 2*timeout), wins after one round of
-	// pre-votes and votes. Allow a few ticks for those rounds and for
-	// polling the shard maps.
-	if limit := 2*electionTimeout + 10*tick; slowest > limit {
-		t.Errorf("slowest new leader after %v; want within about two election timeouts (%v)", slowest, limit)
+	// The plan's gate: a new leader within about two election timeouts.
+	// A follower draws its timeout from [timeout, 2*timeout) ticks, so one
+	// election timeout can last up to 2*timeout and the gate is two of
+	// those (ADR 0028). The followers' timers start at the victim's last
+	// heartbeat; the first to fire wins after one round of pre-votes and
+	// votes, which the second timeout leaves time for.
+	if limit := 2 * (2 * electionTimeout); slowest > limit {
+		t.Errorf("slowest new leader after %v; want within two election timeouts of up to %v each (%v)", slowest, 2*electionTimeout, limit)
 	}
 
 	mu.Lock()
