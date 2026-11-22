@@ -4,9 +4,11 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
 
 ## Needs from you
 
-- **AWS (the free plan deployment, below):** the IAM user `dkv-deploy` can use EC2 but
-  not S3 or IAM, which `make aws-up` needs (the artifact bucket, the instances' role):
-  attach `AdministratorAccess` to it in the IAM console. Then the word to apply.
+- **AWS (the free plan deployment, below):** the account may run only 5 vCPUs of on-demand
+  standard instances in `ap-south-1`, and the cluster needs 8 (four 2-vCPU instances; every
+  free-tier-eligible type has 2). An increase to 8 was requested on 22 November and AWS
+  opened support case 179536397400095 for it. Watch for AWS's email or the case in the
+  Support Center and answer it if AWS asks anything. The apply runs once it is approved.
 - Docker Desktop's WSL integration is now on for this distro (`/usr/bin/docker` links to
   it since 21 November), but its engine is stopped: the benchmark matrix needed the machine
   to itself. Every Docker gate still runs on GitHub's runners: the Phase 4 Compose gate, the
@@ -1638,8 +1640,8 @@ A one-time run of `deploy/aws` on an AWS free plan account in `ap-south-1`: crea
 cluster, show failover on the dashboard, run a short benchmark from a load generator in the
 region, destroy everything and prove nothing is left (ADR 0030).
 
-Status: **planned, not applied.** The apply, the demo, the benchmark and the destroy wait
-for the IAM user's permissions and the word to apply ("Needs from you").
+Status: **planned, not applied.** The apply waits for a vCPU quota increase ("Needs from
+you"); the word to apply was given on 22 November.
 
 ### Before the apply (22 November)
 
@@ -1650,6 +1652,16 @@ for the IAM user's permissions and the word to apply ("Needs from you").
   `iam:GetInstanceProfile`, `s3:ListAllMyBuckets`, the Price List API, Service Quotas and
   `freetier:GetAccountPlanState` (remaining credits) are denied. The apply would stop at
   the S3 bucket and the IAM role, so it waits for the user's permissions.
+- **After `AdministratorAccess` was attached** the IAM and S3 checks pass, and the free plan
+  reads: plan `FREE`, `ACTIVE`, $134.79 of credits left, ending 2026-12-10 21:27 UTC.
+- **vCPU quota:** "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances" in
+  `ap-south-1` is 5 vCPUs (also AWS's default for the account); the cluster needs 8, so the
+  third instance of the apply would fail with `VcpuLimitExceeded`. Nothing was applied. An
+  increase to 8 was requested through Service Quotas at 16:09 UTC; AWS turned it into
+  support case 179536397400095 at 16:13. Rejected fallback: fitting 5 vCPUs means at most
+  two instances (every eligible type has 2 vCPUs), so two nodes, or a node and the load
+  generator, would share a machine, and neither the failover nor the benchmark would
+  measure what this deployment is for.
 - **Free-tier-eligible types in `ap-south-1`** (`aws ec2 describe-instance-types --filters
   Name=free-tier-eligible,Values=true`): `c7i-flex.large`, `m7i-flex.large`, `t3.micro`,
   `t3.small`, `t4g.micro`, `t4g.small`, `t8i.micro`, `t8i.small`.
