@@ -7,13 +7,13 @@ variable "name" {
 variable "region" {
   description = "AWS region."
   type        = string
-  default     = "eu-west-1"
+  default     = "ap-south-1"
 }
 
 variable "availability_zones" {
-  description = "Zones the nodes are spread over, one subnet each; the load generator goes in the first."
+  description = "Zones the nodes are spread over, one subnet each; the load generator goes in the first. Empty: the first three zones of the region, by name, that offer both instance types."
   type        = list(string)
-  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+  default     = []
 }
 
 variable "vpc_cidr" {
@@ -27,8 +27,8 @@ variable "allowed_cidr" {
   type        = string
 }
 
-variable "ssh_key_name" {
-  description = "An existing EC2 key pair, for SSH to every instance."
+variable "ssh_public_key_file" {
+  description = "An OpenSSH public key file. Terraform registers it as the instances' key pair and deletes the key pair on destroy; the private key is the same path without .pub."
   type        = string
 }
 
@@ -42,16 +42,22 @@ variable "node_count" {
   }
 }
 
+variable "free_tier_only" {
+  description = "Refuse instance types that are not free-tier eligible for this account in the region: an AWS free plan account can launch only those."
+  type        = bool
+  default     = true
+}
+
 variable "node_instance_type" {
-  description = "Instance type of the nodes. Not burstable (t*): CPU credits distort benchmark results."
+  description = "Instance type of the nodes. The default is free-tier eligible and not a t* type: flex instances have no CPU credits, and run at full speed most of the time over a 40% baseline."
   type        = string
-  default     = "c6i.large"
+  default     = "c7i-flex.large"
 }
 
 variable "loadgen_instance_type" {
-  description = "Instance type of the load generator."
+  description = "Instance type of the load generator, which also runs dkv-console."
   type        = string
-  default     = "c6i.xlarge"
+  default     = "c7i-flex.large"
 }
 
 variable "volume_type" {
@@ -61,27 +67,27 @@ variable "volume_type" {
 }
 
 variable "volume_size_gb" {
-  description = "Root volume size, which holds the data directory."
+  description = "Root volume size of every instance, which holds the data directory. 8 GiB is the size of the Ubuntu image, the smallest allowed."
   type        = number
-  default     = 50
+  default     = 8
 }
 
 variable "volume_iops" {
-  description = "Provisioned IOPS (gp3: 3,000 to 16,000)."
+  description = "Provisioned IOPS (gp3: 3,000, the baseline included in its price, to 16,000)."
   type        = number
   default     = 3000
 }
 
 variable "volume_throughput_mbps" {
-  description = "Provisioned throughput in MiB/s (gp3: 125 to 1,000)."
+  description = "Provisioned throughput in MiB/s (gp3: 125, the baseline included in its price, to 1,000)."
   type        = number
   default     = 125
 }
 
 variable "shards" {
-  description = "cluster.shards; fixed when the cluster is bootstrapped."
+  description = "cluster.shards; fixed when the cluster is bootstrapped. 16, as in make bench-local."
   type        = number
-  default     = 64
+  default     = 16
 }
 
 variable "replication_factor" {
@@ -96,8 +102,20 @@ variable "storage_sync" {
   default     = "always"
 }
 
+variable "log_level" {
+  description = "log.level of the nodes and the console (warn, as in make bench-local)."
+  type        = string
+  default     = "warn"
+}
+
+variable "console_port" {
+  description = "Port dkv-console serves the dashboard on, on the load generator's loopback only: reach it through an SSH tunnel (output console_tunnel)."
+  type        = number
+  default     = 8080
+}
+
 variable "binaries_dir" {
-  description = "Directory with linux/amd64 builds of dkv-server, dkvctl and dkv-bench (up.sh builds them)."
+  description = "Directory with linux/amd64 builds of dkv-server, dkvctl, dkv-bench and dkv-console, and web.tar.gz, the built dashboard (up.sh makes them)."
   type        = string
   default     = "../../bench/bin/linux-amd64"
 }

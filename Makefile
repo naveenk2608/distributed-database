@@ -118,8 +118,9 @@ web-test:
 bench-local:
 	bash bench/run-local.sh
 
-## aws-up / aws-down: create or destroy the AWS benchmark cluster (deploy/aws; costs money
-## until aws-down; needs terraform, AWS credentials and deploy/aws/terraform.tfvars)
+## aws-up / aws-down: create or destroy the AWS benchmark cluster (deploy/aws, shaped for a
+## free plan account; uses credits until aws-down, which then checks that nothing tagged
+## project=dkv is left; needs terraform, aws configure, Node 22, deploy/aws/terraform.tfvars)
 aws-up:
 	bash deploy/aws/up.sh
 

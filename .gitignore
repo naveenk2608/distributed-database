@@ -26,3 +26,4 @@ deploy/aws/.terraform/
 deploy/aws/.terraform.lock.hcl.bak
 deploy/aws/*.tfstate*
 deploy/aws/terraform.tfvars
+deploy/aws/.known_hosts

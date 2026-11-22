@@ -10,10 +10,13 @@ terraform {
 
 provider "aws" {
   region = var.region
+  # Every resource that takes tags gets these, root volumes included
+  # (root_block_device inherits them), so check-empty.sh can find
+  # anything left behind by the tag project=dkv.
   default_tags {
     tags = {
-      Project = "dkv"
-      Cluster = var.name
+      project = "dkv"
+      cluster = var.name
     }
   }
 }

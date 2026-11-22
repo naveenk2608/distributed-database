@@ -4,10 +4,9 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
 
 ## Needs from you
 
-- **AWS (Phase 10, optional):** `make aws-up` creates the benchmark cluster in AWS and
-  `make aws-down` destroys it. Neither has been run: it needs AWS credentials in the
-  environment, a `deploy/aws/terraform.tfvars` (copy `terraform.tfvars.example`: your
-  address as `allowed_cidr` and an EC2 key pair), and your decision to spend the money.
+- **AWS (the free plan deployment, below):** an access key in the AWS console and
+  `aws configure` in your own terminal (region `ap-south-1`); then the word to apply. The
+  code is ready and validated; nothing has been created in AWS yet.
 - Docker Desktop's WSL integration is now on for this distro (`/usr/bin/docker` links to
   it since 21 November), but its engine is stopped: the benchmark matrix needed the machine
   to itself. Every Docker gate still runs on GitHub's runners: the Phase 4 Compose gate, the
@@ -1632,3 +1631,66 @@ To do: 50 runs of both new tests and of the tests that exercise `call` through f
 `TestClientRoundTrip`; `integration` `TestLeaderFailover`; `TestDashboardGate`, whose
 writer uses the client); replace the Phase 10 known limitation on key-value requests with
 the fix; commit; push; CI.
+
+## AWS deployment on the free plan (Phase 10 follow-up)
+
+A one-time run of `deploy/aws` on an AWS free plan account in `ap-south-1`: create the
+cluster, show failover on the dashboard, run a short benchmark from a load generator in the
+region, destroy everything and prove nothing is left (ADR 0030).
+
+Status: **code ready, not run.** The plan, the apply, the demo, the benchmark and the
+destroy wait for AWS credentials ("Needs from you").
+
+### Implemented and tested
+
+- **`deploy/aws` for the free plan** (ADR 0030): `ap-south-1`; `c7i-flex.large` for the three
+  nodes and the load generator, with a precondition on each instance that refuses a type
+  the account's `DescribeInstanceTypes` does not report as free-tier eligible
+  (`free_tier_only`, default true); zones found from the instance types' offerings; public
+  subnets, no NAT gateway, no Elastic IPs; 8 GiB encrypted gp3 root volumes at the
+  baseline 3,000 IOPS and 125 MiB/s; IMDSv2 only; a key pair registered from a local public
+  key (`ssh_public_key_file`) instead of one made by hand; default tags `project=dkv` and
+  `cluster`, which root volumes inherit (AWS provider 5.100.0's `root_block_device.tags_all`);
+  16 shards, as in `make bench-local`; the user data retries its downloads and calls the
+  snap's `/snap/bin/aws`, which is not on cloud-init's PATH.
+- **The console and dashboard on the load generator:** `up.sh` also builds `dkv-console`
+  and the dashboard (`web.tar.gz`); the load generator runs the console under systemd,
+  history in memory, on loopback only; output `console_tunnel` is the SSH command for it.
+- **`make aws-up`** (`up.sh`) waits after the apply until the load generator's first boot
+  finished, every node takes a write and the console answers, and prints the tunnel
+  command. **`make aws-down`** (`down.sh`) destroys, then runs **`check-empty.sh`**: instances
+  not terminated, volumes, Elastic IPs, NAT gateways, VPCs, subnets, internet gateways,
+  security groups and key pairs tagged `project=dkv` in the region, and the S3 buckets, IAM
+  roles and instance profiles named after the cluster; it exits 1 if any is left.
+- **`deploy/aws/bench.sh`:** the AWS benchmarks with the local matrix's settings (workloads
+  A, B, C and W with 32 workers; leader failover with 16 workers and a SIGKILL 10 s into
+  the measured time, sent over an SSH connection the load generator keeps open, while a
+  runtime systemd drop-in keeps the killed node down until the run ends); results to
+  `bench/results/aws/`, the deployment's description to `bench/results/aws/meta/`, then
+  `docs/benchmarks.md` regenerated.
+- **`dkv-bench report` renders other environments as parts:** each subdirectory of the
+  results directory that holds result files (`aws/`; not `reruns/`) becomes a section after
+  the local experiments, with its own environment (the load generator's machine, the
+  builds, its `environment` label) and its experiments one heading level down; its runs
+  never enter the local tables. Test: `TestReportRendersOtherEnvironmentsAsParts` (it fails
+  if `reruns/` is treated as a part). The committed `docs/benchmarks.md` regenerates byte
+  for byte without parts.
+- Checks: `terraform fmt -check` and `validate` (AWS provider 5.100.0); both user-data
+  templates rendered with `terraform console` pass `bash -n`, and the YAML they write was
+  loaded by the real binaries: `dkv-server` got through its configuration to the listen
+  step (where binding the instance's private address fails on this machine), and
+  `dkv-console` ran without error.
+
+### Decisions
+
+- **The AWS results go in `docs/benchmarks.md` through the generator**, as a part rendered
+  from `bench/results/aws/`, so regenerating the report keeps them. Alternatives: a
+  hand-written section (the next `make bench-local` would drop it), or a second report
+  file (the request named `docs/benchmarks.md`).
+- **The AWS CLI is installed user-local** (v2.42.1 in `~/.local/aws-cli`, linked from
+  `~/.local/bin`; GPG signature checked against AWS's key FB5D B77F D5C1 18B8 0511 ADA8
+  A631 0ACC 4672 475C), since `sudo` needs a password. Terraform 1.9.8 was already in
+  `~/.local/bin`.
+- **The instances' SSH key** is a new ed25519 key, `~/.ssh/dkv-aws`, without a passphrase so
+  that `bench.sh` can load it into its own agent; AWS forgets it on destroy.
+  `deploy/aws/terraform.tfvars` (ignored by git) admits this machine's public address.

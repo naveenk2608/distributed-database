@@ -115,21 +115,28 @@ bin/dkv-bench report --results=bench/results --out=docs/benchmarks.md
 | chaos | `make chaos` | `chaos.yml`: fault injection on, for the failure matrix (`test/chaos`) |
 | dashboard | see [Dashboard](#dashboard) | admin APIs, a fourth node, `dkv-console`, PostgreSQL |
 
-**AWS.** `deploy/aws/` is Terraform for a benchmark cluster: a VPC with a
-subnet per availability zone, nodes spread over the zones on fixed private
-addresses, one load-generator instance, gp3 volumes by default, and an S3 bucket the
-instances fetch the binaries from. It costs money from `aws-up` until
-`aws-down`.
+**AWS.** `deploy/aws/` is Terraform for a benchmark cluster shaped for an
+AWS free plan account ([ADR 0030](docs/adr/0030-aws-free-plan-deployment.md)):
+by default in `ap-south-1`, three `c7i-flex.large` nodes spread over three
+zones on fixed private addresses, and a `c7i-flex.large` load generator that
+also runs `dkv-console` with the dashboard, on loopback only. 8 GiB gp3
+volumes, no NAT gateway, no Elastic IPs, and every resource tagged
+`project=dkv`. Terraform refuses instance types the account cannot launch on
+the free plan. The cluster uses credits from `aws-up` until `aws-down`.
 
 ```sh
-cp deploy/aws/terraform.tfvars.example deploy/aws/terraform.tfvars   # set allowed_cidr, ssh_key_name
-make aws-up      # builds linux/amd64 binaries, terraform apply, prints the addresses
-make aws-down    # terraform destroy
+ssh-keygen -t ed25519 -f ~/.ssh/dkv-aws -N ''                       # the instances' key pair
+cp deploy/aws/terraform.tfvars.example deploy/aws/terraform.tfvars  # set allowed_cidr
+aws configure          # an access key, region ap-south-1
+make aws-up            # builds the binaries and the dashboard, terraform apply, waits until every node takes writes
+deploy/aws/bench.sh    # the AWS benchmarks into bench/results/aws/; regenerates docs/benchmarks.md
+make aws-down          # terraform destroy, then fails if anything tagged project=dkv is left
 ```
 
-`terraform output bench_addrs` gives the `--addr` and `--admin` flags for
-`dkv-bench` on the load generator, and `terraform output environment` a line
-for the report.
+`make aws-up` ends by printing the SSH tunnel command for the dashboard
+(`terraform -chdir=deploy/aws output -raw console_tunnel`; then open
+http://localhost:8080). `deploy/aws/check-empty.sh` repeats the check that
+`aws-down` ends with.
 
 ## Development
 

@@ -1,8 +1,44 @@
 #!/bin/bash
-# Runs once at first boot: installs dkv-bench and dkvctl.
+# Runs once at first boot: installs dkv-bench, dkvctl and dkv-console, and
+# runs the console and the dashboard under systemd, listening on loopback
+# only (reach it through an SSH tunnel). It keeps its history in memory.
 set -euo pipefail
-snap install aws-cli --classic
-for b in dkv-bench dkvctl; do
-  aws s3 cp "s3://${bucket}/bin/$b" "/usr/local/bin/$b"
+retry() { for _ in 1 2 3 4 5 6; do "$@" && return 0; sleep 10; done; return 1; }
+retry snap install aws-cli --classic
+for b in dkv-bench dkvctl dkv-console; do
+  # /snap/bin is not on cloud-init's PATH.
+  retry /snap/bin/aws s3 cp --region "${region}" --only-show-errors "s3://${bucket}/bin/$b" "/usr/local/bin/$b"
   chmod 0755 "/usr/local/bin/$b"
 done
+retry /snap/bin/aws s3 cp --region "${region}" --only-show-errors "s3://${bucket}/bin/web.tar.gz" /root/web.tar.gz
+mkdir -p /opt/dkv/web
+tar -C /opt/dkv/web -xzf /root/web.tar.gz
+useradd --system --no-create-home --shell /usr/sbin/nologin dkv || true
+mkdir -p /etc/dkv
+cat > /etc/dkv/dkv-console.yaml <<CONFIG
+console:
+  listen_addr: "${console_listen}"
+  nodes: [${join(", ", [for a in split(",", console_nodes) : "\"${a}\""])}]
+  poll_interval: "1s"
+  poll_timeout: "800ms"
+  web_dir: "/opt/dkv/web"
+log:
+  level: "${log_level}"
+  format: "json"
+CONFIG
+cat > /etc/systemd/system/dkv-console.service <<UNIT
+[Unit]
+Description=dkv console and dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dkv
+ExecStart=/usr/local/bin/dkv-console --config=/etc/dkv/dkv-console.yaml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now dkv-console

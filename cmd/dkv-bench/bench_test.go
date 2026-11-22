@@ -136,7 +136,7 @@ func TestBenchAgainstAServer(t *testing.T) {
 		t.Fatalf("loaded %d results: %v", len(loaded), err)
 	}
 	var md bytes.Buffer
-	if err := writeReport(&md, loaded, nil); err != nil {
+	if err := writeReport(&md, loaded, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"## test", "| closed | 1 |", "| open | 1 |", "Machine:", "loop: closed loop, open loop at 200 ops/s",
@@ -242,7 +242,7 @@ func TestReportListsReruns(t *testing.T) {
 		t.Fatal(err)
 	}
 	var md bytes.Buffer
-	if err := writeReport(&md, results, rr); err != nil {
+	if err := writeReport(&md, results, rr, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"1 of the 1 runs were repeated", "## Reruns", "Screened by outside CPU.",
@@ -267,5 +267,74 @@ func TestReportListsReruns(t *testing.T) {
 	}
 	if rr, err := loadReruns(dir); rr != nil || err != nil {
 		t.Fatalf("without an index: %v, %v", rr, err)
+	}
+}
+
+// A subdirectory of the results, such as aws/, is another environment: the
+// report renders it as a part of its own after the main experiments, and
+// its runs stay out of the main tables and the main environment.
+func TestReportRendersOtherEnvironmentsAsParts(t *testing.T) {
+	dir := t.TempDir()
+	run := func(exp, variant, cpu string, labels ...string) *result {
+		r := &result{Labels: map[string]string{"experiment": exp, "title": exp + " title", "variant": variant},
+			Machine: machine{CPUModel: cpu, CPUs: 2, OS: "linux", Arch: "amd64"},
+			Config:  &runConfig{Workload: "A", Dist: "uniform", Seed: 1}, Results: measured{Throughput: 100}}
+		for i := 0; i+1 < len(labels); i += 2 {
+			r.Labels[labels[i]] = labels[i+1]
+		}
+		return r
+	}
+	aws := []string{"part", "AWS", "environment", "Three nodes in ap-south-1."}
+	files := map[string]*result{
+		"nodes--3--1.json":           run("nodes", "3 nodes", "laptop", "environment", "One machine."),
+		"aws/workloads--A--1.json":   run("workloads", "A", "xeon", aws...),
+		"aws/workloads--A--2.json":   run("workloads", "A", "xeon", aws...),
+		"aws/meta/deployment.json":   nil, // not a result: below the part's own files
+		"reruns/nodes--3--1--x.json": run("nodes", "3 nodes", "laptop"),
+	}
+	for path, r := range files {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if r == nil {
+			if err := os.WriteFile(full, []byte(`{"region": "ap-south-1"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if _, err := writeResult(r, full); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := loadResults(dir)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("loaded %d main results: %v; want 1", len(results), err)
+	}
+	parts, err := loadParts(dir)
+	if err != nil || len(parts) != 1 || parts[0].dir != "aws" || len(parts[0].results) != 2 {
+		t.Fatalf("parts %+v, %v; want aws/ alone, with its 2 results", parts, err)
+	}
+	var md bytes.Buffer
+	if err := writeReport(&md, results, nil, parts); err != nil {
+		t.Fatal(err)
+	}
+	s, at := md.String(), 0
+	for _, want := range []string{"AWS (2 result files in `bench/results/aws/`)",
+		"## Environment\n\n- Machine: laptop", "- One machine.", "## nodes title", "| 3 nodes | 1 |",
+		"## AWS\n\n### Environment\n\n- Load generator: xeon", "- Three nodes in ap-south-1.",
+		"### workloads title", "| A | 2 |"} {
+		i := strings.Index(s[at:], want)
+		if i < 0 {
+			t.Fatalf("report lacks %q after offset %d:\n%s", want, at, s)
+		}
+		at += i + len(want)
+	}
+	if strings.Count(s, "xeon") != 1 || strings.Count(s, "laptop") != 1 {
+		t.Fatalf("the environments' machines are mixed:\n%s", s)
 	}
 }
