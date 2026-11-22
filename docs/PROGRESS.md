@@ -1147,6 +1147,15 @@ Decisions taken while running the matrix (21 November), in order:
   `TestBenchAgainstAServer`; then `TestConsoleWatchesRealProcesses`, `integration`
   `TestAnyNodeAcceptsAnyKey` and `paused-leader`'s 1.5 s bound); the previous commit passed
   one such run and two one-at-a-time runs.
+- **A data race in `e2e` `TestConsoleWatchesRealProcesses`'s own code** (Phase 9). The
+  console's stderr went into a `strings.Builder` that `exec` filled from its own goroutine
+  while the console ran, and the test read it to report a failure (the "never saw three
+  nodes up" check and the SIGTERM timeout) while the console was still writing, so every
+  such failure also reported a data race, which hid the real cause. The output now goes into
+  a buffer guarded by a mutex. With the test made to fail at that check after 3 s, in a
+  scratch copy, the old code reported two data races in each of 3 runs and the new code
+  none in 3, each failure showing the console's logs; the unchanged test passed 5 of 5
+  runs under `-race`.
 
 ### Known limitations
 
@@ -1214,9 +1223,9 @@ Decisions taken while running the matrix (21 November), in order:
   `linearizability` `wipe-node` failed twice on its own precondition, "the data shards'
   logs were not compacted before the faults ended" (86 and 135 writes during the faults,
   over 4 shards that compact every 20 entries); both histories were linearizable, and
-  alone it passed. When `e2e` `TestConsoleWatchesRealProcesses` fails, it reads the
-  console's captured stderr while the console is still writing it, and the race detector
-  reports a data race in the test itself.
+  alone it passed. When `e2e` `TestConsoleWatchesRealProcesses` failed, it read the
+  console's captured stderr while the console was still writing it, and the race detector
+  reported a data race in the test itself (fixed: "Fixed along the way").
 - One `replica` durability test failed once during this phase in a full `make check`
   run whose output was not kept; it did not fail again in 45 runs of the package's
   durability tests and 9 full runs of the package. The cause is unknown (the harness's

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,10 +10,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// lockedBuffer collects a process's output: exec copies the output into it
+// from its own goroutine while the process runs, and the test may read it
+// at any time, for example to report a failure.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
 
 // TestConsoleWatchesRealProcesses: three dkv-server processes serve their
 // admin HTTP API (server.admin_addr) and a dkv-console process, configured
@@ -49,7 +71,7 @@ func TestConsoleWatchesRealProcesses(t *testing.T) {
 	cmd := exec.Command(consoleBin, "--console.listen-addr="+listen, "--console.nodes="+strings.Join(admin, ","),
 		"--console.poll-interval=300ms", "--console.poll-timeout=250ms", "--console.web-dir="+web, "--log.format=json")
 	cmd.Env = []string{}
-	var logs strings.Builder
+	var logs lockedBuffer // read while the console still writes to it
 	cmd.Stderr = &logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
