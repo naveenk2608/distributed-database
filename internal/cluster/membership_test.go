@@ -13,6 +13,7 @@ import (
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/obs"
+	"github.com/naveenk2608/distributed-database/internal/porttest"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
 
@@ -103,9 +104,7 @@ func TestDownWindowIsExact(t *testing.T) {
 }
 
 func TestNeverReachedPeerGoesDown(t *testing.T) {
-	lis, _ := net.Listen("tcp", "127.0.0.1:0")
-	dead := lis.Addr().String()
-	_ = lis.Close()
+	dead := porttest.Refusing(t) // never answers a ping
 	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
 	m := observer(t, clock, dead)
 	m.pingOnce(context.Background(), dead)
@@ -191,12 +190,7 @@ func TestPlacementMismatchIsReported(t *testing.T) {
 // answered), once per change.
 func TestPeerEvents(t *testing.T) {
 	_, live := node(t, "c", "peer-1")
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dead := lis.Addr().String()
-	_ = lis.Close() // nothing answers there
+	dead := porttest.Refusing(t) // nothing answers there
 	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
 	pool := transport.NewPool(tcfg)
 	t.Cleanup(func() { _ = pool.Close() })

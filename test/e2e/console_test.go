@@ -36,6 +36,29 @@ func (l *lockedBuffer) String() string {
 	return l.buf.String()
 }
 
+// dashboardAddr waits for the console to log the address it bound.
+func dashboardAddr(t *testing.T, logs *lockedBuffer, exited <-chan error) string {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		for _, line := range strings.Split(logs.String(), "\n") {
+			var rec struct{ Msg, Addr string }
+			if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "serving the dashboard" {
+				return rec.Addr
+			}
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("console exited before serving: %v\n%s", err, logs.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("console did not report its address\n%s", logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestConsoleWatchesRealProcesses: three dkv-server processes serve their
 // admin HTTP API (server.admin_addr) and a dkv-console process, configured
 // by flags alone, polls them, serves their overview, and the dashboard's
@@ -46,11 +69,13 @@ func TestConsoleWatchesRealProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addrs := freeAddrs(t, 7)
-	internal, admin, listen := addrs[:3], addrs[3:6], addrs[6]
-	for i := range 3 {
-		startServer(t, serverBin, t.TempDir(), false, "--cluster.internal-addr="+internal[i],
-			"--cluster.peers="+strings.Join(internal, ","), "--server.admin-addr="+admin[i])
+	// Only the internal addresses, the peer list, are chosen up front; the
+	// servers and the console bind their other ports themselves (port 0)
+	// and report them.
+	procs, _, _ := startCluster(t, serverBin, 3, func(int) []string { return []string{"--server.admin-addr=127.0.0.1:0"} })
+	var admin []string
+	for _, p := range procs {
+		admin = append(admin, p.adminAddr())
 	}
 	web := t.TempDir()
 	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("<html>dkv dashboard test page</html>"), 0o644); err != nil {
@@ -60,7 +85,7 @@ func TestConsoleWatchesRealProcesses(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		code int
-	}{{[]string{"-h"}, 0}, {[]string{"--console.listen-addr=" + listen}, 2}} {
+	}{{[]string{"-h"}, 0}, {[]string{"--console.listen-addr=127.0.0.1:0"}, 2}} {
 		cmd := exec.Command(consoleBin, tc.args...)
 		cmd.Env = []string{}
 		if err := cmd.Run(); exitCode(err) != tc.code {
@@ -68,7 +93,7 @@ func TestConsoleWatchesRealProcesses(t *testing.T) {
 		}
 	}
 
-	cmd := exec.Command(consoleBin, "--console.listen-addr="+listen, "--console.nodes="+strings.Join(admin, ","),
+	cmd := exec.Command(consoleBin, "--console.listen-addr=127.0.0.1:0", "--console.nodes="+strings.Join(admin, ","),
 		"--console.poll-interval=300ms", "--console.poll-timeout=250ms", "--console.web-dir="+web, "--log.format=json")
 	cmd.Env = []string{}
 	var logs lockedBuffer // read while the console still writes to it
@@ -96,7 +121,7 @@ func TestConsoleWatchesRealProcesses(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
-	base := "http://" + listen
+	base := "http://" + dashboardAddr(t, &logs, exited)
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		code, body := get(base + "/api/overview")

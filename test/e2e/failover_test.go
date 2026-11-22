@@ -3,7 +3,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -47,20 +46,12 @@ func shardLeader(procs []*serverProc, alive []bool, shard uint32) int {
 // on its data directory, replays its Raft log and serves them too.
 func TestSIGKILLedLeaderIsReplaced(t *testing.T) {
 	serverBin, _ := binaries(t)
-	internal := freeAddrs(t, 3)
 	const tick, electionTicks = 20 * time.Millisecond, 10
 	electionTimeout := electionTicks * tick
-	args := func(i int) []string {
-		return []string{"--cluster.internal-addr=" + internal[i], "--cluster.peers=" + strings.Join(internal, ","),
-			"--cluster.shards=4", "--cluster.replication-factor=3",
-			"--raft.tick-interval=" + tick.String(), fmt.Sprintf("--raft.election-ticks=%d", electionTicks)}
-	}
-	dirs := []string{t.TempDir(), t.TempDir(), t.TempDir()}
-	procs := make([]*serverProc, 3)
+	extra := []string{"--cluster.shards=4", "--cluster.replication-factor=3",
+		"--raft.tick-interval=" + tick.String(), fmt.Sprintf("--raft.election-ticks=%d", electionTicks)}
+	procs, internal, dirs := startCluster(t, serverBin, 3, func(int) []string { return extra })
 	alive := []bool{true, true, true}
-	for i := range procs {
-		procs[i] = startServer(t, serverBin, dirs[i], false, args(i)...)
-	}
 	deadline := time.Now().Add(30 * time.Second)
 	for shardLeader(procs, alive, 0) < 0 {
 		if time.Now().After(deadline) {
@@ -136,7 +127,7 @@ func TestSIGKILLedLeaderIsReplaced(t *testing.T) {
 	verify(c, "survivors")
 	_ = c.Close()
 
-	procs[victim] = startServer(t, serverBin, dirs[victim], false, args(victim)...)
+	procs[victim] = restartServer(t, serverBin, dirs[victim], clusterArgs(internal, victim, extra)...)
 	alive[victim] = true
 	c, err = client.New(procs[victim].addr)
 	if err != nil {

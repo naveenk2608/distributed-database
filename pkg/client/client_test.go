@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/naveenk2608/distributed-database/internal/config"
+	"github.com/naveenk2608/distributed-database/internal/porttest"
 	"github.com/naveenk2608/distributed-database/internal/server/servertest"
 	"github.com/naveenk2608/distributed-database/pkg/client"
 )
@@ -141,33 +142,6 @@ func TestShardMapsAsksNodesAtOnce(t *testing.T) {
 	}
 }
 
-// resettingListener accepts TCP connections and closes each at once, like a
-// node whose process is gone. Unlike a stopped server's old port, nothing
-// else can start listening there. It stops when the test ends.
-func resettingListener(t *testing.T) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() { // owned by the test; ends when the listener is closed
-		defer close(done)
-		for {
-			conn, err := lis.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-	t.Cleanup(func() {
-		_ = lis.Close()
-		<-done
-	})
-	return lis.Addr().String()
-}
-
 // TestAdminRequestsMoveOnFromDeadNodes: with a silent node (accepts TCP,
 // never speaks gRPC) and a node that resets every connection listed before
 // a live one, admin requests are answered by the live node, after at most
@@ -181,7 +155,7 @@ func TestAdminRequestsMoveOnFromDeadNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = silent.Close() }()
-	reset := resettingListener(t)
+	reset := porttest.Refusing(t)
 
 	c, err := client.New(silent.Addr().String(), reset, node.Addr)
 	if err != nil {

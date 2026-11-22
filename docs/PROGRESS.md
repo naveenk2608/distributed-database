@@ -1159,12 +1159,13 @@ Decisions taken while running the matrix (21 November), in order:
 
 ### Known limitations
 
-- The `e2e` tests pick "free" ports by listening on port 0 and closing the listener, and on
-  this machine the ephemeral range is 9130–13225 (4,096 ports), the range every outgoing
-  connection also draws from, so a node now and then finds its port taken: `bind: address
-  already in use` in `TestThreeProcessesFormACluster` and `TestConsoleWatchesRealProcesses`,
-  once each in the runs for the two `dkvctl` fixes. The other session saw the same in
-  `TestLeaderFailover` ("the stopped node's port was taken").
+- (Fixed in "Tests that fail at random", below.) The `e2e` tests picked "free" ports by
+  listening on port 0 and closing the listener, and on this machine the ephemeral range is
+  9130–13225 (4,096 ports), the range every outgoing connection also draws from, so a node
+  now and then found its port taken: `bind: address already in use` in
+  `TestThreeProcessesFormACluster` and `TestConsoleWatchesRealProcesses`, once each in the
+  runs for the two `dkvctl` fixes. The other session saw the same in `TestLeaderFailover`
+  ("the stopped node's port was taken").
 - Key-value requests move to the next node only when one answers `Unavailable`, which
   includes a refused connection. A node that accepts the connection and never answers (a
   stopped container behind a port proxy) holds a key-value request until its deadline, so
@@ -1292,3 +1293,61 @@ throughput chart adds up the nodes' samples of each poll).
 - The Phase 9 browser gate (`make dashboard-gate`) was not run here: it brings up its own
   Compose cluster on port 8080, which the local demo cluster holds, and SIGKILLs a node.
   Its read-only locators were checked in Chromium against the rebuilt console instead.
+
+## Tests that fail at random (Phase 10 follow-up)
+
+Goal: `make check` and CI that pass or fail on the code alone. Each item was run 50 times
+under `-race`, one test binary at a time (`GOFLAGS=-p=1`), with every test it touches,
+before its commit.
+
+### Implemented and tested
+
+- **Ports released and bound again later** (test code since Phase 4). Tests found "free"
+  ports by listening on port 0 and closing the listener, and bound them later. Such a port
+  comes from the ephemeral range (9130–13225 on this machine), which every outgoing
+  connection also draws from, so another socket could take it in between. New package
+  `internal/porttest`. In-process servers listen on 127.0.0.1:0 and report the address they
+  got, or are handed a listener that is already open (`nodetest` opens its listeners with
+  `porttest.Listen`). The `e2e` servers and console bind their public, admin and dashboard
+  ports themselves (port 0) and the tests read the addresses from their logs. Where an
+  address has to be chosen before it is bound (an `e2e` cluster's peer list, the internal
+  address in `dkv-server` `TestRunAsSingleNodeCluster`), `porttest.Pick` chooses a random
+  port of at least 10000 outside `/proc/sys/net/ipv4/ip_local_port_range`, where only
+  another deliberate listener can collide, and the caller starts again on new ports when a
+  process reports `address already in use` (up to 5 times). A node restarted on its address
+  retries that address while it is in use: `porttest.Relisten` for 5 s in process, 10 s
+  for an `e2e` process. Tests that stand for a dead node use `porttest.Refusing`, a
+  listener that closes every connection, instead of a closed listener's address, which
+  something else could take; it replaces three copies of that helper. Tests: `porttest`
+  `TestPortsStayOutOfTheEphemeralRange`, `TestRelistenAndInUse`, `TestRefusingAndSilent`.
+  50 runs each under `-race`:
+
+  | Package | Tests | Passed of 50 |
+  | --- | --- | --- |
+  | `porttest` | `TestPortsStayOutOfTheEphemeralRange`, `TestRelistenAndInUse`, `TestRefusingAndSilent` | 50 each |
+  | `router` | `TestDeadReplicasFailWithinDeadline` | 50 |
+  | `transport` | `TestUnreachablePeerFailsFast` | 50 |
+  | `cluster` | `TestNeverReachedPeerGoesDown`, `TestPeerEvents` | 50 each |
+  | `cmd/dkv-server` | `TestRunAsSingleNodeCluster` | 50 |
+  | `pkg/client` | `TestAdminRequestsMoveOnFromDeadNodes` | 50 |
+  | `cmd/dkvctl` | `TestAdminCommandsMoveOnFromDeadAddresses` | 50 |
+  | `e2e` | `TestThreeProcessesFormACluster`, `TestSIGKILLedLeaderIsReplaced`, `TestConsoleWatchesRealProcesses` | 50 each |
+  | `integration` | `TestRestartedPeerRejoinsWithItsID`, `TestAddedNodeTakesItsShare`, `TestEarlyJoinerWaitsForTheMetaBootstrap`, `TestWipedNodeRejoinsThroughSnapshots`, `TestShardDataSurvivesRestart` | 50 each |
+  | `linearizability` | `TestPowerLossOfMajorityLosesNothing` (both sync modes); `TestFailureMatrix` `kill-leader`, `kill-minority`, `kill-majority`, `rolling-restart` | 50 each |
+  | `linearizability` | `TestFailureMatrix` `wipe-node` | 48: both failures were its own precondition (below, "Known limitations"); both histories linearizable |
+
+  No run reported a data race. `integration` `TestLeaderFailover`, which also restarts a node
+  on its address, is run with its own fix (next item).
+
+### Known limitations
+
+- `linearizability` `wipe-node` waits, during its 3 s of faults, until every data shard
+  has compacted its log (every 20 entries) before it wipes a node, and fails when that does
+  not happen in time. How many writes fit in those 3 s depends on the machine, and how they
+  fall on the 4 shards on the keys: 53 to 808 in the 50 runs for the ports fix, and the runs
+  with 53 and 137 failed this way (both histories linearizable). It failed the same way
+  twice before (Phase 10, "Known limitations").
+  Run alone 50 times it passed 50 of 50 with the ports fix (162–633 writes) and 50 of 50 on
+  the commit before it (176–574): both failures came in runs after the matrix's other four
+  scenarios in the same process.
+

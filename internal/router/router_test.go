@@ -16,6 +16,7 @@ import (
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/placement"
+	"github.com/naveenk2608/distributed-database/internal/porttest"
 	"github.com/naveenk2608/distributed-database/internal/raft"
 	"github.com/naveenk2608/distributed-database/internal/replica"
 	"github.com/naveenk2608/distributed-database/internal/storage/lsm"
@@ -356,9 +357,7 @@ func TestLeaderErrorsAreNotRetried(t *testing.T) {
 // replicas answer are retried with backoff but return when the caller's
 // deadline expires, or after the attempt limit without one.
 func TestDeadReplicasFailWithinDeadline(t *testing.T) {
-	lis, _ := net.Listen("tcp", "127.0.0.1:0")
-	dead := lis.Addr().String()
-	_ = lis.Close()
+	dead := porttest.Refusing(t) // closes every connection, as a dead replica's port would
 	pool := transport.NewPool(tcfg)
 	defer func() { _ = pool.Close() }()
 	r := New(Config{Self: "127.0.0.1:1", Shards: shards, Pool: pool, Log: slog.New(slog.DiscardHandler),

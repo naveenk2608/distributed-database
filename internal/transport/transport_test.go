@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
+	"github.com/naveenk2608/distributed-database/internal/porttest"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
@@ -184,9 +185,7 @@ func TestSilentPeerTimesOut(t *testing.T) {
 }
 
 func TestUnreachablePeerFailsFast(t *testing.T) {
-	lis, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := lis.Addr().String()
-	_ = lis.Close() // nothing listens there now
+	addr := porttest.Refusing(t) // closes every connection, as a stopped peer's port would
 	pool := newPool(t)
 	start := time.Now()
 	_, err := ping(pool, addr, 5*time.Second)

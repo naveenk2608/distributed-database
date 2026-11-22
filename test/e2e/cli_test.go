@@ -69,16 +69,35 @@ func TestMain(m *testing.M) {
 type serverProc struct {
 	t        *testing.T
 	cmd      *exec.Cmd
-	addr     string
+	addr     string      // public address, as the server reported it
+	adminCh  chan string // admin HTTP address, when the server reports one
+	admin    string
 	logs     *bytes.Buffer // owned by the reader goroutine until waitDone closes
 	waitErr  error
 	waitDone chan struct{}
 }
 
-// startServer starts dkv-server on a free public port with dataDir (and any
-// extra flags) and waits for it to report its address. If wantExit is true it instead waits for the
-// process to exit and returns it.
-func startServer(t *testing.T, bin, dataDir string, wantExit bool, extraArgs ...string) *serverProc {
+// exitedEarly is a server that exited before reporting its address.
+type exitedEarly struct {
+	err  error
+	logs string
+}
+
+func (e *exitedEarly) Error() string {
+	return fmt.Sprintf("server exited early: %v\n%s", e.err, e.logs)
+}
+
+// addrInUse reports whether err is a server that exited because an address
+// it was given to listen on was in use.
+func addrInUse(err error) bool {
+	var e *exitedEarly
+	return errors.As(err, &e) && strings.Contains(e.logs, "address already in use")
+}
+
+// spawn starts dkv-server with dataDir, a public port the server picks
+// (127.0.0.1:0) and any extra flags. addrCh receives the public address
+// once the server reports it.
+func spawn(t *testing.T, bin, dataDir string, extraArgs ...string) (p *serverProc, addrCh <-chan string) {
 	t.Helper()
 	args := append([]string{"--server.grpc-addr=127.0.0.1:0", "--log.format=json", "--storage.dir=" + dataDir}, extraArgs...)
 	cmd := exec.Command(bin, args...)
@@ -90,22 +109,54 @@ func startServer(t *testing.T, bin, dataDir string, wantExit bool, extraArgs ...
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	p := &serverProc{t: t, cmd: cmd, logs: &bytes.Buffer{}, waitDone: make(chan struct{})}
-	addrCh := make(chan string, 1)
-	go func() {
+	p = &serverProc{t: t, cmd: cmd, adminCh: make(chan string, 1), logs: &bytes.Buffer{}, waitDone: make(chan struct{})}
+	addrs := make(chan string, 1)
+	go func() { // owned by p; ends when the process exits, which kill forces
 		defer close(p.waitDone)
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			p.logs.Write(append(sc.Bytes(), '\n'))
 			var rec struct{ Msg, Addr string }
-			if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Msg == "serving KV API" {
-				addrCh <- rec.Addr
+			if json.Unmarshal(sc.Bytes(), &rec) != nil {
+				continue
+			}
+			switch rec.Msg {
+			case "serving KV API":
+				addrs <- rec.Addr
+			case "serving admin HTTP API":
+				p.adminCh <- rec.Addr
 			}
 		}
 		p.waitErr = cmd.Wait()
 	}()
 	t.Cleanup(p.kill)
+	return p, addrs
+}
+
+// launchServer starts dkv-server as spawn does and waits for it to report
+// its public address. A server that exits first comes back as an
+// *exitedEarly error, which addrInUse inspects.
+func launchServer(t *testing.T, bin, dataDir string, extraArgs ...string) (*serverProc, error) {
+	t.Helper()
+	p, addrCh := spawn(t, bin, dataDir, extraArgs...)
+	select {
+	case p.addr = <-addrCh:
+		return p, nil
+	case <-p.waitDone:
+		return nil, &exitedEarly{err: p.waitErr, logs: p.logs.String()}
+	case <-time.After(30 * time.Second):
+		p.kill()
+		return nil, fmt.Errorf("server did not report its address\n%s", p.logs.String())
+	}
+}
+
+// startServer starts dkv-server as launchServer does and fails the test if
+// it does not come up. If wantExit is true it instead waits for the
+// process to exit and returns it.
+func startServer(t *testing.T, bin, dataDir string, wantExit bool, extraArgs ...string) *serverProc {
+	t.Helper()
 	if wantExit {
+		p, _ := spawn(t, bin, dataDir, extraArgs...)
 		select {
 		case <-p.waitDone:
 		case <-time.After(30 * time.Second):
@@ -114,15 +165,26 @@ func startServer(t *testing.T, bin, dataDir string, wantExit bool, extraArgs ...
 		}
 		return p
 	}
-	select {
-	case p.addr = <-addrCh:
-	case <-p.waitDone:
-		t.Fatalf("server exited early: %v\n%s", p.waitErr, p.logs.String())
-	case <-time.After(30 * time.Second):
-		p.kill()
-		t.Fatalf("server did not report its address\n%s", p.logs.String())
+	p, err := launchServer(t, bin, dataDir, extraArgs...)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return p
+}
+
+// adminAddr waits for the server to report the admin HTTP address it bound
+// (it was started with --server.admin-addr=127.0.0.1:0).
+func (p *serverProc) adminAddr() string {
+	p.t.Helper()
+	if p.admin == "" {
+		select {
+		case p.admin = <-p.adminCh:
+		case <-time.After(30 * time.Second):
+			p.kill() // the logs are the reader's until the process is gone
+			p.t.Fatalf("server did not report its admin address\n%s", p.logs.String())
+		}
+	}
+	return p.admin
 }
 
 // kill sends SIGKILL (a no-op if the process already exited) and waits.

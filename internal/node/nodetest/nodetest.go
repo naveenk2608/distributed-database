@@ -21,6 +21,7 @@ import (
 	dkvv1 "github.com/naveenk2608/distributed-database/gen/dkv/v1"
 	"github.com/naveenk2608/distributed-database/internal/config"
 	"github.com/naveenk2608/distributed-database/internal/node"
+	"github.com/naveenk2608/distributed-database/internal/porttest"
 	"github.com/naveenk2608/distributed-database/internal/storage/vfs"
 	"github.com/naveenk2608/distributed-database/internal/transport"
 )
@@ -146,15 +147,14 @@ func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *confi
 	return c
 }
 
+// listenN opens n listeners on ports outside the kernel's ephemeral range,
+// so a member restarted on its addresses (listenAgain) cannot find them
+// taken by some connection's local port in the meantime.
 func listenN(t testing.TB, n int) []net.Listener {
 	t.Helper()
 	out := make([]net.Listener, n)
 	for i := range out {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("nodetest: listen: %v", err)
-		}
-		out[i] = l
+		out[i] = porttest.Listen(t)
 	}
 	return out
 }
@@ -163,17 +163,7 @@ func listenN(t testing.TB, n int) []net.Listener {
 // busy for a moment after the old listener closes.
 func listenAgain(t testing.TB, addr string) net.Listener {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		l, err := net.Listen("tcp", addr)
-		if err == nil {
-			return l
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nodetest: rebind %s: %v", addr, err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	return porttest.Relisten(t, addr, 5*time.Second)
 }
 
 func (m *Member) start(t testing.TB, public, internal, admin net.Listener, opts Options) {
