@@ -67,6 +67,11 @@ type Member struct {
 	InternalAddr string
 	AdminAddr    string // with Options.Admin
 
+	// The member's listening sockets, kept for the whole test and lent to
+	// each start: a restart cannot find its addresses taken, and while the
+	// member is stopped they refuse connections (porttest.Keep).
+	public, internal, admin *porttest.Kept
+
 	mu     sync.Mutex
 	nodeID string
 	node   *node.Node
@@ -107,10 +112,10 @@ func Start(t testing.TB, n int, configure func(i int, c *config.Config)) *Cluste
 // StartWith is Start with fault-injection options.
 func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *config.Config)) *Cluster {
 	t.Helper()
-	publics, internals := listenN(t, n), listenN(t, n)
-	admins := make([]net.Listener, n)
+	publics, internals := keepN(t, n), keepN(t, n)
+	admins := make([]*porttest.Kept, n)
 	if opts.Admin {
-		admins = listenN(t, n)
+		admins = keepN(t, n)
 	}
 	var peers []string
 	for _, l := range internals {
@@ -132,12 +137,12 @@ func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *confi
 			t.Fatalf("nodetest: node %d: %v", i, err)
 		}
 		m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr,
-			AdminAddr: cfg.Server.AdminAddr}
+			AdminAddr: cfg.Server.AdminAddr, public: publics[i], internal: internals[i], admin: admins[i]}
 		if opts.MemFS {
 			m.fs = vfs.NewMemFS()
 		}
 		c.Members = append(c.Members, m)
-		m.start(t, publics[i], internals[i], admins[i], opts)
+		m.start(t, opts)
 	}
 	t.Cleanup(func() {
 		for i := range c.Members {
@@ -147,27 +152,31 @@ func StartWith(t testing.TB, n int, opts Options, configure func(i int, c *confi
 	return c
 }
 
-// listenN opens n listeners on ports outside the kernel's ephemeral range,
-// so a member restarted on its addresses (listenAgain) cannot find them
-// taken by some connection's local port in the meantime.
-func listenN(t testing.TB, n int) []net.Listener {
+// keepN opens n listeners on 127.0.0.1:0 and keeps them for the test
+// (porttest.Keep): the port the kernel chose is never released, so a
+// restarted member finds its addresses as it left them.
+func keepN(t testing.TB, n int) []*porttest.Kept {
 	t.Helper()
-	out := make([]net.Listener, n)
+	out := make([]*porttest.Kept, n)
 	for i := range out {
-		out[i] = porttest.Listen(t)
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("nodetest: listen: %v", err)
+		}
+		out[i] = porttest.Keep(t, l)
 	}
 	return out
 }
 
-// listenAgain rebinds an address a stopped node used; the port can stay
-// busy for a moment after the old listener closes.
-func listenAgain(t testing.TB, addr string) net.Listener {
+// start runs the member's node on loans of its kept sockets; the node's
+// servers end the loans when they stop.
+func (m *Member) start(t testing.TB, opts Options) {
 	t.Helper()
-	return porttest.Relisten(t, addr, 5*time.Second)
-}
-
-func (m *Member) start(t testing.TB, public, internal, admin net.Listener, opts Options) {
-	t.Helper()
+	public, internal := m.public.Lend(), m.internal.Lend()
+	var admin net.Listener
+	if m.admin != nil {
+		admin = m.admin.Lend()
+	}
 	cfg := m.Config
 	var nopts []node.Option
 	if opts.Faults != nil {
@@ -223,12 +232,12 @@ func (m *Member) Node() *node.Node {
 // members (it is not in their bootstrap peer list) and returns its index.
 func (c *Cluster) Add() int {
 	c.t.Helper()
-	pub, in := listenN(c.t, 1)[0], listenN(c.t, 1)[0]
-	var admin net.Listener
+	pub, in := keepN(c.t, 1)[0], keepN(c.t, 1)[0]
+	var admin *porttest.Kept
 	cfg := testConfig(c.t)
 	cfg.Server.GRPCAddr, cfg.Cluster.InternalAddr = pub.Addr().String(), in.Addr().String()
 	if c.opts.Admin {
-		admin = listenN(c.t, 1)[0]
+		admin = keepN(c.t, 1)[0]
 		cfg.Server.AdminAddr = admin.Addr().String()
 	}
 	for _, m := range c.Members {
@@ -243,12 +252,12 @@ func (c *Cluster) Add() int {
 		c.t.Fatalf("nodetest: node %d: %v", i, err)
 	}
 	m := &Member{Index: i, Config: cfg, PublicAddr: cfg.Server.GRPCAddr, InternalAddr: cfg.Cluster.InternalAddr,
-		AdminAddr: cfg.Server.AdminAddr}
+		AdminAddr: cfg.Server.AdminAddr, public: pub, internal: in, admin: admin}
 	if c.opts.MemFS {
 		m.fs = vfs.NewMemFS()
 	}
 	c.Members = append(c.Members, m)
-	m.start(c.t, pub, in, admin, c.opts)
+	m.start(c.t, c.opts)
 	return i
 }
 
@@ -367,11 +376,7 @@ func (c *Cluster) Restart(i int) {
 	if m.Running() {
 		c.t.Fatalf("nodetest: node %d is running", i)
 	}
-	var admin net.Listener
-	if m.AdminAddr != "" {
-		admin = listenAgain(c.t, m.AdminAddr)
-	}
-	m.start(c.t, listenAgain(c.t, m.PublicAddr), listenAgain(c.t, m.InternalAddr), admin, c.opts)
+	m.start(c.t, c.opts)
 }
 
 // Status asks member i for its view of the cluster.

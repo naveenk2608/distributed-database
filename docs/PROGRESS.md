@@ -1357,6 +1357,49 @@ before its commit.
   writes, and 1 "shard 0 has no leader" (the next item but one); stopping a node took up to
   2 s there, against at most 30 ms in the batch that passed.
 
+- **A stopped test node's addresses dropped connections instead of refusing them** (the
+  ports fix above, on this machine only). This WSL instance uses mirrored networking: a
+  loopback port that nothing in Linux listens on is passed to the Windows host when it lies
+  outside Linux's ephemeral range, and the host drops the attempt without an answer (a
+  connect to an unused port in 9130–13225 is refused in about 10 ms; one to 13300 or 40000
+  hangs). With the ports fix, a node a test stopped therefore went silent instead of
+  refusing connections as a stopped process does on CI's runners: a run of
+  `TestDashboardGate` under load failed goleak on the console's HTTP dials to the killed
+  node, still waiting in `connect` after the test. Binding a refusing listener on the
+  addresses after each stop made stops slower here (binding takes 5–110 ms under mirrored
+  networking; stops took 5–326 ms against 1–5 ms), which moved the measured detection
+  times of `TestKilledPeerIsReportedDownWithinWindow` toward its lower bound. Instead,
+  `nodetest` now keeps every member's listening sockets for the whole test
+  (`porttest.Keep`) and lends them to each start: the node's servers end the loan when
+  they stop, and until the next start the socket closes every connection it accepts
+  (within 2–29 ms of the loan ending). The port the kernel chose (127.0.0.1:0) is never
+  released, so a restart cannot find it taken and nothing is bound again;
+  `porttest.Relisten` is gone. `porttest.Pick`, for the `e2e` processes, also keeps its
+  ports below 49152: the IANA dynamic range is where Windows (and macOS) take their
+  connections' local ports, and under mirrored networking Linux shares the host's ports.
+  Tests: `porttest` `TestKeep`, `TestKeepClosesWithItsLastLoan`, `TestInUse`,
+  `TestPortsStayOutOfTheEphemeralRange` (now also below 49152). 50 runs under `-race` of
+  every test that stops or restarts a `nodetest` member, after a reboot with Docker
+  Desktop stopped:
+
+  | Package | Tests | Passed |
+  | --- | --- | --- |
+  | `porttest` | `TestKeep`, `TestKeepClosesWithItsLastLoan`, `TestInUse`, `TestPortsStayOutOfTheEphemeralRange`, `TestRefusingAndSilent` | 50 of 50 each |
+  | `cmd/dkvctl` | `TestLeadersWithDeadNodesFirst` | 50 of 50 |
+  | `test/dashboard` | `TestDashboardGate` (all three subtests) | 50 of 50 |
+  | `integration` | `TestKilledPeerIsReportedDownWithinWindow`, `TestRestartedPeerRejoinsWithItsID`, `TestDeadNodeReplicasAreRecreated`, `TestMetaQuorumLossStopsRebalancingNotData`, `TestWipedNodeRejoinsThroughSnapshots`, `TestClusterSettingsAreFixedAtBootstrap`, `TestMajorityDownFailsWithinDeadline`, `TestMinorityDownKeepsEveryShardWorking`, `TestShardDataSurvivesRestart`, `TestAddedNodeTakesItsShare`, `TestEarlyJoinerWaitsForTheMetaBootstrap` | 50 of 50 each (51 of 51 for the first two), except `TestAddedNodeTakesItsShare`, 49 of 50: one write took 2.6 s during the rebalance, against its 2 s bound (below) |
+  | `integration` | `TestLeaderFailover` | 49 of 51: two new leaders after 1.20 s and 1.37 s (below) |
+  | `integration` | `TestRetriedPutAppliedOnce` | 22 of 23: the 23rd panicked in "retry after leader change" reading a leader not yet published (index -1), which ended that batch; `WaitLeader` (below) fixes it |
+  | `linearizability` | `TestPowerLossOfMajorityLosesNothing` (both sync modes); `TestFailureMatrix` `kill-leader`, `kill-minority`, `kill-majority`, `rolling-restart` | 50 of 50 each |
+  | `linearizability` | `TestFailureMatrix` `wipe-node` | 49 of 50: its own precondition (below) |
+
+  No run reported a data race.
+
+  An earlier batch, while the machine was starved (below), ended early: `porttest` 50 of 50,
+  `TestLeadersWithDeadNodesFirst` 46 of 50, `TestDashboardGate` 0 of 16, the integration
+  tests 229 of 238 in 18 iterations; run alternately with and without the kept sockets
+  then, `TestDashboardGate` passed 5 of 6 with them and 2 of 6 without.
+
 ### Known limitations
 
 - `linearizability` `wipe-node` waits, during its 3 s of faults, until every data shard
@@ -1382,3 +1425,19 @@ before its commit.
   while only one test binary ran; the cause is outside this VM's view. Afterwards
   `TestLeaderFailover` passed 50 of 50 and this test 10 of 10 (13.7–24.2 s each, against
   22–300 s in that window).
+- From about 06:40 UTC on 22 November until the VM restarted (between 08:05 and 11:10),
+  this machine was starved again: Docker Desktop's distro was running with no containers
+  and used up to about 2 CPUs outside this distro (the VM was 99% busy while this distro's
+  processes used about 2 CPUs), swap was 950 of 1,024 MiB, and `docker system df` did not
+  answer. Batches then failed broadly (above, the earlier batch for the kept sockets). The
+  counts given for the kept sockets and later items come from after the restart, with
+  Docker Desktop stopped.
+- `integration` `TestLeaderFailover` still exceeds its 800 ms bound now and then: 2 of 51
+  runs in the integration batches for the kept sockets (new leaders after 1.20 s and 1.37
+  s, the old leader stopped in 14–17 ms, the machine quiet), against 0 of 50 alone for its
+  own change and 0 of 30 with and 0 of 30 without the kept sockets when run alternately. The
+  bound allows one contested round (ADR 0028); these took about three election timeouts.
+  Not diagnosed: it needs the Raft logs of a failing run.
+- `integration` `TestAddedNodeTakesItsShare` (a Phase 7 gate check) bounds every write
+  during the rebalance at 2 s; one of 50 runs for the kept sockets had a write of 2.6 s
+  (p50 46 ms, the machine quiet). It failed the same way once in Phase 10 (5.2 s).
