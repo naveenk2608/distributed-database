@@ -1125,13 +1125,43 @@ Decisions taken while running the matrix (21 November), in order:
   within `--timeout` plus 1 s; before the fix it exited 2 with no output). Against the
   Compose cluster, with a silent listener first: before, exit 2 and no table after 2.6 s;
   after, all 64 leaders and the listener reported unreachable in 2.0–2.2 s.
+- **`dkvctl status`, `shards`, `transfer-leader`, `drain`, `undrain` and `decommission`
+  asked only the first node in `--addr`** (Phase 9 code), although the flag's help says
+  requests move to the next when one is unreachable; with that node dead they failed. The
+  client's admin requests now try the nodes in turn, once each (ADR 0027): before sending,
+  the client waits for the node's connection for at most its share of the time left (the
+  time to the deadline divided by the nodes not yet tried), and moves on when the
+  connection fails or does not come up in that time, or when the node answers
+  `Unavailable`. Once connected, the request has all the time left, so a slow node is never
+  passed over and a drain or transfer is never sent twice because a node was slow; every
+  admin request is safe to repeat anyway. Tests: `client`
+  `TestAdminRequestsMoveOnFromDeadNodes` (a silent listener and a listener that resets
+  every connection before a live node: status and shard map answered, within the silent
+  one's share plus 1 s; the live node's FailedPrecondition returned as it is; with no live
+  node, an Unavailable error naming both); `dkvctl` `TestAdminCommandsMoveOnFromDeadAddresses`
+  (three nodes behind the same two dead addresses: all six commands succeed, status within
+  3 s). Both new tests failed on the previous commit (DeadlineExceeded, exit 2) and passed
+  10 and 5 runs under `-race`. `make check` with one test binary at a time passed twice; a
+  third run lost a port race (below). Two runs with two binaries at a time each failed
+  timing checks in tests that make no admin request through the client (`dkv-bench`
+  `TestBenchAgainstAServer`; then `TestConsoleWatchesRealProcesses`, `integration`
+  `TestAnyNodeAcceptsAnyKey` and `paused-leader`'s 1.5 s bound); the previous commit passed
+  one such run and two one-at-a-time runs.
 
 ### Known limitations
 
-- `dkvctl status`, `shards`, `transfer-leader`, `drain`, `undrain` and `decommission` ask
-  only the first node in `--addr` and do not move on when it is unreachable, although the
-  flag's help says requests move to the next; only the key-value commands and `leaders` use
-  the other addresses.
+- The `e2e` tests pick "free" ports by listening on port 0 and closing the listener, and on
+  this machine the ephemeral range is 9130–13225 (4,096 ports), the range every outgoing
+  connection also draws from, so a node now and then finds its port taken: `bind: address
+  already in use` in `TestThreeProcessesFormACluster` and `TestConsoleWatchesRealProcesses`,
+  once each in the runs for the two `dkvctl` fixes. The other session saw the same in
+  `TestLeaderFailover` ("the stopped node's port was taken").
+- Key-value requests move to the next node only when one answers `Unavailable`, which
+  includes a refused connection. A node that accepts the connection and never answers (a
+  stopped container behind a port proxy) holds a key-value request until its deadline, so
+  `dkvctl get` with such a node first in `--addr` fails with DeadlineExceeded. Admin
+  requests and `leaders` move on from it (ADR 0027 describes how the same check could apply
+  to key-value requests).
 - The local benchmarks run every node and the load generator on one machine: they compare
   variants with each other, not with other databases or with a real cluster.
 - The single-log path makes a restart replay up to a memtable's worth of the Raft log per

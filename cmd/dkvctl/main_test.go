@@ -342,6 +342,91 @@ func TestLeadersWithDeadNodesFirst(t *testing.T) {
 	}
 }
 
+// resettingListener accepts TCP connections and closes each at once, like a
+// node whose process is gone. It stops when the test ends.
+func resettingListener(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { // owned by the test; ends when the listener is closed
+		defer close(done)
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = lis.Close()
+		<-done
+	})
+	return lis.Addr().String()
+}
+
+// TestAdminCommandsMoveOnFromDeadAddresses: status, shards, transfer-leader,
+// drain, undrain and decommission succeed with two dead addresses first in
+// --addr, as its help says: one that accepts connections and never answers
+// (a stopped container behind Docker's port proxy) and one that resets
+// them (a stopped process). Each command starts again at the first address.
+func TestAdminCommandsMoveOnFromDeadAddresses(t *testing.T) {
+	c := nodetest.Start(t, 3, func(_ int, cfg *config.Config) { cfg.Cluster.Shards = 3 })
+	nodetest.WaitFor(t, 30*time.Second, "every group to elect a leader", c.Settled)
+	nodetest.WaitFor(t, 30*time.Second, "the meta group to record every node", func() bool { return metaKnowsAll(c) })
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = silent.Close() }()
+	var live []string
+	for _, m := range c.Members {
+		live = append(live, m.PublicAddr)
+	}
+	a := "--addr=" + strings.Join(append([]string{silent.Addr().String(), resettingListener(t)}, live...), ",")
+
+	// With the default 5 s and five addresses, the silent one has a fifth.
+	start := time.Now()
+	r := ctl(t, nil, a, "status")
+	if lines := strings.Split(strings.TrimSpace(r.stdout), "\n"); r.code != exitOK || len(lines) != 4 {
+		t.Fatalf("status with dead addresses first: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("status took %v; the silent address's share is 1 s", elapsed)
+	}
+	if r := ctl(t, nil, a, "shards"); r.code != exitOK || !strings.HasPrefix(r.stdout, "3 shards, replication factor 3\n") {
+		t.Fatalf("shards with dead addresses first: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+	}
+
+	r = ctl(t, nil, "--addr="+strings.Join(live, ","), "--json", "leaders")
+	var ls []leaderInfo
+	if r.code != exitOK || json.Unmarshal([]byte(r.stdout), &ls) != nil || len(ls) != 3 || ls[0].Leader == "" {
+		t.Fatalf("leaders: %+v", r)
+	}
+	var to string
+	for _, m := range c.Members {
+		if id := m.NodeID(); id != ls[0].Leader {
+			to = id
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"transfer-leader", "0", to}, "shard 0 is now led by " + to},
+		{[]string{"drain", to}, "node " + to + " is drained"},
+		{[]string{"undrain", to}, "node " + to + " may lead again"},
+		{[]string{"decommission", to}, "node " + to + " is being decommissioned"},
+	} {
+		if r := ctl(t, nil, append([]string{a}, tc.args...)...); r.code != exitOK || !strings.Contains(r.stdout, tc.want) {
+			t.Errorf("%v with dead addresses first: exit %d, stdout %q, stderr %q", tc.args, r.code, r.stdout, r.stderr)
+		}
+	}
+}
+
 // metaKnowsAll reports whether node 0 has read every member's record from
 // the meta group; until then, commands naming a node (drain) find none.
 func metaKnowsAll(c *nodetest.Cluster) bool {

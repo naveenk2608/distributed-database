@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +138,96 @@ func TestShardMapsAsksNodesAtOnce(t *testing.T) {
 	}
 	if elapsed >= 2*perNode {
 		t.Errorf("ShardMaps took %v; asked one after another, the two silent nodes take at least %v", elapsed, 2*perNode)
+	}
+}
+
+// resettingListener accepts TCP connections and closes each at once, like a
+// node whose process is gone. Unlike a stopped server's old port, nothing
+// else can start listening there. It stops when the test ends.
+func resettingListener(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { // owned by the test; ends when the listener is closed
+		defer close(done)
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = lis.Close()
+		<-done
+	})
+	return lis.Addr().String()
+}
+
+// TestAdminRequestsMoveOnFromDeadNodes: with a silent node (accepts TCP,
+// never speaks gRPC) and a node that resets every connection listed before
+// a live one, admin requests are answered by the live node, after at most
+// the silent node's share of the deadline. A live node's error other than
+// Unavailable is returned as it is; with no live node the error lists every
+// node and is Unavailable.
+func TestAdminRequestsMoveOnFromDeadNodes(t *testing.T) {
+	node := servertest.Start(t, nil)
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = silent.Close() }()
+	reset := resettingListener(t)
+
+	c, err := client.New(silent.Addr().String(), reset, node.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	const deadline = 3 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	start := time.Now()
+	st, err := c.ClusterStatus(ctx)
+	elapsed := time.Since(start)
+	if err != nil || len(st.GetMembers()) != 1 {
+		t.Fatalf("ClusterStatus with dead nodes first: %v, %v", st, err)
+	}
+	// The silent node's share is a third of the deadline; the resetting one
+	// fails at once.
+	if share := deadline / 3; elapsed > share+time.Second {
+		t.Errorf("ClusterStatus took %v; the silent node's share is %v", elapsed, share)
+	}
+	if sm, err := c.ShardMap(ctx); err != nil || len(sm.GetShards()) != 1 {
+		t.Errorf("ShardMap with dead nodes first: %v, %v", sm, err)
+	}
+
+	// A fresh client starts at the silent node again; the live node's
+	// FailedPrecondition (a standalone node cannot drain) comes back as it is.
+	c2, err := client.New(silent.Addr().String(), reset, node.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c2.Close() }()
+	if err := c2.Drain(ctx, "n1", true); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("Drain on a standalone node behind dead nodes: %v; want FailedPrecondition", err)
+	}
+
+	dead, err := client.New(silent.Addr().String(), reset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dead.Close() }()
+	dctx, dcancel := context.WithTimeout(context.Background(), time.Second)
+	defer dcancel()
+	_, err = dead.ClusterStatus(dctx)
+	if status.Code(err) != codes.Unavailable || err == nil ||
+		!strings.Contains(err.Error(), silent.Addr().String()) || !strings.Contains(err.Error(), reset) {
+		t.Errorf("ClusterStatus with every node dead: %v; want Unavailable naming both nodes", err)
 	}
 }
 

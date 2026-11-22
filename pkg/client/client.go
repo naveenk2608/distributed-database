@@ -7,6 +7,11 @@
 // next configured node each time, until the caller's context ends or the
 // attempt limit is reached.
 //
+// Admin requests (cluster status, shard map, drain, transfer leader,
+// decommission) also go to one node at a time, each node once: the client
+// moves on from a node it cannot connect to within that node's share of the
+// deadline, or that answers Unavailable (docs/adr/0027).
+//
 // Retried writes are applied exactly once in a cluster. Each write carries
 // a session ID and a request ID; the shard's replicas remember the latest
 // request of every session and answer a repeat with the stored result
@@ -29,6 +34,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
@@ -254,24 +260,92 @@ func (c *Client) CompareAndSet(ctx context.Context, key, value []byte, expected 
 	return r.ok, r.version, err
 }
 
-// ClusterStatus returns the node's view of the cluster: every member in its
-// bootstrap list and whether it is reachable.
-func (c *Client) ClusterStatus(ctx context.Context) (*dkvv1.ClusterStatusResponse, error) {
-	resp, err := dkvv1.NewAdminServiceClient(c.conns[0]).ClusterStatus(ctx, &dkvv1.ClusterStatusRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("dkv: cluster status: %w", err)
+// connect waits until conn is ready to carry requests: for at most budget
+// when budget > 0, and within ctx. It returns an Unavailable error when the
+// node cannot be reached: the connection failed (refused, reset), or it did
+// not come up in time, as with a stopped container behind a port proxy, which
+// accepts the TCP connection and then says nothing. When ctx ends first, it
+// returns ctx's error as a status.
+func connect(ctx context.Context, conn *grpc.ClientConn, budget time.Duration) error {
+	wait := ctx
+	if budget > 0 {
+		var cancel context.CancelFunc
+		wait, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
 	}
-	return resp, nil
+	conn.Connect()
+	for {
+		s := conn.GetState()
+		switch s {
+		case connectivity.Ready:
+			return nil
+		case connectivity.TransientFailure, connectivity.Shutdown:
+			return status.Errorf(codes.Unavailable, "%s unreachable: the connection failed", conn.Target())
+		}
+		if !conn.WaitForStateChange(wait, s) {
+			if ctx.Err() != nil {
+				return status.FromContextError(ctx.Err()).Err()
+			}
+			return status.Errorf(codes.Unavailable, "%s unreachable: no connection within %s", conn.Target(),
+				budget.Round(time.Millisecond))
+		}
+	}
+}
+
+// admin sends an admin request to the nodes in turn, once each, starting
+// with the one that last answered, until one answers (docs/adr/0027). It
+// moves on from a node it cannot connect to within that node's share of the
+// time left (the time to ctx's deadline divided by the nodes not yet tried)
+// and from one that answers Unavailable: every admin request is safe to
+// repeat. Once connected, the request has all the time left, so a slow node
+// is never passed over. Any other answer is returned as it is.
+func admin[T any](ctx context.Context, c *Client, op string, try func(dkvv1.AdminServiceClient) (T, error)) (T, error) {
+	var zero T
+	n := len(c.conns)
+	first := int(c.next.Load()) % n
+	var errs []error
+	for k := range n {
+		i := (first + k) % n
+		conn := c.conns[i]
+		var budget time.Duration
+		if d, ok := ctx.Deadline(); ok {
+			budget = time.Until(d) / time.Duration(n-k)
+		}
+		if err := connect(ctx, conn, budget); err != nil {
+			errs = append(errs, err)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		resp, err := try(dkvv1.NewAdminServiceClient(conn))
+		if err == nil {
+			c.next.Store(uint32(i))
+			return resp, nil
+		}
+		if status.Code(err) != codes.Unavailable {
+			return zero, fmt.Errorf("dkv: %s: %w", op, err)
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", conn.Target(), err))
+	}
+	return zero, fmt.Errorf("dkv: %s: no node answered: %w", op, errors.Join(errs...))
+}
+
+// ClusterStatus returns a node's view of the cluster: every member in its
+// bootstrap list and whether it is reachable. The first node that answers
+// gives its view.
+func (c *Client) ClusterStatus(ctx context.Context) (*dkvv1.ClusterStatusResponse, error) {
+	return admin(ctx, c, "cluster status", func(a dkvv1.AdminServiceClient) (*dkvv1.ClusterStatusResponse, error) {
+		return a.ClusterStatus(ctx, &dkvv1.ClusterStatusRequest{})
+	})
 }
 
 // ShardMap returns where every shard is placed and, for the shards the node
-// holds, the state of its local replica.
+// that answers holds, the state of its local replica.
 func (c *Client) ShardMap(ctx context.Context) (*dkvv1.ShardMapResponse, error) {
-	resp, err := dkvv1.NewAdminServiceClient(c.conns[0]).ShardMap(ctx, &dkvv1.ShardMapRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("dkv: shard map: %w", err)
-	}
-	return resp, nil
+	return admin(ctx, c, "shard map", func(a dkvv1.AdminServiceClient) (*dkvv1.ShardMapResponse, error) {
+		return a.ShardMap(ctx, &dkvv1.ShardMapRequest{})
+	})
 }
 
 // ShardMaps asks every node the client was given for its shard map, all at
@@ -309,27 +383,27 @@ func (c *Client) ShardMaps(ctx context.Context, perNode time.Duration) (maps []*
 // Drain asks the cluster to move every leadership off the node with the
 // given ID and give it none (drain), or to let it lead again (!drain).
 func (c *Client) Drain(ctx context.Context, nodeID string, drain bool) error {
-	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).Drain(ctx, &dkvv1.DrainRequest{NodeId: nodeID, Drain: drain}); err != nil {
-		return fmt.Errorf("dkv: drain: %w", err)
-	}
-	return nil
+	_, err := admin(ctx, c, "drain", func(a dkvv1.AdminServiceClient) (*dkvv1.DrainResponse, error) {
+		return a.Drain(ctx, &dkvv1.DrainRequest{NodeId: nodeID, Drain: drain})
+	})
+	return err
 }
 
 // TransferLeader asks a shard's leader to hand leadership to the voter
 // with the given node ID, and returns once it has.
 func (c *Client) TransferLeader(ctx context.Context, shard int32, nodeID string) error {
 	req := &dkvv1.AdminServiceTransferLeaderRequest{Shard: shard, NodeId: nodeID}
-	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).TransferLeader(ctx, req); err != nil {
-		return fmt.Errorf("dkv: transfer leader: %w", err)
-	}
-	return nil
+	_, err := admin(ctx, c, "transfer leader", func(a dkvv1.AdminServiceClient) (*dkvv1.AdminServiceTransferLeaderResponse, error) {
+		return a.TransferLeader(ctx, req)
+	})
+	return err
 }
 
 // Decommission asks the cluster to move every replica off the node with
 // the given ID; the node is then marked decommissioned.
 func (c *Client) Decommission(ctx context.Context, nodeID string) error {
-	if _, err := dkvv1.NewAdminServiceClient(c.conns[0]).Decommission(ctx, &dkvv1.DecommissionRequest{NodeId: nodeID}); err != nil {
-		return fmt.Errorf("dkv: decommission: %w", err)
-	}
-	return nil
+	_, err := admin(ctx, c, "decommission", func(a dkvv1.AdminServiceClient) (*dkvv1.DecommissionResponse, error) {
+		return a.Decommission(ctx, &dkvv1.DecommissionRequest{NodeId: nodeID})
+	})
+	return err
 }
