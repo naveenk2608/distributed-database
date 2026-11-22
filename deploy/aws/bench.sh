@@ -59,8 +59,10 @@ Host ${private[*]}
   ControlPersist 2h
 EOF
 # ready.sh: every node takes a write, and the data shards' leaderships are
-# as balanced as the rebalancer makes them (within one of each other), as
-# in a fresh cluster; after a failover run they take a while to spread out.
+# as balanced as the rebalancer makes them, as in a fresh cluster (after a
+# failover run they take a while to spread out again). It balances the
+# data shards and the meta group together, within one of each other, and
+# dkvctl leaders lists only the data shards: within two of each other.
 on_lg 'cat > ready.sh' << EOF
 set -e
 for a in ${addr//,/ }; do dkvctl --addr=\$a --timeout=3s put bench-ready yes > /dev/null; done
@@ -69,7 +71,7 @@ dkvctl --addr=$addr --timeout=3s leaders | awk -v nodes=${#private[@]} '
   NR > 1 && \$1 >= 0 { led[\$2]++ }
   END { n = 0; lo = 1e9; hi = 0
     for (l in led) { n++; if (led[l] < lo) lo = led[l]; if (led[l] > hi) hi = led[l] }
-    exit !(!bad && n == nodes && hi - lo <= 1) }'
+    exit !(!bad && n == nodes && hi - lo <= 2) }'
 EOF
 # kill-leader.sh: SIGKILLs the node leading shard 0.
 {
