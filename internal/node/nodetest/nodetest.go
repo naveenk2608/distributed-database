@@ -464,6 +464,24 @@ func (c *Cluster) Leader(shard int) (int, uint64) {
 	return best, term
 }
 
+// WaitLeader waits up to timeout until a running member reports that it
+// leads shard, and returns its index and term as Leader does. Leader can
+// find none for a moment even in a healthy cluster: a replica publishes
+// its role at the end of the Ready that made it leader, after its first
+// appends have left, so its followers (and a leadership transfer, which
+// returns once the old leader sees the new one) can know of a new leader
+// before that leader reports itself.
+func (c *Cluster) WaitLeader(shard int, timeout time.Duration) (int, uint64) {
+	c.t.Helper()
+	var i int
+	var term uint64
+	WaitFor(c.t, timeout, fmt.Sprintf("a running member to report leading shard %d", shard), func() bool {
+		i, term = c.Leader(shard)
+		return i >= 0
+	})
+	return i, term
+}
+
 // Settled reports whether every shard has a running leader that every
 // running replica of the shard knows of.
 func (c *Cluster) Settled() bool {

@@ -39,13 +39,10 @@ func TestLeaderFailover(t *testing.T) {
 	c := shardCluster(t, 3, shards, 3)
 	tick := c.Members[0].Config.Raft.TickInterval
 	electionTimeout := time.Duration(c.Members[0].Config.Raft.ElectionTicks) * tick
-	old, _ := c.Leader(0)
-	if old < 0 {
-		t.Fatal("shard 0 has no leader")
-	}
+	old, _ := c.WaitLeader(0, 10*time.Second)
 	var led []int // every shard the victim leads
 	for s := range shards {
-		if l, _ := c.Leader(s); l == old {
+		if l, _ := c.WaitLeader(s, 10*time.Second); l == old {
 			led = append(led, s)
 		}
 	}
@@ -218,7 +215,7 @@ func TestRetriedPutAppliedOnce(t *testing.T) {
 
 	t.Run("retry after leader change", func(t *testing.T) {
 		key := keyInShard(1, 4)
-		leader, _ := c.Leader(1)
+		leader, _ := c.WaitLeader(1, 10*time.Second)
 		via := (leader + 1) % 3
 		req := &dkvv1.PutRequest{Key: key, Value: []byte("first"), ClientId: "retry-test", RequestId: 1}
 		first, err := c.KV(via).Put(reqCtx(t, 5*time.Second), req)

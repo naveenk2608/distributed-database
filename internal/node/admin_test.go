@@ -3,6 +3,7 @@ package node_test
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -184,22 +185,66 @@ func TestTransferLeaderAndDrain(t *testing.T) {
 		return cx
 	}
 
-	lead, _ := c.Leader(0)
+	// Leader balancing moves a leadership, every rebalance round, off a node
+	// that leads two more groups than another, so it may race a transfer or
+	// undo one (transfer-leader is a nudge). The transfer below starts from
+	// a balance that has held for three rounds and moves a leadership from a
+	// node leading the most groups to the node leading the fewest: the
+	// result is as balanced, so the rebalancer has nothing to do.
+	const groups = 5 // four data shards and the meta group
+	led := func(leaders map[int]string) map[string]int {
+		n := map[string]int{}
+		for _, m := range c.Members {
+			n[m.NodeID()] = 0
+		}
+		for _, id := range leaders {
+			n[id]++
+		}
+		return n
+	}
+	round := c.Members[0].Config.Rebalance.Interval
+	var leaders map[int]string // group -> leader ID
+	since := time.Now()
+	nodetest.WaitFor(t, 30*time.Second, "leadership to stay balanced for three rebalance rounds", func() bool {
+		now := map[int]string{}
+		for shard, r := range c.Groups() {
+			now[shard] = r.GetLeader()
+		}
+		if len(now) != groups || !maps.Equal(now, leaders) {
+			leaders, since = now, time.Now()
+			return false
+		}
+		n := slices.Collect(maps.Values(led(leaders)))
+		return slices.Max(n)-slices.Min(n) <= 1 && time.Since(since) >= 3*round
+	})
+	n := led(leaders)
+	most := slices.Max(slices.Collect(maps.Values(n)))
+	shard := slices.IndexFunc([]int{0, 1, 2, 3}, func(s int) bool { return n[leaders[s]] == most })
+	var to string
+	for _, id := range slices.Sorted(maps.Keys(n)) {
+		if to == "" || n[id] < n[to] {
+			to = id
+		}
+	}
 	sm, err := c.ShardMap(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var to string
-	for _, id := range sm.GetShards()[0].GetVoterIds() {
-		if id != c.Members[lead].NodeID() {
-			to = id
+	for _, s := range sm.GetShards() {
+		if int(s.GetShard()) == shard && !slices.Contains(s.GetVoterIds(), to) {
+			t.Fatalf("%s, leading the fewest groups, is not a voter of shard %d (voters %v)", to, shard, s.GetVoterIds())
 		}
 	}
-	if _, err := admin.TransferLeader(ctx(), &dkvv1.AdminServiceTransferLeaderRequest{Shard: 0, NodeId: to}); err != nil {
+	if shard < 0 || leaders[shard] == to {
+		t.Fatalf("no data shard to move from a node leading the most groups to one leading the fewest: leaders %v", leaders)
+	}
+	if _, err := admin.TransferLeader(ctx(), &dkvv1.AdminServiceTransferLeaderRequest{Shard: int32(shard), NodeId: to}); err != nil {
 		t.Fatal(err)
 	}
-	if i, _ := c.Leader(0); c.Members[i].NodeID() != to {
-		t.Fatalf("after transfer-leader to %s, shard 0 is led by %s", to, c.Members[i].NodeID())
+	// The transfer returns once the old leader sees the new one, which may
+	// not yet report itself (see nodetest.Cluster.WaitLeader).
+	if i, _ := c.WaitLeader(shard, 10*time.Second); c.Members[i].NodeID() != to {
+		t.Fatalf("after transfer-leader to %s, shard %d is led by %s", to, shard, c.Members[i].NodeID())
 	}
 	if _, err := admin.TransferLeader(ctx(), &dkvv1.AdminServiceTransferLeaderRequest{Shard: 0, NodeId: "nobody"}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("transfer to a non-voter: %v", err)

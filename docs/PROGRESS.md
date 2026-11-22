@@ -1179,7 +1179,9 @@ Decisions taken while running the matrix (21 November), in order:
 - The benchmark numbers vary widely between runs on this machine (stale reads 7,148–12,767
   ops/s; Zipfian keys 1,825–2,615), and 12 of the 87 runs used are the least disturbed of
   three attempts rather than undisturbed ("Benchmark runs").
-- **Tests that fail under sustained load; a fix is written but not committed.** CI's
+- (Fixed in "Tests that fail at random", below: the `WaitLeader` fix is committed, and
+  each failure mode listed here has its own entry there.) **Tests that fail under
+  sustained load; a fix is written but not committed.** CI's
   `check` job failed twice on the `phase-9` tag commit 608153e, which was not recorded then:
   run 44183205436 (`TestTransferLeaderAndDrain` panicked on index -1; `TestReplicaEvents`)
   and run 44183210645 (`TestReplicaEvents`; the `TestCrashDuringSnapshotInstall` data
@@ -1439,6 +1441,34 @@ before its commit.
   failed 3 of 150 runs: an answer took longer than the test's 100 ms poll timeout. The fake
   is now the console's HTTP transport (the seam), so an answer takes no time and only a
   hanging node meets the deadline. No run reported a data race.
+
+- **Tests read a shard's leader before it published itself** (test code since Phases 6–9;
+  the fix held back in Phase 10, "Known limitations"). A new leader publishes its role at
+  the end of the Ready that made it leader, after its first appends have left, so its
+  followers, a finished leadership transfer and `Settled` can know of it before
+  `nodetest.Cluster.Leader` finds it; a test that read the leader once got -1 and panicked
+  on index -1 (CI on the `phase-9` tag; `TestRetriedPutAppliedOnce` "retry after leader
+  change" in the runs above). New `nodetest.Cluster.WaitLeader` waits, up to a timeout,
+  for a running member to report leading the shard; it is used wherever a test reads a
+  leader once: `node` `TestTransferLeaderAndDrain` and
+  `TestPausedLeaderCannotNoticeLostQuorum`, `TestDashboardGate`'s victim, and `integration`
+  `TestLeaderFailover` (the old leader and the shards it led) and
+  `TestRetriedPutAppliedOnce`. `TestTransferLeaderAndDrain` also raced leader balancing,
+  which moves a leadership off a node leading two more groups than another every rebalance
+  round, so it could undo the test's transfer or race it (transfer-leader is a nudge):
+  the test now waits until the leaderships have stayed balanced for three rounds, then
+  moves one from a node leading the most groups to the node leading the fewest, a move
+  that keeps the balance. 50 runs under `-race`, on the changes above:
+
+  | Package | Tests | Passed |
+  | --- | --- | --- |
+  | `node` | `TestTransferLeaderAndDrain`, `TestPausedLeaderCannotNoticeLostQuorum` | 50 of 50 each |
+  | `integration` | `TestLeaderFailover`, `TestRetriedPutAppliedOnce` (both subtests) | 50 of 50 each |
+  | `test/dashboard` | `TestDashboardGate` (all three subtests) | 50 of 50 |
+
+  No run reported a data race. Item 3's commit also passed the Docker gates on GitHub
+  (`docker-gates.yml` run 45028984044: the Compose gate, the five-node profile and the
+  Phase 9 dashboard gate in Chromium).
 
 ### Known limitations
 

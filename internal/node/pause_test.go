@@ -22,10 +22,7 @@ func TestPausedLeaderCannotNoticeLostQuorum(t *testing.T) {
 	inj := fault.New(1)
 	c := nodetest.StartWith(t, 3, nodetest.Options{Faults: inj}, func(_ int, cfg *config.Config) { cfg.Cluster.Shards = 1 })
 	nodetest.WaitFor(t, 30*time.Second, "shard 0 to elect a leader", c.Settled)
-	old, term := c.Leader(0)
-	if old < 0 {
-		t.Fatal("no leader of shard 0")
-	}
+	old, term := c.WaitLeader(0, 10*time.Second)
 	var addrs []string
 	for _, m := range c.Members {
 		addrs = append(addrs, m.InternalAddr)

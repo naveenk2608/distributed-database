@@ -246,7 +246,7 @@ func TestDashboardGate(t *testing.T) {
 			return len(ov.Nodes) == 4 && !slices.ContainsFunc(ov.Nodes, func(n console.NodeView) bool { return !n.Up })
 		})
 		stream := follow(t, base+"/api/stream")
-		victim, _ := c.Leader(0)
+		victim, _ := c.WaitLeader(0, 10*time.Second)
 		victimID := c.Members[victim].NodeID()
 		// The data shards the victim leads, as the nodes report them just
 		// before the kill. (The console's overview can be a poll behind: a
