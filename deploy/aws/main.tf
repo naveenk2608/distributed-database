@@ -93,7 +93,7 @@ resource "aws_security_group" "dkv" {
   vpc_id      = aws_vpc.this.id
 
   ingress {
-    description = "everything between the cluster's own instances"
+    description = "everything between the cluster instances"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

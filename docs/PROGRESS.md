@@ -4,9 +4,9 @@ Only what is implemented AND tested is listed here. See docs/PLAN.md for the ful
 
 ## Needs from you
 
-- **AWS (the free plan deployment, below):** an access key in the AWS console and
-  `aws configure` in your own terminal (region `ap-south-1`); then the word to apply. The
-  code is ready and validated; nothing has been created in AWS yet.
+- **AWS (the free plan deployment, below):** the IAM user `dkv-deploy` can use EC2 but
+  not S3 or IAM, which `make aws-up` needs (the artifact bucket, the instances' role):
+  attach `AdministratorAccess` to it in the IAM console. Then the word to apply.
 - Docker Desktop's WSL integration is now on for this distro (`/usr/bin/docker` links to
   it since 21 November), but its engine is stopped: the benchmark matrix needed the machine
   to itself. Every Docker gate still runs on GitHub's runners: the Phase 4 Compose gate, the
@@ -1638,8 +1638,36 @@ A one-time run of `deploy/aws` on an AWS free plan account in `ap-south-1`: crea
 cluster, show failover on the dashboard, run a short benchmark from a load generator in the
 region, destroy everything and prove nothing is left (ADR 0030).
 
-Status: **code ready, not run.** The plan, the apply, the demo, the benchmark and the
-destroy wait for AWS credentials ("Needs from you").
+Status: **planned, not applied.** The apply, the demo, the benchmark and the destroy wait
+for the IAM user's permissions and the word to apply ("Needs from you").
+
+### Before the apply (22 November)
+
+- **Identity:** `aws sts get-caller-identity` shows the IAM user `dkv-deploy`, not the root
+  user; the secret key was never printed or read.
+- **Permissions:** dry runs succeed for `ec2:CreateVpc`, `CreateSecurityGroup`,
+  `ImportKeyPair` and `RunInstances` of a `c7i-flex.large`; `iam:GetRole`,
+  `iam:GetInstanceProfile`, `s3:ListAllMyBuckets`, the Price List API, Service Quotas and
+  `freetier:GetAccountPlanState` (remaining credits) are denied. The apply would stop at
+  the S3 bucket and the IAM role, so it waits for the user's permissions.
+- **Free-tier-eligible types in `ap-south-1`** (`aws ec2 describe-instance-types --filters
+  Name=free-tier-eligible,Values=true`): `c7i-flex.large`, `m7i-flex.large`, `t3.micro`,
+  `t3.small`, `t4g.micro`, `t4g.small`, `t8i.micro`, `t8i.small`.
+- **`terraform plan`** (binaries built from f8df8ea without uncommitted changes): 25
+  resources to add, nothing else: a VPC, three subnets (`ap-south-1a`, `1b`, `1c`), an
+  internet gateway, a route table and its three associations, a security group, a key pair,
+  four `c7i-flex.large` instances with 8 GiB encrypted gp3 root volumes and IMDSv2, an IAM
+  role with an inline policy and an instance profile, an S3 bucket with its public access
+  block and five objects. No NAT gateway, Elastic IP, load balancer or separate volume.
+  Every taggable resource is tagged `project=dkv`; the root volumes' tags are merged at
+  apply time, so the run checks them then.
+- **Cost estimate**, from AWS's public price files (the Price List API is denied to the
+  user): `c7i-flex.large` $0.08479 an hour on demand (published 21 November), in-use public
+  IPv4 $0.005 an hour (19 November), gp3 $0.0912 per GB-month (21 November), data between
+  zones $0.01 per GB each way (19 November). Four instances $0.339, four public addresses
+  $0.020, 32 GiB of gp3 $0.004: **$0.363 an hour, 0.36 credits**; the bucket's 86 MB and
+  a few GB between zones add cents to the whole run. (A NAT gateway would have added $0.056
+  an hour plus a charge per GB.)
 
 ### Implemented and tested
 
@@ -1680,6 +1708,13 @@ destroy wait for AWS credentials ("Needs from you").
   loaded by the real binaries: `dkv-server` got through its configuration to the listen
   step (where binding the instance's private address fails on this machine), and
   `dkv-console` ran without error.
+
+### Fixed along the way
+
+- **AWS rejected a security group rule description** (Phase 10 code, never planned against
+  AWS before): "everything between the cluster's own instances"; the apostrophe is outside
+  the characters a rule description may use, which the provider checks only when it plans,
+  not in `terraform validate`. It now reads "everything between the cluster instances".
 
 ### Decisions
 
