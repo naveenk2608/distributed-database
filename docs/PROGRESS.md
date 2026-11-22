@@ -1516,3 +1516,119 @@ before its commit.
   connection attempts (a host gone from the network; on this machine, a loopback port
   outside the ephemeral range that nothing listens on), each poll leaves one running, which
   goleak reported in `TestDashboardGate` before the kept sockets.
+- `dkv-bench`'s server-side numbers include the warm-up's traffic, although its code and
+  `docs/benchmarks.md` say they cover the measured time: `bench` reads the nodes' counters
+  (`serverStats`) before the warm-up starts, not when the measured time does, so the bytes
+  written, Raft-log syncs and their latency percentiles in the Phase 10 results also count
+  the warm-up (ratios such as write amplification move little). Not fixed, by decision:
+  fixing it changes what the published results mean. A sentence saying so in
+  `docs/benchmarks.md` (and in the report generator) is drafted with item 5 (Paused, below).
+
+## Paused: items 5 and 6 of the follow-up on tests that fail at random
+
+Items 1–4 are committed above. Items 5 and 6 are drafted and partly tested but not
+committed; the drafts are in `~/dkv-local/` (outside the repository). To resume one:
+`git apply ~/dkv-local/<patch>`, run its tests 50 times under `-race` with
+`GOFLAGS=-p=1` (one test binary at a time), commit, push and confirm CI is green. The
+request's final steps, `make check` clean twice and the attribution check, also remain.
+
+Draft files:
+
+- `~/dkv-local/item5-bench-timing.patch`: `cmd/dkv-bench/run.go`, `bench_test.go`,
+  `report.go`, the new `timing_test.go`, and `docs/benchmarks.md`.
+- `~/dkv-local/item6-kv-failover.patch`: `pkg/client/client.go`, the new
+  `pkg/client/failover_test.go` and `cmd/dkvctl/kv_failover_test.go`, and ADR 0027 with its
+  row in `docs/adr/README.md`.
+- `~/dkv-local/items5-6-drafts.tar.gz`: the same files whole, as they were in the tree.
+- `~/dkv-local/flaky/`: `run50.sh` (runs a test regex 50 times under `-race` in `$WT` and
+  prints pass counts), `stage_part.py` (stages part of a file, for a commit that should
+  not take every change in it), `results-so-far.md` and `runs/` (the logs behind the
+  counts above).
+
+### Item 5: `TestBenchAgainstAServer` independent of wall-clock timing
+
+The test checked, against a real server, things that depend on how fast the machine is:
+the first whole second held at least half the operations, the series had exactly one
+entry for a 1.5 s run, the open loop served 150–250 ops/s at 200, the read share of a
+short run, and an event command racing the end of the run. Design:
+
+- `run.go`: a `store` interface (`Get`, `GetStale`, `Put`), consumed where the workers
+  send their operations. `bench` builds the real clients (one per 16 workers) and calls
+  `benchWith(ctx, c, log, clients []store)`. The client is the transport seam, where
+  test doubles are allowed. `run.go`'s `serverSide` comment and `report.go`'s text say
+  the server-side numbers include the warm-up (above), and `docs/benchmarks.md` gets the
+  same sentence; the counters are not moved.
+- New `timing_test.go`: `TestClosedLoopCountsEveryOperation` and
+  `TestOpenLoopKeepsItsRate` run `benchWith` inside `testing/synctest` against `memStore`,
+  an in-memory store whose every operation takes a fixed latency. synctest's clock moves
+  only when every goroutine waits on it, so the numbers are exact. Closed loop (workload
+  B, 300 records, 4 workers, 200 ms warm-up, 1.5 s measured, event at 500 ms, 3 ms per
+  operation): the preload takes 225 ms; the measured time runs from 425 ms to 1925 ms;
+  each worker's operations 67–566 are measured (2000 in all), 333 each (1332) end in the
+  first whole second; no operation ends at an edge of the measured time. Open loop (200
+  ops/s, no preload, 1 ms per operation): arrivals 40–339 are measured, exactly 300, 200.0
+  ops/s, every latency 1000 µs; with 33 ms per operation the 4 workers are always busy
+  (worker w finishes at its first arrival, 5–20 ms, plus 33 ms × j): the expected count is
+  computed that way, throughput is that count over 1.5 s, and latency counted from the
+  intended start includes the queue (p50 over 330 ms, largest backlog over 100).
+- `TestBenchAgainstAServer` keeps only checks that hold at any speed.
+
+Every old check and where it goes (approved):
+
+| # | Old check | New place |
+| --- | --- | --- |
+| 1 | `bench` returns no error | Server test, unchanged; also the closed-loop test |
+| 2 | `OK > 0` | Server test, unchanged; the closed-loop test checks the exact count (2000) |
+| 3 | `Errors + Timeouts == 0` | Server test, unchanged; also the closed-loop test |
+| 4 | `Preload.Ops == 300` | Server test, unchanged; also the closed-loop test (and 225 ms) |
+| 5 | `Latency.Count == OK` | Server test, unchanged; also the closed-loop test |
+| 6 | `reads + updates == OK` | Server test, unchanged; also the closed-loop test, which also checks the counts against the reads and writes the store finished in the measured time |
+| 7 | Read share 0.90–0.99 | Closed-loop test, same bounds, over a fixed set of operations (on a real server the share depends on how many operations each worker managed: with seed 1, worker 2's running share touches 0.900 after 50-plus operations, and very short runs read 1.000) |
+| 8 | Whole seconds' total ≤ `OK` | Server test, unchanged; the closed-loop test exactly |
+| 9 | Whole seconds' total ≥ `OK/2` | Closed-loop test, same expression, plus the exact count of the whole second (1332), equal to what the store finished in it |
+| 10 | `len(Timeseries) == 1` | Closed-loop test, same expression (1.5 s of fake time is exactly 1.5 s); the server test checks no more entries than whole seconds in its own measured time, numbered from 0 |
+| 11 | Histogram total == `OK` | Server test, unchanged; also the closed-loop test |
+| 12–14 | `Server != nil`, `UserBytes > 0`, `SpaceAmplification > 0` | Server test, unchanged |
+| 15–16 | `Machine.CPUs != 0`, `GitSHA != ""` | Server test, unchanged |
+| 17 | The event command ran | Closed-loop test, same check, plus its timing: no operation that ended by 499 ms saw its file, every one from 502 ms on did |
+| 18 | Open loop: no error | Server test, unchanged; it also requires `OK > 0` and `Errors + Timeouts == 0` |
+| 19 | Open loop served 150–250 ops/s at 200 | Open-loop test, same bounds and exactly 200.0, plus the queued case. Not kept: that this machine's real server sustains 200 ops/s, which is the wall-clock dependence itself; the test's doc comment never claimed it |
+| 20–23 | Results written, 2 loaded back, report written, its six strings | Server test, unchanged |
+
+Tested so far: each new test and the changed server test passed once; seven mutations of
+`run.go` were each caught: the series keeping its partial second, the measured start
+taken before the warm-up, open-loop latency counted from the dequeue, the workload's read
+share ignored, the event 10 ms late, a pacer that drifts instead of keeping its schedule
+(166.7 ops/s, which the old 150–250 bound would have passed), and an operation counted
+twice in the series. To do: 50 runs of `TestBenchAgainstAServer`,
+`TestClosedLoopCountsEveryOperation` and `TestOpenLoopKeepsItsRate`; a PROGRESS entry with
+the mapping above; commit; push; CI.
+
+### Item 6: key-value commands move on from a silent or refusing first address
+
+Key-value requests moved to the next node only when one answered `Unavailable`, so a node
+that accepts connections and never answers (a stopped container behind a port proxy)
+held them until their deadline (Phase 10, "Known limitations"). Design, the connection
+check admin requests already use (ADR 0027):
+
+- `pkg/client` `call`: before each try, `connect(ctx, conn, budget)` waits for the node's
+  connection for at most its share of the time left (the time to ctx's deadline divided
+  by the number of nodes; without a deadline, until gRPC gives up). A connection that
+  fails or is not ready in time counts as `Unavailable`: the request moves to the next
+  node after the usual backoff, within the attempt limit. A node never connected to never
+  received the request, so this is safe for writes. Once connected, the try has all the
+  time left, as before, so a slow node is not passed over. The package comment says so.
+- ADR 0027 extended: title, status, a decision paragraph for key-value requests, and the
+  consequence that replaces "left for when it is needed"; its row in the ADR index.
+- Tests: `pkg/client` `TestKVRequestsMoveOnFromDeadNodes` (a silent listener and a
+  resetting one before a live node, both orders; put, get, cas and delete, each through a
+  fresh client with a 3 s deadline, which waiting on the silent node would exceed; with
+  every node dead, `Unavailable` or `DeadlineExceeded`); `cmd/dkvctl`
+  `TestKVCommandsMoveOnFromDeadAddresses` (the same through `dkvctl --timeout=3s`). Both
+  failed on the commit before (DeadlineExceeded) and passed with the change, once each.
+
+To do: 50 runs of both new tests and of the tests that exercise `call` through failures
+(`pkg/client` `TestClientUnresponsiveServer`, `TestAdminRequestsMoveOnFromDeadNodes`,
+`TestClientRoundTrip`; `integration` `TestLeaderFailover`; `TestDashboardGate`, whose
+writer uses the client); replace the Phase 10 known limitation on key-value requests with
+the fix; commit; push; CI.
