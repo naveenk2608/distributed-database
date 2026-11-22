@@ -1400,6 +1400,46 @@ before its commit.
   tests 229 of 238 in 18 iterations; run alternately with and without the kept sockets
   then, `TestDashboardGate` passed 5 of 6 with them and 2 of 6 without.
 
+- **The console showed a live node as down after one slow poll** (Phase 9 code). Any failed
+  poll showed the node down at once, with no numbers, so a node that answered one 200 ms
+  poll late flickered down for a round: `TestDashboardGate` "numbers come from the nodes"
+  failed 8 of 50 runs on it (a zero start time). Now only a poll that fails other than by
+  timing out (refused or reset connection, an unknown host, an error status) shows the node
+  down at once, which keeps the Phase 9 gate's "within one poll interval" for a killed
+  node; a node whose polls time out stays up, with its last numbers, until
+  `console.down_after_misses` polls in a row have timed out (new setting, default 3, at
+  least 1; ADR 0029, which revises ADR 0015). Tests: `console`
+  `TestTimedOutPollsKeepANodeUp`, `TestFailedPollShowsNodeDownAtOnce`, `TestOnlyTimeouts`;
+  `config` `TestConsoleRejectsMistakes` (0 misses), `TestConsolePrecedence` (the default).
+- **`TestDashboardGate` "stopping the console changes nothing" timed its writes.** It
+  required at least one write in the second after the console stopped. Under three
+  CPU-bound loops, a run that logged every write and every attempt showed what fails it: a
+  single write taking 802 ms (others 150–350 ms, against about 35 ms unloaded), with no
+  failed attempt, no retry and no leader change; one such write over a second leaves the
+  window empty. Nothing in it involves the console. The subtest now waits for 10
+  successful writes before the console stops and 10 after, with no failure; each write
+  still has its 2 s deadline, and a failure reports the slowest write.
+- **The kill subtest could wait for an election that was not coming.** It took the victim
+  from the nodes (`Leader(0)`) but the shards it led from the console's overview, which can
+  be a poll behind; a shard the overview still showed on the victim, or a missing one, left
+  it waiting 60 s (3 of 50 runs, the missing event not reported). The shards are now read
+  from the nodes just before the kill, and a timeout reports which of the three events was
+  seen. The test also logs how long the node took to stop.
+
+  50 runs under `-race`, on the kept sockets above:
+
+  | Package | Tests | Passed |
+  | --- | --- | --- |
+  | `console` | `TestTimedOutPollsKeepANodeUp`, `TestFailedPollShowsNodeDownAtOnce`, `TestOnlyTimeouts` | 50 of 50 each |
+  | `config` | `TestConsoleRejectsMistakes`, `TestConsolePrecedence`, `TestConsoleSettingsCoverConfig`, `TestExampleConsoleConfigLoads` | 50 of 50 each |
+  | `test/dashboard` | `TestDashboardGate` (all three subtests) | 50 of 50 |
+  | `e2e` | `TestConsoleWatchesRealProcesses` | 50 of 50 |
+
+  A first batch of the `console` tests, with the fake node behind a real HTTP server,
+  failed 3 of 150 runs: an answer took longer than the test's 100 ms poll timeout. The fake
+  is now the console's HTTP transport (the seam), so an answer takes no time and only a
+  hanging node meets the deadline. No run reported a data race.
+
 ### Known limitations
 
 - `linearizability` `wipe-node` waits, during its 3 s of faults, until every data shard
@@ -1441,3 +1481,8 @@ before its commit.
 - `integration` `TestAddedNodeTakesItsShare` (a Phase 7 gate check) bounds every write
   during the rebalance at 2 s; one of 50 runs for the kept sockets had a write of 2.6 s
   (p50 46 ms, the machine quiet). It failed the same way once in Phase 10 (5.2 s).
+- The console polls with Go's default HTTP transport, whose connection attempts run for up
+  to 30 s after the poll that started them timed out. To a node whose address drops
+  connection attempts (a host gone from the network; on this machine, a loopback port
+  outside the ephemeral range that nothing listens on), each poll leaves one running, which
+  goleak reported in `TestDashboardGate` before the kept sockets.

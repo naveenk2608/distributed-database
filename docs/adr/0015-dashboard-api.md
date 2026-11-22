@@ -1,6 +1,6 @@
 # ADR 0015: The dashboard API is REST and server-sent events from dkv-console
 
-Status: Accepted (Phase 9)
+Status: Accepted (Phase 9; when a node is shown down revised by ADR 0029)
 
 ## Context
 
@@ -17,7 +17,9 @@ topology or poll every node itself.
   transfer, decommission) are gRPC-only, through `dkvctl`.
 - **The console polls every node** each `console.poll_interval` (default
   1 s), concurrently, each poll bounded by `console.poll_timeout`. A node
-  that does not answer is shown down at once. Rates and latency
+  that does not answer is shown down at once (since ADR 0029: at once when
+  the poll fails, after `console.down_after_misses` polls when they time
+  out). Rates and latency
   percentiles are derived from the difference of two snapshots of a node's
   own counters and cumulative histogram buckets; the cluster's percentiles
   come from the sum of the nodes' bucket differences. The console shows no

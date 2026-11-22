@@ -22,7 +22,7 @@ come up during implementation take the next free number from 0016.
 | [0012](0012-membership-changes.md) | Single-server changes with learners, applied on append; node IDs as members; leader transfer; rebalancer steps | Accepted |
 | [0013](0013-failure-detection.md) | Heartbeats to the meta leader as soft state; only decisions replicated | Accepted |
 | [0014](0014-role-of-postgresql.md) | PostgreSQL holds dashboard history only, outside the data path; the console works without it | Accepted |
-| [0015](0015-dashboard-api.md) | Read-only admin HTTP on nodes; the console polls them and serves REST and server-sent events | Accepted |
+| [0015](0015-dashboard-api.md) | Read-only admin HTTP on nodes; the console polls them and serves REST and server-sent events | Accepted (revised by 0029) |
 | [0016](0016-configuration-sources.md) | Configuration sources and precedence | Accepted |
 | [0017](0017-memtable-concurrency.md) | Memtable: insert-only skiplist, single writer, lock-free readers | Accepted |
 | [0018](0018-batch-sequence-numbers.md) | One sequence number per batch; last write wins inside a batch; one log record per batch in group commit | Accepted (revised in Phase 2) |
@@ -36,3 +36,4 @@ come up during implementation take the next free number from 0016.
 | [0026](0026-disruptive-servers-and-simulator-liveness.md) | Keep the CheckQuorum lease as is (it already implements dissertation §4.2.3); no simulated membership changes without PreVote; seed 51674 kept as a regression seed | Accepted |
 | [0027](0027-client-admin-failover.md) | Admin requests try the nodes in turn, moving on from one the client cannot connect to within its share of the deadline or that answers `Unavailable`; once connected, the request has all the time left | Accepted |
 | [0028](0028-failover-bound.md) | The failover gate's "about two election timeouts" are two of the longest randomized timeouts, `4 × election_ticks × tick` (800 ms in `TestLeaderFailover`) | Accepted |
+| [0029](0029-console-missed-polls.md) | The console shows a node down at once when its poll fails, and only after `console.down_after_misses` polls in a row (default 3) when they time out | Accepted |

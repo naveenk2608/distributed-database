@@ -303,7 +303,7 @@ func TestConsolePrecedence(t *testing.T) {
 	}
 	c := cfg.Console
 	if c.ListenAddr != "127.0.0.1:8080" || c.PollInterval != 3*time.Second || c.PollTimeout != 500*time.Millisecond ||
-		!slices.Equal(c.Nodes, []string{"10.0.0.9:7200"}) || c.Retention != 24*time.Hour {
+		!slices.Equal(c.Nodes, []string{"10.0.0.9:7200"}) || c.Retention != 24*time.Hour || c.DownAfterMisses != 3 {
 		t.Fatalf("loaded %+v", c)
 	}
 }
@@ -322,6 +322,7 @@ func TestConsoleRejectsMistakes(t *testing.T) {
 		{"duplicate node", []string{"--console.listen-addr=:8080", "--console.nodes=10.0.0.1:7200,10.0.0.1:7200"}, nil, "listed twice"},
 		{"bad node address", []string{"--console.listen-addr=:8080", "--console.nodes=10.0.0.1"}, nil, "console.nodes"},
 		{"timeout not below interval", []string{"--console.listen-addr=:8080", "--console.nodes=a:1", "--console.poll-timeout=1s"}, nil, "console.poll_timeout"},
+		{"no missed poll allowed", []string{"--console.listen-addr=:8080", "--console.nodes=a:1", "--console.down-after-misses=0"}, nil, "console.down_after_misses: must be at least 1"},
 		{"node setting in the environment", []string{"--console.listen-addr=:8080", "--console.nodes=a:1"}, []string{"DKV_STORAGE_DIR=/x"}, "unknown environment variables"},
 		{"node flag", []string{"--storage.dir=/x"}, nil, "flag provided but not defined"},
 	} {

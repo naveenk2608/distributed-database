@@ -71,6 +71,7 @@ type nodeState struct {
 	nodeID   string
 	up       bool
 	err      string
+	misses   int // polls in a row that timed out
 	lastSeen time.Time
 	status   *dkvv1.ClusterStatusResponse
 	stats    *dkvv1.StatsResponse
@@ -190,6 +191,7 @@ func (c *Console) PollOnce(ctx context.Context) {
 		stats  *dkvv1.StatsResponse
 		events *dkvv1.EventsResponse
 		err    error
+		slow   bool // every failed request timed out
 	}
 	c.mu.Lock()
 	cursors := make([]struct {
@@ -208,15 +210,17 @@ func (c *Console) PollOnce(ctx context.Context) {
 			defer cancel()
 			var r result
 			r.stats = &dkvv1.StatsResponse{}
-			if r.err = c.get(pctx, n.addr, "/v1/stats", r.stats); r.err == nil {
+			errs := []error{c.get(pctx, n.addr, "/v1/stats", r.stats)}
+			if errs[0] == nil {
 				after := cursors[i].after
 				if r.stats.GetStartedUnixNano() != cursors[i].started {
 					after = 0 // a new process: its events start again at 1
 				}
 				r.status, r.events = &dkvv1.ClusterStatusResponse{}, &dkvv1.EventsResponse{}
-				r.err = errors.Join(c.get(pctx, n.addr, "/v1/status", r.status),
-					c.get(pctx, n.addr, fmt.Sprintf("/v1/events?after=%d&limit=1000", after), r.events))
+				errs = []error{c.get(pctx, n.addr, "/v1/status", r.status),
+					c.get(pctx, n.addr, fmt.Sprintf("/v1/events?after=%d&limit=1000", after), r.events)}
 			}
+			r.err, r.slow = errors.Join(errs...), onlyTimeouts(errs)
 			results[i] = r
 		})
 	}
@@ -231,12 +235,23 @@ func (c *Console) PollOnce(ctx context.Context) {
 	for i, n := range c.nodes {
 		r := results[i]
 		if r.err != nil {
+			// A poll that timed out may only mean the node is busy: it stays
+			// up, showing its last answer, until down_after_misses polls in a
+			// row have timed out. Any other failure (a refused or reset
+			// connection, an unknown host, an error status) shows it down at
+			// once. See docs/adr/0029.
+			n.misses++
+			if n.up && r.slow && n.misses < max(1, c.cfg.DownAfterMisses) {
+				c.log.Debug("node poll timed out", "addr", n.addr, "misses", n.misses, "error", r.err)
+				continue
+			}
 			if n.up {
-				c.log.Info("node stopped answering", "addr", n.addr, "error", r.err)
+				c.log.Info("node stopped answering", "addr", n.addr, "misses", n.misses, "error", r.err)
 			}
 			n.up, n.err = false, r.err.Error()
 			continue
 		}
+		n.misses = 0
 		if !n.up {
 			c.log.Info("node answering", "addr", n.addr, "node_id", r.stats.GetNodeId())
 		}
@@ -284,6 +299,23 @@ func (c *Console) PollOnce(ctx context.Context) {
 		}
 		c.mu.Unlock()
 	}
+}
+
+// onlyTimeouts reports whether at least one of errs is set and every one
+// set is a timeout: the poll's deadline passed, or the connection timed out.
+func onlyTimeouts(errs []error) bool {
+	failed := false
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		var ne net.Error
+		if !errors.Is(err, context.DeadlineExceeded) && (!errors.As(err, &ne) || !ne.Timeout()) {
+			return false
+		}
+		failed = true
+	}
+	return failed
 }
 
 // get fetches one admin API path from a node into m.

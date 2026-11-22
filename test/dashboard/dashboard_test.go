@@ -95,10 +95,24 @@ func nodeStats(t *testing.T, adminAddr string) *dkvv1.StatsResponse {
 	return st
 }
 
-// writer puts keys through every node until stopped, counting outcomes.
+// writer puts keys through every node until stopped, counting outcomes and
+// keeping the slowest write, to explain a stall.
 type writer struct {
 	ok, failed atomic.Int64
 	stop       func()
+
+	mu        sync.Mutex
+	slowest   time.Duration
+	slowestAt time.Time // when the slowest write started
+	lastErr   error
+}
+
+// slowestWrite describes the slowest write so far, relative to t0.
+func (w *writer) slowestWrite(t0 time.Time) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return fmt.Sprintf("slowest write %v, started %v after the console stopped; last error %v",
+		w.slowest.Round(time.Millisecond), w.slowestAt.Sub(t0).Round(time.Millisecond), w.lastErr)
 }
 
 func startWriter(t *testing.T, c *nodetest.Cluster) *writer {
@@ -117,8 +131,18 @@ func startWriter(t *testing.T, c *nodetest.Cluster) *writer {
 	wg.Go(func() {
 		for i := 0; ctx.Err() == nil; i++ {
 			octx, ocancel := context.WithTimeout(ctx, 2*time.Second)
+			began := time.Now()
 			_, err := cl.Put(octx, fmt.Appendf(nil, "key%04d", i%500), []byte("value"))
+			took := time.Since(began)
 			ocancel()
+			w.mu.Lock()
+			if took > w.slowest {
+				w.slowest, w.slowestAt = took, began
+			}
+			if err != nil && ctx.Err() == nil {
+				w.lastErr = err
+			}
+			w.mu.Unlock()
 			switch {
 			case err == nil:
 				w.ok.Add(1)
@@ -196,17 +220,23 @@ func TestDashboardGate(t *testing.T) {
 	})
 
 	t.Run("stopping the console changes nothing", func(t *testing.T) {
+		// Writes go on, none failing (each has 2 s), while the console runs
+		// and after it stops. They are counted rather than timed: on a
+		// starved machine one write can take over a second with no retry
+		// and no leader change, which says nothing about the console.
+		const writes = 10
 		w := startWriter(t, c)
-		time.Sleep(time.Second)
+		nodetest.WaitFor(t, 30*time.Second, "writes while the console runs", func() bool { return w.ok.Load() >= writes })
 		before := w.ok.Load()
 		stopConsole()
-		time.Sleep(time.Second)
+		stopped := time.Now()
+		nodetest.WaitFor(t, 30*time.Second, "writes after the console stopped", func() bool { return w.ok.Load()-before >= writes })
 		during := w.ok.Load() - before
 		w.stop()
-		if f := w.failed.Load(); f != 0 || before == 0 || during == 0 {
-			t.Fatalf("writes: %d before the console stopped, %d after, %d failed; want both above zero and no failure", before, during, f)
+		if f := w.failed.Load(); f != 0 {
+			t.Fatalf("writes: %d before the console stopped, %d after, %d failed; want no failure (%s)", before, during, f, w.slowestWrite(stopped))
 		}
-		t.Logf("writes: %d in the second before the console stopped, %d in the second after", before, during)
+		t.Logf("writes: %d before the console stopped, %d after (%s)", before, during, w.slowestWrite(stopped))
 	})
 
 	base, _ = startConsole(t, c) // a new console, as after a restart
@@ -218,14 +248,19 @@ func TestDashboardGate(t *testing.T) {
 		stream := follow(t, base+"/api/stream")
 		victim, _ := c.Leader(0)
 		victimID := c.Members[victim].NodeID()
+		// The data shards the victim leads, as the nodes report them just
+		// before the kill. (The console's overview can be a poll behind: a
+		// leadership it still showed on the victim, or one it did not show
+		// yet, left the test waiting for an election that was not coming.)
 		led := map[int]bool{}
-		for _, s := range getJSON[console.Overview](t, base+"/api/overview").Shards {
-			if s.Leader == victimID {
-				led[s.Shard] = true
+		for s := range 4 {
+			if l, _ := c.Leader(s); l == victim {
+				led[s] = true
 			}
 		}
 		killed := time.Now()
 		c.Stop(victim)
+		stopped := time.Since(killed)
 		var shownDown time.Duration
 		for ov := range stream {
 			if i := slices.IndexFunc(ov.Nodes, func(n console.NodeView) bool { return n.NodeID == victimID }); i >= 0 && !ov.Nodes[i].Up {
@@ -241,11 +276,19 @@ func TestDashboardGate(t *testing.T) {
 		}
 		limit := pollInterval + pollTimeout + 250*time.Millisecond // + scheduling slack
 		if shownDown > limit {
-			t.Fatalf("the killed node showed as down after %v; want within one poll interval (%v) and the poll timeout (%v)", shownDown, pollInterval, pollTimeout)
+			t.Fatalf("the killed node showed as down after %v (it took %v to stop); want within one poll interval (%v) and the poll timeout (%v)",
+				shownDown, stopped, pollInterval, pollTimeout)
 		}
-		t.Logf("node %s killed; shown as down on the stream %v later", victimID, shownDown.Round(time.Millisecond))
+		t.Logf("node %s killed (stopped in %v); shown as down on the stream %v later", victimID,
+			stopped.Round(time.Millisecond), shownDown.Round(time.Millisecond))
 
 		var elected, dead, replicated time.Time
+		defer func() {
+			if t.Failed() {
+				t.Logf("after the kill of %s (leader of data shards %v): election %v, dead verdict %v, re-replication %v (zero: not seen)",
+					victimID, led, elected, dead, replicated)
+			}
+		}()
 		nodetest.WaitFor(t, 60*time.Second, "the election, the dead verdict and the re-replication", func() bool {
 			evs := getJSON[[]console.EventView](t, base+"/api/events?limit=5000")
 			elected, dead, replicated = time.Time{}, time.Time{}, time.Time{}

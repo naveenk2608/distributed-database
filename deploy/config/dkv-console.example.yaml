@@ -10,9 +10,11 @@ console:
     - 127.0.0.1:7201
     - 127.0.0.1:7202
     - 127.0.0.1:7203
-  # A node that stops answering shows as down after at most one interval.
+  # A node whose poll is refused or fails shows as down after at most one
+  # interval; one whose polls time out, after down_after_misses in a row.
   poll_interval: 1s
   poll_timeout: 800ms
+  down_after_misses: 3
   # History store. Empty keeps a bounded history in memory; the cluster
   # never depends on it either way.
   postgres_dsn: ""

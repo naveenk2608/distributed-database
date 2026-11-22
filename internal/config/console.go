@@ -25,12 +25,17 @@ type Console struct {
 	// to poll. Required: the console learns nothing about the cluster
 	// except from them.
 	Nodes []string `yaml:"nodes"`
-	// PollInterval is how often every node is polled; a node that stops
-	// answering shows as down after at most one interval.
+	// PollInterval is how often every node is polled. A node whose poll
+	// fails other than by timing out (connection refused or reset, unknown
+	// host, an error status) shows as down after at most one interval.
 	PollInterval time.Duration `yaml:"poll_interval"`
 	// PollTimeout bounds one poll of one node; it must be shorter than
 	// PollInterval.
 	PollTimeout time.Duration `yaml:"poll_timeout"`
+	// DownAfterMisses is how many polls in a row must time out before a
+	// node that was up shows as down; until then it shows its last answer.
+	// At least 1 (docs/adr/0029).
+	DownAfterMisses int `yaml:"down_after_misses"`
 	// PostgresDSN, if set, is where samples and events are kept (pgx
 	// connection string). Empty keeps a bounded history in memory only.
 	PostgresDSN string `yaml:"postgres_dsn"`
@@ -48,8 +53,8 @@ type Console struct {
 // they contain no address or path.
 func DefaultConsole() ConsoleConfig {
 	return ConsoleConfig{
-		Console: Console{PollInterval: time.Second, PollTimeout: 800 * time.Millisecond, Retention: 24 * time.Hour,
-			MemorySamples: 600},
+		Console: Console{PollInterval: time.Second, PollTimeout: 800 * time.Millisecond, DownAfterMisses: 3,
+			Retention: 24 * time.Hour, MemorySamples: 600},
 		Log: Log{Level: "info", Format: "json"},
 	}
 }
@@ -85,6 +90,9 @@ func (c *ConsoleConfig) Validate() error {
 		bad("console.poll_timeout", "must be positive and shorter than console.poll_interval (%v), got %v",
 			c.Console.PollInterval, c.Console.PollTimeout)
 	}
+	if c.Console.DownAfterMisses < 1 {
+		bad("console.down_after_misses", "must be at least 1, got %d", c.Console.DownAfterMisses)
+	}
 	if c.Console.Retention <= 0 {
 		bad("console.retention", "must be positive, got %v", c.Console.Retention)
 	}
@@ -112,6 +120,8 @@ var consoleSettings = []setting[ConsoleConfig]{
 		func(c *ConsoleConfig) *time.Duration { return &c.Console.PollInterval }),
 	durationSetting("console.poll_timeout", "deadline for polling one node",
 		func(c *ConsoleConfig) *time.Duration { return &c.Console.PollTimeout }),
+	intSetting("console.down_after_misses", "polls in a row that must time out before a node shows as down (other failures show it at once)",
+		func(c *ConsoleConfig) *int { return &c.Console.DownAfterMisses }),
 	stringSetting("console.postgres_dsn", "PostgreSQL connection string for history; empty keeps it in memory",
 		func(c *ConsoleConfig) *string { return &c.Console.PostgresDSN }),
 	durationSetting("console.retention", "how long samples and events are kept in PostgreSQL",
